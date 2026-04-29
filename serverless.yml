@@ -1,0 +1,213 @@
+service: siga-backend
+useDotenv: true
+
+provider:
+  name: aws
+  runtime: python3.11
+  stage: ${opt:stage, 'dev'}
+  region: ${opt:region, 'us-east-1'}
+  memorySize: 256
+  timeout: 30
+  iam:
+    role:
+      statements:
+        - Effect: "Allow"
+          Action:
+            - "cognito-idp:AdminCreateUser"
+            - "cognito-idp:AdminDeleteUser"
+            - "cognito-idp:AdminDisableUser"
+            - "cognito-idp:AdminEnableUser"
+            - "cognito-idp:AdminGetUser"
+            - "cognito-idp:ListUsers"
+            - "cognito-idp:AdminUpdateUserAttributes"
+            - "cognito-idp:AdminAddUserToGroup"
+            - "cognito-idp:AdminRemoveUserFromGroup"
+            - "cognito-idp:AdminListGroupsForUser"
+            - "cognito-idp:ListUsersInGroup"
+          Resource: 
+            - !GetAtt CognitoUserPool.Arn
+  environment:
+    STAGE: ${self:provider.stage}
+    MONGO_URI: ${env:MONGO_URI, ''}
+    MONGO_USER: ${env:MONGO_USER, ''}
+    MONGO_PASSWORD: ${env:MONGO_PASSWORD, ''}
+    MONGO_HOST: ${env:MONGO_HOST, ''}
+    MONGO_DB: ${env:MONGO_DB, 'siga'}
+    COGNITO_USER_POOL_ID: !Ref CognitoUserPool
+    COGNITO_CLIENT_ID: !Ref CognitoUserPoolClient
+
+plugins:
+  - serverless-python-requirements
+
+custom:
+  pythonRequirements:
+    dockerizePip: non-linux
+    layer:
+      name: ${self:service}-${self:provider.stage}-lib
+      description: Python requirements layer
+      compatibleRuntimes:
+        - python3.11
+
+package:
+  individually: true
+  patterns:
+    - '!node_modules/**'
+    - '!tests/**'
+    - '!.venv/**'
+    - '!package.json'
+    - '!package-lock.json'
+    - '!requirements.txt'
+
+functions:
+  health:
+    handler: src/handlers/common/health.handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: health
+          method: get
+          cors: true
+
+  users_list:
+    handler: src/handlers/users/user_manager.list_users_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: usuarios
+          method: get
+          cors: true
+          authorizer:
+            name: cognitoAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: !GetAtt CognitoUserPool.Arn
+
+  users_create:
+    handler: src/handlers/users/user_manager.create_user_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: usuarios
+          method: post
+          cors: true
+          authorizer:
+            name: cognitoAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: !GetAtt CognitoUserPool.Arn
+
+  users_update:
+    handler: src/handlers/users/user_manager.update_user_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: usuarios/{id}
+          method: put
+          cors: true
+          authorizer:
+            name: cognitoAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: !GetAtt CognitoUserPool.Arn
+
+  talleres_list:
+    handler: src/handlers/admin/talleres_manager.list_talleres_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: talleres
+          method: get
+          cors: true
+
+  talleres_create:
+    handler: src/handlers/admin/talleres_manager.create_taller_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: talleres
+          method: post
+          cors: true
+
+resources:
+  Resources:
+    # S3 Bucket for Images and Videos
+    S3BucketImages:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:service}-${self:provider.stage}-media
+        CorsConfiguration:
+          CorsRules:
+            - AllowedHeaders: ['*']
+              AllowedMethods: [GET, PUT, POST, DELETE, HEAD]
+              AllowedOrigins: ['*']
+
+    # Cognito User Pool
+    CognitoUserPool:
+      Type: AWS::Cognito::UserPool
+      Properties:
+        UserPoolName: ${self:service}-${self:provider.stage}-user-pool
+        AdminCreateUserConfig:
+          InviteMessageTemplate:
+            EmailSubject: "Bienvenido a SIGA - Credenciales de Acceso"
+            EmailMessage: "Bienvenido al Sistema Integral de Gestión Automotriz, su usuario es:{username} y su contraseña temporal es: {####}"
+        UsernameAttributes:
+          - email
+        AutoVerifiedAttributes:
+          - email
+        Policies:
+          PasswordPolicy:
+            MinimumLength: 8
+            RequireLowercase: true
+            RequireNumbers: true
+            RequireSymbols: true
+            RequireUppercase: true
+        Schema:
+          - Name: tenant_id
+            AttributeDataType: String
+            Mutable: true
+            Required: false
+
+
+    # Cognito User Pool Client
+    CognitoUserPoolClient:
+      Type: AWS::Cognito::UserPoolClient
+      Properties:
+        ClientName: ${self:service}-${self:provider.stage}-client
+        UserPoolId: !Ref CognitoUserPool
+        ExplicitAuthFlows:
+          - ALLOW_USER_PASSWORD_AUTH
+          - ALLOW_REFRESH_TOKEN_AUTH
+          - ALLOW_USER_SRP_AUTH
+        GenerateSecret: false
+
+    # Cognito User Pool Groups
+    CognitoGroupSuperAdmin:
+      Type: AWS::Cognito::UserPoolGroup
+      Properties:
+        GroupName: SUPER_ADMIN
+        UserPoolId: !Ref CognitoUserPool
+        Description: "Super Administradores del sistema"
+        
+    CognitoGroupAdmin:
+      Type: AWS::Cognito::UserPoolGroup
+      Properties:
+        GroupName: ADMIN
+        UserPoolId: !Ref CognitoUserPool
+        Description: "Administradores de los talleres"
+
+    CognitoGroupVendedor:
+      Type: AWS::Cognito::UserPoolGroup
+      Properties:
+        GroupName: VENDEDOR
+        UserPoolId: !Ref CognitoUserPool
+        Description: "Vendedores de los talleres"
+
+    CognitoGroupMecanico:
+      Type: AWS::Cognito::UserPoolGroup
+      Properties:
+        GroupName: MECANICO
+        UserPoolId: !Ref CognitoUserPool
+        Description: "Mecánicos de los talleres"

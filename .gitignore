@@ -1,0 +1,6 @@
+.env
+.serverless
+.venv
+.vscode
+node_modules
+scratch
