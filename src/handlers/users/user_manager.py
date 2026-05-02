@@ -10,12 +10,12 @@ logger = Logger()
 client = boto3.client('cognito-idp')
 
 USER_POOL_ID = os.environ.get('COGNITO_USER_POOL_ID')
-GROUPS = ['SUPER_ADMIN', 'ADMIN', 'VENDEDOR', 'MECANICO']
+GROUPS = ['SUPER_ADMIN', 'ADMIN', 'ASESOR', 'MECANICO']
 
 def parse_user_attributes(attributes: List[Dict[str, str]]) -> Dict[str, str]:
     return {attr['Name']: attr['Value'] for attr in attributes}
 
-def format_user(cognito_user: Dict[str, Any], grupo: str = 'VENDEDOR') -> Dict[str, Any]:
+def format_user(cognito_user: Dict[str, Any], grupo: str = 'ASESOR') -> Dict[str, Any]:
     attrs = parse_user_attributes(cognito_user.get('Attributes', []))
     
     return {
@@ -70,7 +70,7 @@ def create_user_handler(event, context):
         email = body.get('email')
         nombre = body.get('nombre', '')
         apellido = body.get('apellido', '')
-        grupo = body.get('grupo', 'VENDEDOR')
+        grupo = body.get('grupo', 'ASESOR')
         telefono = body.get('telefono', '')
 
         if not email:

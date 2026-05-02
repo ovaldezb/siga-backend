@@ -6,7 +6,7 @@ Mantener informado al cliente de forma proactiva y automática sobre el estado d
 ## Historias de Usuario (BDD)
 
 ### Envío de Cotizaciones
-- **Como** Vendedor
+- **Como** Asesor
 - **Quiero** presionar un botón de "Enviar por WhatsApp" en la pantalla de cotización
 - **Para** que el cliente reciba un enlace a su cotización y la pueda aprobar en línea.
 

@@ -62,7 +62,7 @@ def create_orden_handler(event, context):
         orden_doc = {
             "folio": folio,
             "tenant_id": tenant_id,
-            "estado": body.get("estado", "BORRADOR"),
+            "estado": body.get("estado", "RECEPCION"),
             "cliente_snapshot": body.get("cliente_snapshot"),
             "vehiculo_id": str(vehiculo_id),
             "puntosArreglar": body.get("puntosArreglar", []),
@@ -71,6 +71,9 @@ def create_orden_handler(event, context):
             "mecanico_id": body.get("mecanico_id"),
             "kilometraje": body.get("kilometraje", 0),
             "nivel_tanque": body.get("nivel_tanque", 0),
+            "testigos_encendidos": body.get("testigos_encendidos", []),
+            "proximo_cambio_bujias": body.get("proximo_cambio_bujias", 0),
+            "proximo_cambio_aceite": body.get("proximo_cambio_aceite", 0),
             "anticipo": body.get("anticipo", 0),
             "total": body.get("total", 0),
             "createdAt": datetime.utcnow(),

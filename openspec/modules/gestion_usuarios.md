@@ -26,11 +26,11 @@ Administrar el ciclo de vida de los usuarios (CRUD), controlando sus accesos med
 2. **Catálogo de Roles permitidos**:
    - `Super Admin`: Gestor de la plataforma global (no requiere `tenant_id`).
    - `Admin`: Dueño/Gerente de un Taller (asociado a un `tenant_id`).
-   - `Vendedor`: Empleado del Taller enfocado a CRM y Ventas.
+   - `Asesor`: Empleado del Taller enfocado a CRM y Ventas.
    - `Mecanico`: Empleado enfocado en Operaciones.
 3. **Manejo del Tenant ID**: 
    - Debe ser único por taller y generarse de forma automática al registrar una nueva empresa.
-   - Al crear un usuario (Vendedor o Mecánico), este hereda el `tenant_id` del Administrador que lo está creando.
+   - Al crear un usuario (Asesor o Mecánico), este hereda el `tenant_id` del Administrador que lo está creando.
 4. **Excepción Super Admin**: El `SuperAdmin` no tiene un `tenant_id` comercial; solo tiene permisos para visualizar a sus pares y dar de alta o suspender a los talleres.
 5. **Aprovisionamiento Cognito**: El endpoint de creación de usuarios en el Backend de SIGA debe comunicarse automáticamente con el API de Cognito para crear la cuenta, asignar el password y guardar el `tenant_id` como un atributo custom del usuario.
    - **Pruebas**: Debe ser posible enviar una petición POST vía Postman al backend y confirmar que el usuario se ha dado de alta exitosamente en Cognito.

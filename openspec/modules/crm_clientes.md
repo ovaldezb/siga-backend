@@ -16,7 +16,7 @@ Centralizar la información de contacto de los clientes del taller y mantener un
 - **Para** ofrecer mantenimientos preventivos o conocer fallas recurrentes.
 
 ### Gestión de Contactos
-- **Como** Vendedor
+- **Como** Asesor
 - **Quiero** registrar notas y seguimiento sobre un cliente potencial (ej. cotizaciones pendientes)
 - **Para** concretar más ventas de servicios.
 

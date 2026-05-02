@@ -23,7 +23,7 @@ La colección `ordenes_servicio` utiliza un modelo de **Snapshot** para el Clien
 | `os_id` | UUID | Identificador único de la orden. |
 | `folio` | String | Identificador legible (ej: OS-2026-001). |
 | `tenant_id` | UUID | Discriminador de taller (Multi-tenancy). |
-| `estado` | Enum | `BORRADOR`, `COTIZADO`, `APROBADO`, `EN_PROCESO`, `FINALIZADO`, `ENTREGADO`. |
+| `estado` | Enum | `RECEPCION`, `COTIZADO`, `APROBADO`, `EN_PROCESO`, `FINALIZADO`, `ENTREGADO`. |
 | `cliente_snapshot` | Object | Datos de contacto al momento de la apertura. |
 |`puntosArreglar`|Array<Object>|Array de puntos a reparar, donde cada punto tiene un nombre y una lista de items |
 |`vehiculo_id`|UUID|ID del vehiculo asociado a la orden de servicio|
@@ -35,6 +35,11 @@ danos previos para cada lado del vehiculo, derecho, izquierdo, frontal y trasero
 | `anticipo` | Decimal | Pago inicial registrado. |
 | `fecha_entrega` | DateTime | Fecha compromiso con el cliente. |
 | `garantia` | Object | Vigencia y condiciones de la reparación. |
+| `testigos_encendidos` | Array<String> | Testigos encendidos del vehículo. |
+| `proximo_cambio_bujias` | Integer | Kilometraje próximo para cambio de bujías. |
+| `proximo_cambio_aceite` | Integer | Kilometraje próximo para cambio de aceite. |
+| `kilometraje` | Integer | Kilometraje del vehículo al momento de la apertura. |
+| `nivel_tanque` | Integer | Nivel de combustible del vehículo al momento de la apertura. |
 
 ---
 

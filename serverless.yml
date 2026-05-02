@@ -457,12 +457,12 @@ resources:
         UserPoolId: !Ref CognitoUserPool
         Description: "Administradores de los talleres"
 
-    CognitoGroupVendedor:
+    CognitoGroupAsesor:
       Type: AWS::Cognito::UserPoolGroup
       Properties:
-        GroupName: VENDEDOR
+        GroupName: ASESOR
         UserPoolId: !Ref CognitoUserPool
-        Description: "Vendedores de los talleres"
+        Description: "Asesores de los talleres"
 
     CognitoGroupMecanico:
       Type: AWS::Cognito::UserPoolGroup

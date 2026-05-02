@@ -74,6 +74,45 @@ El documento central de la gestión de taller.
 - `refacciones` (Array de productos utilizados)
 - `total`
 
+-`folio`
+-  `tenant_id`
+-  `estado` 
+-  `cliente_snapshot` 
+-  `nombre`
+-  `apellido_paterno`
+-  `telefono`
+-  `email`
+-  `vehiculo_id`
+-  `puntosArreglar` :[
+    {
+      -`nombre`
+      `items`: [
+        {
+          -`nombre`
+          -`noParte`
+          -`marca`
+          -`piezas`
+          -`precioVenta`
+          -`precioCompra`
+          -`aprobado`
+          -`subtotal`
+          -`entregado`
+          -`item_id`
+        }
+      ]
+    }
+  ],
+  -`testigos_encendidos`:[]
+  -`falla_reportada`
+  -`diagnostico`
+  -`mecanico_id`
+  -`kilometraje`
+  -`nivel_tanque`
+  -`anticipo`
+  -`total`
+  -`createdAt`
+  -`updatedAt`
+
 ### Folio
 - `folio_id`
 - `tenant_id`

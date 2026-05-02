@@ -6,7 +6,7 @@ Gestionar el ciclo financiero de las reparaciones y las ventas de mostrador, aba
 ## Historias de Usuario (BDD)
 
 ### Cotizaciones
-- **Como** Asesor de Servicio o Vendedor
+- **Como** Asesor de Servicio o Asesor
 - **Quiero** generar una cotización agregando mano de obra y refacciones, y enviarla por WhatsApp/Email al cliente
 - **Para** que el cliente la apruebe antes de iniciar el trabajo.
 
