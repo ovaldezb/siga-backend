@@ -20,6 +20,7 @@ Centralizar la información de contacto de los clientes del taller y mantener un
 - **Quiero** registrar notas y seguimiento sobre un cliente potencial (ej. cotizaciones pendientes)
 - **Para** concretar más ventas de servicios.
 
+
 ## Reglas de Negocio
 1. **Unicidad de Vehículo:** Un número de serie (VIN) o placa debe ser único por Taller. Si un vehículo cambia de dueño, se reasigna al nuevo cliente.
 2. **Privacidad de Datos:** Los datos del cliente (teléfono, email) deben estar accesibles fácilmente en pantalla para envío de notificaciones por WhatsApp/Email.

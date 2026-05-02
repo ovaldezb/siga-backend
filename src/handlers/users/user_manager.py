@@ -19,7 +19,6 @@ def format_user(cognito_user: Dict[str, Any], grupo: str = 'VENDEDOR') -> Dict[s
     attrs = parse_user_attributes(cognito_user.get('Attributes', []))
     
     return {
-        "id": cognito_user.get('Username'),
         "email": attrs.get('email', ''),
         "nombre": attrs.get('given_name', ''),
         "apellido": attrs.get('family_name', ''),
@@ -36,16 +35,22 @@ def list_users_handler(event, context):
         claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
         tenant_id = claims.get('custom:tenant_id')
         
-        if not tenant_id:
-            return create_response(403, "No se encontró un tenantId asociado a este usuario.")
-            
+        query_params = event.get('queryStringParameters') or {}
+        grupo_filtro = query_params.get('grupo')
+        
         tenant_db = get_tenant_db(tenant_id)
-        users_cursor = tenant_db["usuarios"].find()
+        
+        query = {}
+        if grupo_filtro:
+            query['grupo'] = grupo_filtro
+            
+        logger.info(f"Buscando usuarios para tenant {tenant_id} con filtro: {query}")
+        users_cursor = tenant_db["usuarios"].find(query)
         
         users = []
         for u in users_cursor:
-            if "_id" in u:
-                del u["_id"]
+            u["id"] = str(u["_id"])
+            del u["_id"]
             users.append(u)
             
         return create_response(200, "Usuarios obtenidos", users)
@@ -101,10 +106,9 @@ def create_user_handler(event, context):
         
         # Guardar copia en MongoDB del tenant
         tenant_db = get_tenant_db(tenant_id)
-        tenant_db["usuarios"].insert_one(user_data.copy())
-
-        if "_id" in user_data:
-            del user_data["_id"]
+        res_mongo = tenant_db["usuarios"].insert_one(user_data.copy())
+        
+        user_data["id"] = str(res_mongo.inserted_id)
             
         return create_response(201, "Usuario creado exitosamente", user_data)
     except client.exceptions.UsernameExistsException:
@@ -177,7 +181,8 @@ def update_user_handler(event, context):
         if 'activo' in body: update_data['activo'] = body['activo']
         
         if update_data:
-            tenant_db["usuarios"].update_one({"id": user_id}, {"$set": update_data})
+            from bson import ObjectId
+            tenant_db["usuarios"].update_one({"_id": ObjectId(user_id)}, {"$set": update_data})
             
         body['id'] = user_id
         return create_response(200, "Usuario actualizado", body)

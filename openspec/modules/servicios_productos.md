@@ -56,3 +56,5 @@ Como los servicios (mano de obra) no cambian de precio frecuentemente, se recomi
 
 > [!TIP]
 > El uso de un caché local mejora significativamente la experiencia de usuario en la creación de presupuestos rápidos.
+
+Se debe manejar paginación en la consulta GET /api/v1/items. Debe devolver page, limit, total, y los items.

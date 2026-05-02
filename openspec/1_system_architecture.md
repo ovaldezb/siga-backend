@@ -35,3 +35,6 @@ captura las excepciones con un handlerAdvice y devuelve un objeto estandarizado.
 En caso de error en la aplicacion se debe loggear el error en un archivo y mostrar un mensaje generico al usuario.
 mandar mensajes al log para saber que la lambda fue ejecutada y con que parametros.
 
+## 6. Logout automatico
+Después de 15 minutos de inactividad el sistema los debe desloguear
+El token de seguridad debe durar 15 minutos

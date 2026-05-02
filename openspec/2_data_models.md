@@ -27,17 +27,15 @@ Dueños de los vehículos.
 - `cliente_id`
 - `tenant_id`
 - `nombre`
+- `apellido_paterno`
+- `apellido_materno`
 - `telefono` (Para WhatsApp)
 - `email`
 - `direccion`
-- `vehiculos_resumen`: [
-    { "vehiculo_id": "VEH001", "placas": "ABC-123", "marca": "Nissan", "modelo": "Sentra", "año": 2022 },
-    { "vehiculo_id": "VEH002", "placas": "XYZ-789", "marca": "Jeep", "modelo": "Wrangler", "año": 2020 }
-]
 
 ### Vehículo del cliente
 Unidad automotriz asociada a un cliente.
-- `vehiculo_id`
+- `_id`
 - `cliente_id`
 - `tenant_id`
 - `placas`
@@ -45,17 +43,23 @@ Unidad automotriz asociada a un cliente.
 - `modelo`
 - `año`
 - `vin`
+- `color`
 
-### Producto / Refacción
+
+### Item / Refacción
 Catálogo de partes para venta o uso en taller.
-- `producto_id`
+- `item_id`
 - `tenant_id`
 - `codigo`
 - `nombre`
 - `descripcion`
 - `precio_compra`
 - `precio_venta`
-- `stock_actual`
+- `stock`
+- `maneja_inventario`
+- `tipo` (PRODUCTO, SERVICIO)
+- `clave_sat` (Opcional, para facturación)
+- `unidad_sat` (Opcional, para facturación)
 
 ### Orden de Servicio
 El documento central de la gestión de taller.
@@ -69,3 +73,8 @@ El documento central de la gestión de taller.
 - `servicios` (Array de servicios a realizar)
 - `refacciones` (Array de productos utilizados)
 - `total`
+
+### Folio
+- `folio_id`
+- `tenant_id`
+- `folio`

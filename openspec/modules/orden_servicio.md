@@ -2,6 +2,14 @@
 
 ## 📌 Objetivo
 Gestionar el ciclo de vida completo de la reparación de un vehículo, desde la recepción y diagnóstico hasta la entrega final, garantizando el control de inventario en tiempo real y la transparencia en la aprobación de costos por parte del cliente.
+La orden de servicio se compone de 3 secciones principales: 
+- Cliente
+- Vehiculo
+- Servicios y refacciones
+
+como parte final se agrega una garantia y una fecha estimada de entrega y el costo total de la orden. de igual manera se puede agregar notas y observaciones de cada sección.
+
+La Orden de Servicio debe ser creada de forma atomica, es decir, que si falla la creacion de un elemento, se debe revertir toda la operacion, antes de crear una orden de servicio, se debe verificar si el cliente y el vehiculo ya existen en la base de datos, si no existen, se deben crear, para que la orden de servicio contenga toda la informacion necesaria, adicionalmente el producto y/o servicio se debe poder agregar desde la orden de servicio, si no existe en la base de datos, se debe crear, si es un producto se debe agregar con un stock de 1 por default
 
 ---
 
@@ -17,12 +25,13 @@ La colección `ordenes_servicio` utiliza un modelo de **Snapshot** para el Clien
 | `tenant_id` | UUID | Discriminador de taller (Multi-tenancy). |
 | `estado` | Enum | `BORRADOR`, `COTIZADO`, `APROBADO`, `EN_PROCESO`, `FINALIZADO`, `ENTREGADO`. |
 | `cliente_snapshot` | Object | Datos de contacto al momento de la apertura. |
-| `vehiculo_snapshot`| Object | Datos técnicos del vehículo recibido. |
-| `items` | Array<Item> | Listado polimórfico de refacciones y servicios. |
+|`puntosArreglar`|Array<Object>|Array de puntos a reparar, donde cada punto tiene un nombre y una lista de items |
+|`vehiculo_id`|UUID|ID del vehiculo asociado a la orden de servicio|
 | `falla_reportada` | String | Descripción inicial del cliente. |
 | `diagnostico` | String | Notas técnicas del mecánico. |
 | `mecanico_id` | UUID | ID del empleado responsable. |
 | `danos_previos` | Array<String> | Registro visual/textual de daños estéticos. |
+danos previos para cada lado del vehiculo, derecho, izquierdo, frontal y trasero, 
 | `anticipo` | Decimal | Pago inicial registrado. |
 | `fecha_entrega` | DateTime | Fecha compromiso con el cliente. |
 | `garantia` | Object | Vigencia y condiciones de la reparación. |
@@ -49,6 +58,17 @@ A diferencia del catálogo global de modelos, el **Vehículo del Cliente** repre
 > [!NOTE]
 > Al crear una OS, si el `vin` o las `placas` no existen en la base de datos del taller, el sistema debe registrar automáticamente este vehículo y asociarlo al cliente indicado.
 
+### Puntos a Arreglar (`puntosArreglar`)
+una order de servicio debe contener una lista de Puntos a Arreglar y cada punto contendrá uno o más items, que pueden ser refacciones (Productos) o mano de obra (Servicios)
+```json
+{
+    "puntosArreglar":[
+        "punto":{"nombre":"afinacion","items":[item1, item2]},
+        "punto":{"nombre":"fallas","items":[item1, item2]},
+        "punto":{"nombre":"frenos delanteros","items":[item1, item2]},
+    ]
+}```
+---
 ### 🧩 Detalle de Partidas (`items`)
 ```json
 {
@@ -58,12 +78,17 @@ A diferencia del catálogo global de modelos, el **Vehículo del Cliente** repre
     "codigo": "CODE123",
     "nombre": "Pastillas de freno cerámicas",
     "precioVenta": 850.00,
-    "costo": 500.00,
+    "precioCompra": 500.00,
     "manejaInventario": true,
     "stock": 10,
+    "noParte": "123456789",
+    "marca": "Brembo",
+    "piezas":4,
     "categoria": "Frenos",
     "claveSat": "123456",
     "unidadSat": "PZA",
+    "proveedor":"Stock Lic",
+    "aprobado":true,
     "activo": true
 }
 ```
@@ -87,11 +112,13 @@ A diferencia del catálogo global de modelos, el **Vehículo del Cliente** repre
 
 El ciclo de vida estándar de una orden sigue estos pasos:
 
-1. **Apertura (`BORRADOR`):** Registro inicial de datos, cliente, vehículo y falla reportada.
-2. **Diagnóstico y Cotización (`COTIZADO`):** El mecánico añade los ítems necesarios y el presupuesto.
+1. **Apertura (`RECEPCION`):** Registro inicial de datos, cliente, vehículo y falla reportada.
+2. **Diagnóstico y Cotización (`COTIZADO`):** El mecánico o el vendedor añade los ítems necesarios y el presupuesto.
 3. **Autorización (`APROBADO`):** El cliente valida y aprueba los costos (parcial o totalmente).
-4. **Ejecución (`EN_PROCESO` / `FINALIZADO`):** Se realizan los trabajos y se descuenta el inventario.
+4. **Ejecución (`EN_PROCESO` / `FINALIZADO`):** Se realizan los trabajos (los items se descuentan del inventario al momento de ser entregados al Mecanico, de esta forma se tiene el stock actualizado, hay trabajos que pueden tardar 2 semanas, por lo cua pareceria que tengo piezas en stock, cuando ya fueron usadas en ordenes que estan en progreso).
 5. **Cierre y Entrega (`ENTREGADO`):** Liquidación del saldo y entrega física de la unidad.
+
+6. **Cancelar Orden de Servicio (`CANCELADO`):** Se cancela la orden de servicio y se devuelve el anticipo al cliente.
 
 > [!NOTE]
 > En caso de error en cualquier paso del flujo de creación inicial, el sistema debe mostrar un mensaje claro al usuario indicando qué elemento falló.
