@@ -18,6 +18,9 @@ def list_clientes_handler(event, context):
 
         query_params = event.get('queryStringParameters') or {}
         search_query = query_params.get('q', '').strip()
+        page = int(query_params.get('page', 1))
+        limit = int(query_params.get('limit', 20))
+        skip = (page - 1) * limit
         
         db = get_tenant_db(tenant_id)
         
@@ -33,13 +36,34 @@ def list_clientes_handler(event, context):
                 ]
             }
 
-        clientes = list(db.clientes.find(filter_query).limit(20))
+        total = db.clientes.count_documents(filter_query)
+        clientes = list(db.clientes.find(filter_query).skip(skip).limit(limit))
         
-        # Formatear para JSON
+        # Formatear para JSON y preparar IDs para conteo de vehículos
+        client_ids = []
         for c in clientes:
             c['id'] = str(c.pop('_id'))
+            client_ids.append(c['id'])
+        
+        # Conteo de vehículos eficiente (una sola consulta para toda la página)
+        if client_ids:
+            counts = list(db["vehiculos"].aggregate([
+                {"$match": {"cliente_id": {"$in": client_ids}}},
+                {"$group": {"_id": "$cliente_id", "count": {"$sum": 1}}}
+            ]))
+            counts_dict = {item['_id']: item['count'] for item in counts}
+            for c in clientes:
+                c['num_vehiculos'] = counts_dict.get(c['id'], 0)
+        else:
+            for c in clientes:
+                c['num_vehiculos'] = 0
             
-        return create_response(200, "Clientes obtenidos", clientes)
+        return create_response(200, "Clientes obtenidos", {
+            "items": clientes,
+            "total": total,
+            "page": page,
+            "limit": limit
+        })
     except Exception as e:
         return handle_exception(e)
 
@@ -66,6 +90,7 @@ def create_cliente_handler(event, context):
             "telefono": body['telefono'],
             "email": body.get('email'),
             "direccion": body.get('direccion'),
+            "tipo_persona": body.get('tipo_persona', 'FISICA'),
             "createdAt": datetime.utcnow().isoformat(),
             "tenant_id": tenant_id
         }

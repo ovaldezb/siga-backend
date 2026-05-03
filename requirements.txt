@@ -2,3 +2,4 @@ pymongo[srv]==4.6.1
 pydantic==2.6.1
 aws-lambda-powertools==2.34.1
 python-dotenv==1.0.1
+Pillow==10.2.0

@@ -84,8 +84,9 @@ def create_taller_handler(event, context):
         taller_doc = {
             "tenantId": tenant_id,
             "nombreComercial": body["nombreComercial"],
+            "direccion": body.get("direccion"),
             "modulos": body.get("modulos", []),
-            "estado": "ACTIVO",
+            "estado": body.get("estado", "ACTIVO"),
             "fechaSuscripcion": fecha_alta,
             "adminEmail": admin_email,
             "adminNombre": body["adminNombre"],
@@ -150,13 +151,14 @@ def get_my_modulos_handler(event, context):
             return create_response(200, "Módulos para admin global", {"modulos": ["*"]})
 
         db = get_platform_db()
-        taller = db["talleres"].find_one({"tenantId": tenant_id}, {"_id": 0, "modulos": 1})
+        taller = db["talleres"].find_one({"tenantId": tenant_id}, {"_id": 0, "modulos": 1, "estado": 1})
 
         if not taller:
             return create_response(404, "Taller no encontrado")
 
-        return create_response(200, "Módulos recuperados", {
-            "modulos": taller.get("modulos", [])
+        return create_response(200, "Configuración recuperada", {
+            "modulos": taller.get("modulos", []),
+            "estado": taller.get("estado", "ACTIVO")
         })
 
     except Exception as e:
@@ -178,10 +180,12 @@ def update_taller_handler(event, context):
         
         update_data = {
             "nombreComercial": body.get("nombreComercial"),
+            "direccion": body.get("direccion"),
             "modulos": body.get("modulos", []),
             "adminNombre": body.get("adminNombre"),
             "adminApellido": body.get("adminApellido"),
             "adminTelefono": body.get("adminTelefono"),
+            "estado": body.get("estado"),
             "updatedAt": datetime.utcnow()
         }
 
@@ -200,4 +204,79 @@ def update_taller_handler(event, context):
 
     except Exception as e:
         logger.error(f"Error in update_taller: {str(e)}")
+        return handle_exception(e)
+
+def upload_logo_handler(event, context):
+    """
+    Recibe una imagen en base64, la redimensiona y la guarda en S3.
+    """
+    try:
+        from bson import ObjectId
+        from PIL import Image
+        import io
+        import base64
+
+        taller_id = event.get('pathParameters', {}).get('id')
+        if not taller_id:
+            return create_response(400, "ID de taller no proporcionado")
+
+        body = json.loads(event.get("body") or "{}")
+        image_base64 = body.get("image")
+
+        if not image_base64:
+            return create_response(400, "Imagen no proporcionada")
+
+        # Limpiar prefijo base64 si existe (data:image/png;base64,...)
+        if "," in image_base64:
+            image_base64 = image_base64.split(",")[1]
+
+        # 1. Obtener información del taller (necesitamos el tenantId)
+        db = get_platform_db()
+        taller = db["talleres"].find_one({"_id": ObjectId(taller_id)})
+        if not taller:
+            return create_response(404, "Taller no encontrado")
+
+        tenant_id = taller["tenantId"]
+
+        # 2. Procesar imagen con Pillow
+        image_data = base64.b64decode(image_base64)
+        img = Image.open(io.BytesIO(image_data))
+        
+        # Convertir a RGB si es necesario (para evitar problemas con canales alfa en algunos formatos)
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGBA")
+        
+        # Redimensionar (máximo 400x200 manteniendo proporción)
+        img.thumbnail((400, 200))
+        
+        # Guardar en buffer
+        output = io.BytesIO()
+        img.save(output, format='PNG', optimize=True)
+        output.seek(0)
+
+        # 3. Subir a S3
+        s3 = boto3.client('s3')
+        bucket = os.environ.get('S3_MEDIA_BUCKET')
+        key = f"logotipos/logo_{tenant_id}.png"
+
+        s3.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=output,
+            ContentType='image/png',
+            ACL='public-read'
+        )
+
+        logo_url = f"https://{bucket}.s3.amazonaws.com/{key}?t={int(datetime.utcnow().timestamp())}"
+
+        # 4. Actualizar URL en BD
+        db["talleres"].update_one(
+            {"_id": ObjectId(taller_id)},
+            {"$set": {"logoUrl": logo_url}}
+        )
+
+        return create_response(200, "Logotipo actualizado", {"logoUrl": logo_url})
+
+    except Exception as e:
+        logger.error(f"Error in upload_logo: {str(e)}")
         return handle_exception(e)

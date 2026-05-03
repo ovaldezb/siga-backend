@@ -44,14 +44,61 @@ def list_vehiculos_handler(event, context):
         # Total de registros para el filtro dado
         total = db["vehiculos"].count_documents(filtro)
         
-        # Consulta con skip y limit
-        cursor = db["vehiculos"].find(filtro).sort("createdAt", -1).skip(skip).limit(limit)
+        # Pipeline de agregación para incluir info del cliente
+        pipeline = [
+            {"$match": filtro},
+            {"$sort": {"createdAt": -1}},
+            {"$skip": skip},
+            {"$limit": limit},
+            {
+                "$addFields": {
+                    "cliente_oid": {
+                        "$convert": {
+                            "input": "$cliente_id",
+                            "to": "objectId",
+                            "onError": "$cliente_id",
+                            "onNull": None
+                        }
+                    }
+                }
+            },
+            {
+                "$lookup": {
+                    "from": "clientes",
+                    "localField": "cliente_oid",
+                    "foreignField": "_id",
+                    "as": "cliente_info"
+                }
+            },
+            {
+                "$addFields": {
+                    "cliente_nombre": {
+                        "$cond": {
+                            "if": {"$gt": [{"$size": "$cliente_info"}, 0]},
+                            "then": {
+                                "$concat": [
+                                    {"$arrayElemAt": ["$cliente_info.nombre", 0]},
+                                    " ",
+                                    {"$arrayElemAt": ["$cliente_info.apellido_paterno", 0]}
+                                ]
+                            },
+                            "else": "Cliente Desconocido"
+                        }
+                    }
+                }
+            },
+            {"$project": {"cliente_info": 0, "cliente_oid": 0}}
+        ]
+        
+        cursor = db["vehiculos"].aggregate(pipeline)
 
         vehiculos = []
         for v in cursor:
             v['id'] = str(v.pop('_id'))
             if 'createdAt' in v and isinstance(v['createdAt'], datetime):
                 v['createdAt'] = v['createdAt'].isoformat()
+            if 'updatedAt' in v and isinstance(v['updatedAt'], datetime):
+                v['updatedAt'] = v['updatedAt'].isoformat()
             vehiculos.append(v)
 
         # Respuesta estructurada para paginación
@@ -81,16 +128,132 @@ def get_vehiculo_handler(event, context):
         vehiculo_id = event['pathParameters']['id']
         db = get_tenant_db(tenant_id)
 
-        vehiculo = db["vehiculos"].find_one({"_id": ObjectId(vehiculo_id)})
+        # Pipeline de agregación para incluir info del cliente
+        pipeline = [
+            {"$match": {"_id": ObjectId(vehiculo_id)}},
+            {
+                "$addFields": {
+                    "cliente_oid": {
+                        "$convert": {
+                            "input": "$cliente_id",
+                            "to": "objectId",
+                            "onError": "$cliente_id",
+                            "onNull": None
+                        }
+                    }
+                }
+            },
+            {
+                "$lookup": {
+                    "from": "clientes",
+                    "localField": "cliente_oid",
+                    "foreignField": "_id",
+                    "as": "cliente_info"
+                }
+            },
+            {
+                "$addFields": {
+                    "cliente_nombre": {
+                        "$cond": {
+                            "if": {"$gt": [{"$size": "$cliente_info"}, 0]},
+                            "then": {
+                                "$concat": [
+                                    {"$arrayElemAt": ["$cliente_info.nombre", 0]},
+                                    " ",
+                                    {"$arrayElemAt": ["$cliente_info.apellido_paterno", 0]}
+                                ]
+                            },
+                            "else": "Cliente Desconocido"
+                        }
+                    }
+                }
+            },
+            {"$project": {"cliente_info": 0, "cliente_oid": 0}}
+        ]
+        
+        resultado = list(db["vehiculos"].aggregate(pipeline))
 
-        if not vehiculo:
+        if not resultado:
             return create_response(404, "Vehículo no encontrado.")
 
+        vehiculo = resultado[0]
         vehiculo['id'] = str(vehiculo.pop('_id'))
         if 'createdAt' in vehiculo and isinstance(vehiculo['createdAt'], datetime):
             vehiculo['createdAt'] = vehiculo['createdAt'].isoformat()
+        if 'updatedAt' in vehiculo and isinstance(vehiculo['updatedAt'], datetime):
+            vehiculo['updatedAt'] = vehiculo['updatedAt'].isoformat()
 
         return create_response(200, "Vehículo obtenido", vehiculo)
+
+    except Exception as e:
+        return handle_exception(e)
+
+@logger.inject_lambda_context
+def create_vehiculo_handler(event, context):
+    """POST /vehiculos — Crea un nuevo vehículo."""
+    try:
+        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        tenant_id = claims.get('custom:tenant_id')
+
+        if not tenant_id:
+            return create_response(403, "No se encontró un tenantId asociado.")
+
+        body = json.loads(event.get('body', '{}'))
+        db = get_tenant_db(tenant_id)
+
+        # Campos obligatorios
+        if not body.get('marca') or not body.get('modelo') or not body.get('placas'):
+            return create_response(400, "Marca, modelo y placas son requeridos.")
+
+        nuevo_vehiculo = {
+            "marca": body['marca'],
+            "modelo": body['modelo'],
+            "anio": body.get('anio'),
+            "placas": body['placas'],
+            "vin": body.get('vin'),
+            "color": body.get('color'),
+            "cliente_id": body.get('cliente_id'),
+            "tenant_id": tenant_id,
+            "createdAt": datetime.utcnow()
+        }
+
+        result = db["vehiculos"].insert_one(nuevo_vehiculo)
+        nuevo_vehiculo['id'] = str(result.inserted_id)
+        del nuevo_vehiculo['_id']
+        nuevo_vehiculo['createdAt'] = nuevo_vehiculo['createdAt'].isoformat()
+
+        return create_response(201, "Vehículo creado exitosamente", nuevo_vehiculo)
+
+    except Exception as e:
+        return handle_exception(e)
+
+@logger.inject_lambda_context
+def update_vehiculo_handler(event, context):
+    """PUT /vehiculos/{id} — Actualiza un vehículo existente."""
+    try:
+        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        tenant_id = claims.get('custom:tenant_id')
+
+        if not tenant_id:
+            return create_response(403, "No se encontró un tenantId asociado.")
+
+        vehiculo_id = event['pathParameters']['id']
+        body = json.loads(event.get('body', '{}'))
+        db = get_tenant_db(tenant_id)
+
+        # Limpiar datos para el update (evitar cambiar IDs o tenant)
+        update_data = {k: v for k, v in body.items() if k not in ['id', '_id', 'tenant_id', 'createdAt', 'cliente_nombre']}
+        update_data['updatedAt'] = datetime.utcnow()
+
+        result = db["vehiculos"].update_one(
+            {"_id": ObjectId(vehiculo_id)},
+            {"$set": update_data}
+        )
+
+        if result.matched_count == 0:
+            return create_response(404, "Vehículo no encontrado.")
+
+        return create_response(200, "Vehículo actualizado exitosamente", {"id": vehiculo_id})
 
     except Exception as e:
         return handle_exception(e)

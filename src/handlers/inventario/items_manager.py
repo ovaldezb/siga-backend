@@ -27,16 +27,19 @@ def list_items_handler(event, context):
         if tipo:
             query['tipo'] = tipo
         if search:
-            query['$text'] = {'$search': search}
+            query['$or'] = [
+                {"nombre": {"$regex": search, "$options": "i"}},
+                {"no_parte": {"$regex": search, "$options": "i"}}
+            ]
 
-        total = db.items.count_documents(query)
-        items = list(db.items.find(query).skip(skip).limit(limit))
+        total = db["items"].count_documents(query)
+        items_result = list(db["items"].find(query).skip(skip).limit(limit))
         
-        for i in items:
+        for i in items_result:
             i['id'] = str(i.pop('_id'))
             
         return create_response(200, "Items obtenidos", {
-            "items": items,
+            "items": items_result,
             "total": total,
             "page": page,
             "limit": limit
@@ -50,40 +53,61 @@ def create_item_handler(event, context):
         tenant_id = claims.get('custom:tenant_id')
         
         body = json.loads(event.get('body', '{}'))
-        # 1. Validar unicidad de número de parte por tenant
+        # 1. Validar campos obligatorios
+        nombre = body.get('nombre')
+        precio_venta = body.get('precio_venta')
         no_parte = body.get('no_parte') or body.get('noParte')
 
-        if not no_parte:
-            return create_response(400, "El número de parte es obligatorio.")
+        if not nombre or not no_parte or precio_venta is None:
+            return create_response(400, "Nombre, No. Parte y Precio Venta son obligatorios.")
         
-        existing_part = db.items.find_one({"no_parte": no_parte})
+        db = get_tenant_db(tenant_id)
+        
+        # 2. Validar duplicados
+        existing_part = db["items"].find_one({"no_parte": no_parte})
         if existing_part:
             return create_response(400, f"El número de parte '{no_parte}' ya existe en el inventario.")
 
-        # 2. Asegurar índices (Texto para búsqueda)
-        db.items.create_index([("nombre", "text"), ("no_parte", "text")])
+        # 3. Asegurar índices (Texto para búsqueda) - Con try para no bloquear
+        try:
+            db["items"].create_index([("nombre", "text"), ("no_parte", "text")])
+        except Exception as e:
+            logger.warning(f"No se pudo crear/verificar el índice de texto: {str(e)}")
 
-        # 3. Preparar item
+        # 4. Funciones auxiliares de conversión segura
+        def to_float(val):
+            try:
+                return float(val) if val not in [None, ""] else 0.0
+            except:
+                return 0.0
+
+        def to_int(val):
+            try:
+                return int(val) if val not in [None, ""] else 0
+            except:
+                return 0
+
+        # 5. Preparar item
         tipo = body.get('tipo', 'PRODUCTO')
         nuevo_item = {
             "item_id": str(uuid.uuid4()),
             "tipo": tipo,
-            "nombre": body['nombre'],
+            "nombre": nombre,
             "no_parte": no_parte,
-            "precio_venta": float(body['precio_venta']),
+            "precio_venta": to_float(precio_venta),
             "categoria": body.get('categoria'),
             "marca": body.get('marca'),
             "proveedor": body.get('proveedor'),
             "tenant_id": tenant_id,
-            "createdAt": datetime.utcnow().isoformat(),
+            "createdAt": datetime.utcnow().isoformat() + "Z",
             "activo": body.get('activo', True)
         }
 
         if tipo == 'PRODUCTO':
             nuevo_item.update({
-                "precio_compra": float(body.get('precio_compra', 0)),
+                "precio_compra": to_float(body.get('precio_compra')),
                 "maneja_inventario": body.get('maneja_inventario', True),
-                "stock": int(body.get('stock', 0)),
+                "stock": to_int(body.get('stock')),
                 "clave_sat": body.get('clave_sat'),
                 "unidad_sat": body.get('unidad_sat')
             })
@@ -93,13 +117,14 @@ def create_item_handler(event, context):
                 "stock": None
             })
 
-        result = db.items.insert_one(nuevo_item)
+        result = db["items"].insert_one(nuevo_item)
         nuevo_item['id'] = str(result.inserted_id)
         del nuevo_item['_id']
         
         return create_response(201, "Item creado exitosamente", nuevo_item)
     except Exception as e:
-        return handle_exception(e)
+        logger.error(f"Error en create_item: {str(e)}", exc_info=True)
+        return create_response(500, f"Error interno: {str(e)}")
 
 def update_stock_handler(event, context):
     try:
@@ -113,7 +138,7 @@ def update_stock_handler(event, context):
         db = get_tenant_db(tenant_id)
         
         # Buscar item y validar que maneja inventario
-        item = db.items.find_one({"_id": ObjectId(item_id)})
+        item = db["items"].find_one({"_id": ObjectId(item_id)})
         if not item:
             return create_response(404, "Item no encontrado.")
         
@@ -121,7 +146,7 @@ def update_stock_handler(event, context):
             return create_response(400, "Este item no maneja inventario.")
 
         # Actualizar stock con $inc
-        result = db.items.find_one_and_update(
+        result = db["items"].find_one_and_update(
             {"_id": ObjectId(item_id)},
             {"$inc": {"stock": cantidad}},
             return_document=True
