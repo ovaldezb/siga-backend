@@ -89,7 +89,10 @@ def create_cliente_handler(event, context):
             "apellido_materno": body.get('apellido_materno'),
             "telefono": body['telefono'],
             "email": body.get('email'),
-            "direccion": body.get('direccion'),
+            "rfc": body.get('rfc'),
+            "razon_social": body.get('razon_social'),
+            "regimen_fiscal": body.get('regimen_fiscal'),
+            "codigo_postal": body.get('codigo_postal'),
             "tipo_persona": body.get('tipo_persona', 'FISICA'),
             "createdAt": datetime.utcnow().isoformat(),
             "tenant_id": tenant_id

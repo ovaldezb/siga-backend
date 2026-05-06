@@ -11,20 +11,16 @@ class MongoDBConnection:
     def get_client(cls) -> MongoClient:
         if cls._instance is None:
             try:
-                # Prioritize MONGO_URI from env
-                mongo_uri = os.environ.get("MONGO_URI")
-                
-                # If not found, try to construct it from individual components
-                if not mongo_uri:
-                    user = os.environ.get("MONGO_USER")
-                    password = os.environ.get("MONGO_PASSWORD")
-                    host = os.environ.get("MONGO_HOST")
-                    db_name = os.environ.get("MONGO_DB", "siga")
-                    
-                    if user and password and host:
-                        mongo_uri = f"mongodb+srv://{user}:{password}@{host}/{db_name}?retryWrites=true&w=majority"
-                    else:
-                        raise ValueError("No MongoDB connection string or components found in environment variables.")
+                # Construct the MongoDB URI from individual components
+                user = os.environ.get("MONGO_USER")
+                password = os.environ.get("MONGO_PASSWORD")
+                host = os.environ.get("MONGO_HOST")
+                db_name = os.environ.get("MONGO_DB", "siga")
+
+                if user and password and host:
+                    mongo_uri = f"mongodb+srv://{user}:{password}@{host}/{db_name}?retryWrites=true&w=majority"
+                else:
+                    raise ValueError("No MongoDB connection string or components found in environment variables.")
 
                 logger.info("Connecting to MongoDB Atlas...")
                 cls._instance = MongoClient(mongo_uri)

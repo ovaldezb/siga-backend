@@ -151,14 +151,16 @@ def get_my_modulos_handler(event, context):
             return create_response(200, "Módulos para admin global", {"modulos": ["*"]})
 
         db = get_platform_db()
-        taller = db["talleres"].find_one({"tenantId": tenant_id}, {"_id": 0, "modulos": 1, "estado": 1})
+        taller = db["talleres"].find_one({"tenantId": tenant_id}, {"_id": 0, "modulos": 1, "estado": 1, "logoUrl": 1, "nombreComercial": 1})
 
         if not taller:
             return create_response(404, "Taller no encontrado")
 
         return create_response(200, "Configuración recuperada", {
             "modulos": taller.get("modulos", []),
-            "estado": taller.get("estado", "ACTIVO")
+            "estado": taller.get("estado", "ACTIVO"),
+            "logoUrl": taller.get("logoUrl"),
+            "nombreTaller": taller.get("nombreComercial", "SIGA")
         })
 
     except Exception as e:
@@ -200,7 +202,17 @@ def update_taller_handler(event, context):
         if result.matched_count == 0:
             return create_response(404, "Taller no encontrado")
 
-        return create_response(200, "Taller actualizado exitosamente")
+        # Recuperar el taller actualizado para devolverlo
+        updated_taller = db["talleres"].find_one({"_id": ObjectId(taller_id)})
+        updated_taller["id"] = str(updated_taller["_id"])
+        del updated_taller["_id"]
+        
+        # Normalizar fechas
+        for key, value in updated_taller.items():
+            if isinstance(value, datetime):
+                updated_taller[key] = value.isoformat()
+
+        return create_response(200, "Taller actualizado exitosamente", updated_taller)
 
     except Exception as e:
         logger.error(f"Error in update_taller: {str(e)}")
@@ -216,65 +228,88 @@ def upload_logo_handler(event, context):
         import io
         import base64
 
+        logger.info("Iniciando carga de logotipo")
         taller_id = event.get('pathParameters', {}).get('id')
         if not taller_id:
             return create_response(400, "ID de taller no proporcionado")
 
-        body = json.loads(event.get("body") or "{}")
+        # Intentar obtener el cuerpo de forma segura
+        body_raw = event.get("body")
+        if event.get("isBase64Encoded"):
+            body_raw = base64.b64decode(body_raw).decode('utf-8')
+        
+        body = json.loads(body_raw or "{}")
         image_base64 = body.get("image")
 
         if not image_base64:
+            logger.warning("No se proporcionó imagen en el cuerpo")
             return create_response(400, "Imagen no proporcionada")
 
         # Limpiar prefijo base64 si existe (data:image/png;base64,...)
         if "," in image_base64:
             image_base64 = image_base64.split(",")[1]
 
-        # 1. Obtener información del taller (necesitamos el tenantId)
+        # 1. Obtener información del taller
         db = get_platform_db()
-        taller = db["talleres"].find_one({"_id": ObjectId(taller_id)})
+        try:
+            obj_id = ObjectId(taller_id)
+        except Exception:
+            logger.error(f"ID de taller inválido: {taller_id}")
+            return create_response(400, "ID de taller inválido")
+
+        taller = db["talleres"].find_one({"_id": obj_id})
         if not taller:
             return create_response(404, "Taller no encontrado")
 
         tenant_id = taller["tenantId"]
+        logger.info(f"Procesando logo para tenant: {tenant_id}")
 
         # 2. Procesar imagen con Pillow
-        image_data = base64.b64decode(image_base64)
-        img = Image.open(io.BytesIO(image_data))
-        
-        # Convertir a RGB si es necesario (para evitar problemas con canales alfa en algunos formatos)
-        if img.mode in ("RGBA", "P"):
-            img = img.convert("RGBA")
-        
-        # Redimensionar (máximo 400x200 manteniendo proporción)
-        img.thumbnail((400, 200))
-        
-        # Guardar en buffer
-        output = io.BytesIO()
-        img.save(output, format='PNG', optimize=True)
-        output.seek(0)
+        try:
+            image_data = base64.b64decode(image_base64)
+            img = Image.open(io.BytesIO(image_data))
+            
+            # Convertir a RGB si es necesario
+            if img.mode in ("RGBA", "P"):
+                img = img.convert("RGB") # Cambiado a RGB para mayor compatibilidad
+            
+            # Redimensionar (máximo 400x200 manteniendo proporción)
+            img.thumbnail((400, 200))
+            
+            # Guardar en buffer
+            output = io.BytesIO()
+            img.save(output, format='JPEG', quality=85) # Cambiado a JPEG para simplificar
+            output.seek(0)
+            content_type = 'image/jpeg'
+            ext = 'jpg'
+        except Exception as img_err:
+            logger.error(f"Error procesando imagen con Pillow: {str(img_err)}")
+            return create_response(400, f"Error al procesar la imagen: {str(img_err)}")
 
         # 3. Subir a S3
         s3 = boto3.client('s3')
         bucket = os.environ.get('S3_MEDIA_BUCKET')
-        key = f"logotipos/logo_{tenant_id}.png"
+        key = f"logotipos/logo_{tenant_id}.{ext}"
 
+        logger.info(f"Subiendo a S3: {bucket}/{key}")
+        
+        # Subir sin ACL público para evitar errores de Block Public Access
         s3.put_object(
             Bucket=bucket,
             Key=key,
             Body=output,
-            ContentType='image/png',
-            ACL='public-read'
+            ContentType=content_type
         )
 
         logo_url = f"https://{bucket}.s3.amazonaws.com/{key}?t={int(datetime.utcnow().timestamp())}"
 
         # 4. Actualizar URL en BD
         db["talleres"].update_one(
-            {"_id": ObjectId(taller_id)},
+            {"_id": obj_id},
             {"$set": {"logoUrl": logo_url}}
         )
 
+        logger.info("Logotipo actualizado exitosamente")
         return create_response(200, "Logotipo actualizado", {"logoUrl": logo_url})
 
     except Exception as e:

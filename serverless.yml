@@ -36,7 +36,6 @@ provider:
             - !Sub "arn:aws:s3:::${self:service}-${self:provider.stage}-media/*"
   environment:
     STAGE: ${self:provider.stage}
-    MONGO_URI: ${env:MONGO_URI, ''}
     MONGO_USER: ${env:MONGO_USER, ''}
     MONGO_PASSWORD: ${env:MONGO_PASSWORD, ''}
     MONGO_HOST: ${env:MONGO_HOST, ''}
@@ -436,16 +435,63 @@ functions:
 
 resources:
   Resources:
-    # S3 Bucket for Images and Videos
     S3BucketImages:
       Type: AWS::S3::Bucket
       Properties:
         BucketName: ${self:service}-${self:provider.stage}-media
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: false
+          BlockPublicPolicy: false
+          IgnorePublicAcls: false
+          RestrictPublicBuckets: false
         CorsConfiguration:
           CorsRules:
             - AllowedHeaders: ['*']
               AllowedMethods: [GET, PUT, POST, DELETE, HEAD]
               AllowedOrigins: ['*']
+
+    S3BucketPolicy:
+      Type: AWS::S3::BucketPolicy
+      Properties:
+        Bucket: !Ref S3BucketImages
+        PolicyDocument:
+          Statement:
+            - Action:
+                - s3:GetObject
+              Effect: Allow
+              Resource: !Sub "arn:aws:s3:::${self:service}-${self:provider.stage}-media/logotipos/*"
+              Principal: "*"
+
+    # Bucket para el Frontend (Hosting estático)
+    S3BucketWeb:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:service}-${self:provider.stage}-frontend
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: false
+          BlockPublicPolicy: false
+          IgnorePublicAcls: false
+          RestrictPublicBuckets: false
+        WebsiteConfiguration:
+          IndexDocument: index.html
+          ErrorDocument: index.html
+        CorsConfiguration:
+          CorsRules:
+            - AllowedHeaders: ['*']
+              AllowedMethods: [GET]
+              AllowedOrigins: ['*']
+
+    S3BucketWebPolicy:
+      Type: AWS::S3::BucketPolicy
+      Properties:
+        Bucket: !Ref S3BucketWeb
+        PolicyDocument:
+          Statement:
+            - Action:
+                - s3:GetObject
+              Effect: Allow
+              Resource: !Sub "arn:aws:s3:::${self:service}-${self:provider.stage}-frontend/*"
+              Principal: "*"
 
     # Cognito User Pool
     CognitoUserPool:

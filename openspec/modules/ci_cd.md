@@ -48,7 +48,6 @@ Para que GitHub Actions pueda interactuar con AWS y configurar la aplicación, s
 
 ### Variables de Aplicación (Base de Datos)
 Estas variables se pasan al entorno de ejecución de Lambda a través de Serverless:
-- `MONGO_URI`: URI de conexión a MongoDB.
 - `MONGO_USER`: Usuario de la base de datos.
 - `MONGO_PASSWORD`: Contraseña de la base de datos.
 - `MONGO_HOST`: Host de la base de datos.
