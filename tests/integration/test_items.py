@@ -6,7 +6,7 @@ def test_create_producto_success(mock_db):
     event = {
         "body": json.dumps({
             "tipo": "PRODUCTO",
-            "codigo": "ACE-01",
+            "no_parte": "ACE-01",
             "nombre": "Aceite Sintético",
             "precio_venta": 250,
             "stock": 10,
@@ -32,7 +32,7 @@ def test_create_servicio_forces_no_inventory(mock_db):
     event = {
         "body": json.dumps({
             "tipo": "SERVICIO",
-            "codigo": "MANO-01",
+            "no_parte": "MANO-01",
             "nombre": "Limpieza Inyectores",
             "precio_venta": 800,
             "stock": 999, # Debe ser ignorado

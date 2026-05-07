@@ -94,6 +94,7 @@ def create_cliente_handler(event, context):
             "regimen_fiscal": body.get('regimen_fiscal'),
             "codigo_postal": body.get('codigo_postal'),
             "tipo_persona": body.get('tipo_persona', 'FISICA'),
+            "vehiculos_resumen": [],
             "createdAt": datetime.utcnow().isoformat(),
             "tenant_id": tenant_id
         }
@@ -150,7 +151,23 @@ def add_vehiculo_handler(event, context):
             "createdAt": datetime.utcnow().isoformat()
         }
         
+        # Insertar en colección de vehículos
+        result = db.vehiculos.insert_one(nuevo_vehiculo)
+        nuevo_vehiculo['id'] = str(result.inserted_id)
         if '_id' in nuevo_vehiculo: del nuevo_vehiculo['_id']
+        
+        # Actualizar resumen en el cliente
+        vehiculo_resumen = {
+            "id": nuevo_vehiculo['id'],
+            "placas": nuevo_vehiculo['placas'],
+            "marca": nuevo_vehiculo['marca'],
+            "modelo": nuevo_vehiculo['modelo'],
+            "año": nuevo_vehiculo['año']
+        }
+        db.clientes.update_one(
+            {"_id": ObjectId(cliente_id)},
+            {"$push": {"vehiculos_resumen": vehiculo_resumen}}
+        )
         
         return create_response(201, "Vehículo registrado correctamente", nuevo_vehiculo)
     except Exception as e:
