@@ -151,7 +151,7 @@ def get_my_modulos_handler(event, context):
             return create_response(200, "Módulos para admin global", {"modulos": ["*"]})
 
         db = get_platform_db()
-        taller = db["talleres"].find_one({"tenantId": tenant_id}, {"_id": 0, "modulos": 1, "estado": 1, "logoUrl": 1, "nombreComercial": 1})
+        taller = db["talleres"].find_one({"tenantId": tenant_id}, {"_id": 0, "modulos": 1, "estado": 1, "logoUrl": 1, "nombreComercial": 1, "direccion": 1, "adminTelefono": 1})
 
         if not taller:
             return create_response(404, "Taller no encontrado")
@@ -160,7 +160,9 @@ def get_my_modulos_handler(event, context):
             "modulos": taller.get("modulos", []),
             "estado": taller.get("estado", "ACTIVO"),
             "logoUrl": taller.get("logoUrl"),
-            "nombreTaller": taller.get("nombreComercial", "SIGA")
+            "nombreTaller": taller.get("nombreComercial", "SIGA"),
+            "direccion": taller.get("direccion", "Dirección no especificada"),
+            "adminTelefono": taller.get("adminTelefono", "Teléfono no especificado")
         })
 
     except Exception as e:
