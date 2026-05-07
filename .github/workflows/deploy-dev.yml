@@ -55,4 +55,4 @@ jobs:
           done < .env
 
       - name: Serverless Deploy
-        run: npx sls deploy --stage dev --alias current
+        run: npx sls deploy --stage dev

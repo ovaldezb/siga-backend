@@ -46,7 +46,6 @@ provider:
 
 plugins:
   - serverless-python-requirements
-  - serverless-aws-alias
 
 custom:
   pythonRequirements:
