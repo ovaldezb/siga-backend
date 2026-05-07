@@ -27,6 +27,12 @@ jobs:
       - name: Install Node dependencies
         run: npm install
 
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run Tests
+        run: pytest
+
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -45,4 +51,4 @@ jobs:
           done < .env
 
       - name: Serverless Deploy
-        run: npx sls deploy --stage dev
+        run: npx sls deploy --stage dev --alias current
