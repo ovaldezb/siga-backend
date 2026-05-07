@@ -228,6 +228,36 @@ def create_vehiculo_handler(event, context):
         return handle_exception(e)
 
 @logger.inject_lambda_context
+def delete_vehiculo_handler(event, context):
+    """DELETE /vehiculos/{id} — Elimina un vehículo (bloqueado si tiene OS)."""
+    try:
+        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        tenant_id = claims.get('custom:tenant_id')
+
+        if not tenant_id:
+            return create_response(403, "No se encontró un tenantId asociado.")
+
+        vehiculo_id = event['pathParameters']['id']
+        db = get_tenant_db(tenant_id)
+
+        ordenes_count = db["ordenes_servicio"].count_documents({"vehiculo_id": vehiculo_id})
+        if ordenes_count > 0:
+            return create_response(
+                409,
+                f"No se puede eliminar: el vehículo tiene {ordenes_count} orden(es) de servicio asociadas."
+            )
+
+        result = db["vehiculos"].delete_one({"_id": ObjectId(vehiculo_id)})
+        if result.deleted_count == 0:
+            return create_response(404, "Vehículo no encontrado.")
+
+        return create_response(200, "Vehículo eliminado")
+
+    except Exception as e:
+        return handle_exception(e)
+
+
+@logger.inject_lambda_context
 def update_vehiculo_handler(event, context):
     """PUT /vehiculos/{id} — Actualiza un vehículo existente."""
     try:

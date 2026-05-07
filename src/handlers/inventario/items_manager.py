@@ -123,8 +123,85 @@ def create_item_handler(event, context):
         
         return create_response(201, "Item creado exitosamente", nuevo_item)
     except Exception as e:
-        logger.error(f"Error en create_item: {str(e)}", exc_info=True)
-        return create_response(500, f"Error interno: {str(e)}")
+        return handle_exception(e)
+
+def get_item_handler(event, context):
+    try:
+        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        tenant_id = claims.get('custom:tenant_id')
+        if not tenant_id:
+            return create_response(403, "No se encontró un tenantId asociado.")
+
+        item_id = event['pathParameters']['id']
+        db = get_tenant_db(tenant_id)
+        item = db["items"].find_one({"_id": ObjectId(item_id)})
+
+        if not item:
+            return create_response(404, "Item no encontrado.")
+
+        item['id'] = str(item.pop('_id'))
+        return create_response(200, "Detalle del item", item)
+    except Exception as e:
+        return handle_exception(e)
+
+
+def update_item_handler(event, context):
+    """PUT /items/{id} — Actualiza datos del item (no incluye stock)."""
+    try:
+        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        tenant_id = claims.get('custom:tenant_id')
+        if not tenant_id:
+            return create_response(403, "No se encontró un tenantId asociado.")
+
+        item_id = event['pathParameters']['id']
+        body = json.loads(event.get('body', '{}'))
+
+        allowed = {
+            "nombre", "no_parte", "tipo", "precio_venta", "precio_compra",
+            "categoria", "marca", "proveedor", "clave_sat", "unidad_sat",
+            "maneja_inventario", "activo"
+        }
+        update_data = {k: body[k] for k in allowed if k in body}
+
+        if not update_data:
+            return create_response(400, "No hay campos válidos para actualizar.")
+
+        update_data['updatedAt'] = datetime.utcnow().isoformat() + "Z"
+
+        db = get_tenant_db(tenant_id)
+        result = db["items"].update_one(
+            {"_id": ObjectId(item_id)},
+            {"$set": update_data}
+        )
+
+        if result.matched_count == 0:
+            return create_response(404, "Item no encontrado.")
+
+        item = db["items"].find_one({"_id": ObjectId(item_id)})
+        item['id'] = str(item.pop('_id'))
+        return create_response(200, "Item actualizado", item)
+    except Exception as e:
+        return handle_exception(e)
+
+
+def delete_item_handler(event, context):
+    try:
+        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        tenant_id = claims.get('custom:tenant_id')
+        if not tenant_id:
+            return create_response(403, "No se encontró un tenantId asociado.")
+
+        item_id = event['pathParameters']['id']
+        db = get_tenant_db(tenant_id)
+        result = db["items"].delete_one({"_id": ObjectId(item_id)})
+
+        if result.deleted_count == 0:
+            return create_response(404, "Item no encontrado.")
+
+        return create_response(200, "Item eliminado")
+    except Exception as e:
+        return handle_exception(e)
+
 
 def update_stock_handler(event, context):
     try:

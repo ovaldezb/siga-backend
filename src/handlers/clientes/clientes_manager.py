@@ -3,10 +3,17 @@ import uuid
 from datetime import datetime
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
+from src.shared.utils.auth_utils import parse_object_id
 from src.shared.infrastructure.database import get_tenant_db
 from bson import ObjectId
+from pymongo import ReturnDocument
 
 logger = Logger()
+
+ALLOWED_UPDATE_FIELDS = {
+    "nombre", "apellido_paterno", "apellido_materno", "telefono", "email",
+    "rfc", "razon_social", "regimen_fiscal", "codigo_postal", "tipo_persona"
+}
 
 def list_clientes_handler(event, context):
     try:
@@ -112,15 +119,87 @@ def get_cliente_handler(event, context):
         claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
         tenant_id = claims.get('custom:tenant_id')
         cliente_id = event['pathParameters']['id']
-        
+
+        object_id, err = parse_object_id(cliente_id)
+        if err:
+            return create_response(400, err)
+
         db = get_tenant_db(tenant_id)
-        cliente = db.clientes.find_one({"_id": ObjectId(cliente_id)})
-        
+        cliente = db.clientes.find_one({"_id": object_id})
+
         if not cliente:
             return create_response(404, "Cliente no encontrado.")
-            
+
         cliente['id'] = str(cliente.pop('_id'))
         return create_response(200, "Detalle del cliente", cliente)
+    except Exception as e:
+        return handle_exception(e)
+
+
+def update_cliente_handler(event, context):
+    try:
+        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        tenant_id = claims.get('custom:tenant_id')
+
+        if not tenant_id:
+            return create_response(403, "No se encontró un tenantId asociado.")
+
+        cliente_id = event['pathParameters']['id']
+        object_id, err = parse_object_id(cliente_id)
+        if err:
+            return create_response(400, err)
+
+        body = json.loads(event.get('body', '{}'))
+        update_doc = {k: body[k] for k in ALLOWED_UPDATE_FIELDS if k in body}
+
+        if not update_doc:
+            return create_response(400, "No hay campos válidos para actualizar.")
+
+        update_doc['updatedAt'] = datetime.utcnow().isoformat()
+
+        db = get_tenant_db(tenant_id)
+        result = db.clientes.find_one_and_update(
+            {"_id": object_id},
+            {"$set": update_doc},
+            return_document=ReturnDocument.AFTER
+        )
+
+        if not result:
+            return create_response(404, "Cliente no encontrado.")
+
+        result['id'] = str(result.pop('_id'))
+        return create_response(200, "Cliente actualizado", result)
+    except Exception as e:
+        return handle_exception(e)
+
+
+def delete_cliente_handler(event, context):
+    try:
+        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        tenant_id = claims.get('custom:tenant_id')
+
+        if not tenant_id:
+            return create_response(403, "No se encontró un tenantId asociado.")
+
+        cliente_id = event['pathParameters']['id']
+        object_id, err = parse_object_id(cliente_id)
+        if err:
+            return create_response(400, err)
+
+        db = get_tenant_db(tenant_id)
+
+        vehiculos_count = db.vehiculos.count_documents({"cliente_id": cliente_id})
+        if vehiculos_count > 0:
+            return create_response(
+                409,
+                f"No se puede eliminar: el cliente tiene {vehiculos_count} vehículo(s) asociado(s)."
+            )
+
+        result = db.clientes.delete_one({"_id": object_id})
+        if result.deleted_count == 0:
+            return create_response(404, "Cliente no encontrado.")
+
+        return create_response(200, "Cliente eliminado")
     except Exception as e:
         return handle_exception(e)
 

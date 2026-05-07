@@ -195,6 +195,34 @@ functions:
             type: COGNITO_USER_POOLS
             arn: !GetAtt CognitoUserPool.Arn
 
+  clientes_update:
+    handler: src/handlers/clientes/clientes_manager.update_cliente_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: clientes/{id}
+          method: put
+          cors: true
+          authorizer:
+            name: cognitoAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: !GetAtt CognitoUserPool.Arn
+
+  clientes_delete:
+    handler: src/handlers/clientes/clientes_manager.delete_cliente_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: clientes/{id}
+          method: delete
+          cors: true
+          authorizer:
+            name: cognitoAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: !GetAtt CognitoUserPool.Arn
+
   items_list:
     handler: src/handlers/inventario/items_manager.list_items_handler
     layers:
@@ -231,6 +259,48 @@ functions:
       - http:
           path: items/{id}/stock
           method: patch
+          cors: true
+          authorizer:
+            name: cognitoAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: !GetAtt CognitoUserPool.Arn
+
+  items_get:
+    handler: src/handlers/inventario/items_manager.get_item_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: items/{id}
+          method: get
+          cors: true
+          authorizer:
+            name: cognitoAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: !GetAtt CognitoUserPool.Arn
+
+  items_update:
+    handler: src/handlers/inventario/items_manager.update_item_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: items/{id}
+          method: put
+          cors: true
+          authorizer:
+            name: cognitoAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: !GetAtt CognitoUserPool.Arn
+
+  items_delete:
+    handler: src/handlers/inventario/items_manager.delete_item_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: items/{id}
+          method: delete
           cors: true
           authorizer:
             name: cognitoAuthorizer
@@ -377,6 +447,20 @@ functions:
             type: COGNITO_USER_POOLS
             arn: !GetAtt CognitoUserPool.Arn
 
+  ordenes_get:
+    handler: src/handlers/ordenes/ordenes_manager.get_orden_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: ordenes/{id}
+          method: get
+          cors: true
+          authorizer:
+            name: cognitoAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: !GetAtt CognitoUserPool.Arn
+
   list_vehiculos:
     handler: src/handlers/vehiculos/vehiculos_manager.list_vehiculos_handler
     layers:
@@ -427,6 +511,20 @@ functions:
       - http:
           path: vehiculos/{id}
           method: put
+          cors: true
+          authorizer:
+            name: cognitoAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: !GetAtt CognitoUserPool.Arn
+
+  vehiculos_delete:
+    handler: src/handlers/vehiculos/vehiculos_manager.delete_vehiculo_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: vehiculos/{id}
+          method: delete
           cors: true
           authorizer:
             name: cognitoAuthorizer

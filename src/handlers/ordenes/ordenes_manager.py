@@ -213,6 +213,47 @@ def list_ordenes_handler(event, context):
     except Exception as e:
         return handle_exception(e)
 @logger.inject_lambda_context
+def get_orden_handler(event, context):
+    """GET /ordenes/{id} — Detalle de orden con vehículo enriquecido."""
+    try:
+        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        tenant_id = claims.get('custom:tenant_id')
+        if not tenant_id:
+            return create_response(403, "No se encontró un tenantId asociado.")
+
+        orden_id = event['pathParameters']['id']
+        db = get_tenant_db(tenant_id)
+
+        orden = db["ordenes_servicio"].find_one({"_id": ObjectId(orden_id)})
+        if not orden:
+            return create_response(404, "Orden no encontrada.")
+
+        orden['id'] = str(orden.pop('_id'))
+
+        v_id = orden.get('vehiculo_id')
+        if v_id and isinstance(v_id, str) and len(v_id) == 24:
+            try:
+                vehiculo = db["vehiculos"].find_one({"_id": ObjectId(v_id)})
+                if vehiculo:
+                    vehiculo['id'] = str(vehiculo.pop('_id'))
+                    if 'createdAt' in vehiculo and isinstance(vehiculo['createdAt'], datetime):
+                        vehiculo['createdAt'] = vehiculo['createdAt'].isoformat()
+                    if 'updatedAt' in vehiculo and isinstance(vehiculo['updatedAt'], datetime):
+                        vehiculo['updatedAt'] = vehiculo['updatedAt'].isoformat()
+                    orden['vehiculo_snapshot'] = vehiculo
+            except Exception:
+                pass
+
+        for f in ('createdAt', 'updatedAt'):
+            if f in orden and isinstance(orden[f], datetime):
+                orden[f] = orden[f].isoformat()
+
+        return create_response(200, "Orden obtenida", orden)
+    except Exception as e:
+        return handle_exception(e)
+
+
+@logger.inject_lambda_context
 def update_orden_handler(event, context):
     try:
         claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
