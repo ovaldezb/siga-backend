@@ -1,9 +1,9 @@
-name: Deploy Backend (Dev)
+name: Deploy Backend (Prod)
 
 on:
   push:
     branches:
-      - develop # Cambia a 'development' si tu rama se llama así
+      - main
 
 jobs:
   deploy:
@@ -36,7 +36,7 @@ jobs:
 
       - name: Parse and Load .env
         run: |
-          echo "${{ secrets.ENV_FILE_DEV }}" > .env
+          echo "${{ secrets.ENV_FILE_PROD }}" > .env
           # Opcional: Inyectar las variables directamente al entorno de GitHub Actions (por si otro script las necesita)
           while IFS= read -r line || [ -n "$line" ]; do
             if [[ -n "$line" && "$line" != \#* ]]; then
@@ -45,4 +45,4 @@ jobs:
           done < .env
 
       - name: Serverless Deploy
-        run: npx sls deploy --stage dev
+        run: npx sls deploy --stage prod
