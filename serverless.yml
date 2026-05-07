@@ -462,36 +462,6 @@ resources:
               Resource: !Sub "arn:aws:s3:::${self:service}-${self:provider.stage}-media/logotipos/*"
               Principal: "*"
 
-    # Bucket para el Frontend (Hosting estático)
-    S3BucketWeb:
-      Type: AWS::S3::Bucket
-      Properties:
-        BucketName: ${self:service}-${self:provider.stage}-frontend
-        PublicAccessBlockConfiguration:
-          BlockPublicAcls: false
-          BlockPublicPolicy: false
-          IgnorePublicAcls: false
-          RestrictPublicBuckets: false
-        WebsiteConfiguration:
-          IndexDocument: index.html
-          ErrorDocument: index.html
-        CorsConfiguration:
-          CorsRules:
-            - AllowedHeaders: ['*']
-              AllowedMethods: [GET]
-              AllowedOrigins: ['*']
-
-    S3BucketWebPolicy:
-      Type: AWS::S3::BucketPolicy
-      Properties:
-        Bucket: !Ref S3BucketWeb
-        PolicyDocument:
-          Statement:
-            - Action:
-                - s3:GetObject
-              Effect: Allow
-              Resource: !Sub "arn:aws:s3:::${self:service}-${self:provider.stage}-frontend/*"
-              Principal: "*"
 
     # Cognito User Pool
     CognitoUserPool:
