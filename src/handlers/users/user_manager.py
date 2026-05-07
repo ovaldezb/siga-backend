@@ -4,6 +4,7 @@ import boto3
 from typing import Dict, Any, List
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
+from src.shared.utils.auth_utils import parse_object_id
 from src.shared.infrastructure.database import get_tenant_db
 
 logger = Logger()
@@ -121,70 +122,80 @@ def update_user_handler(event, context):
     try:
         claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
         tenant_id = claims.get('custom:tenant_id')
-        
+
         if not tenant_id:
             return create_response(403, "No se encontró un tenantId válido para realizar esta acción.")
 
         user_id = event['pathParameters']['id']
         body = json.loads(event.get('body', '{}'))
-        
+
+        # El path id es el _id de Mongo; Cognito usa email como Username.
+        object_id, err = parse_object_id(user_id)
+        if err:
+            return create_response(400, err)
+
+        tenant_db = get_tenant_db(tenant_id)
+        mongo_user = tenant_db["usuarios"].find_one({"_id": object_id})
+        if not mongo_user:
+            return create_response(404, "Usuario no encontrado.")
+
+        cognito_username = mongo_user.get('email')
+        if not cognito_username:
+            return create_response(409, "El usuario no tiene email registrado, no se puede sincronizar con Cognito.")
+
         attributes = []
         if 'nombre' in body: attributes.append({'Name': 'given_name', 'Value': body['nombre']})
         if 'apellido' in body: attributes.append({'Name': 'family_name', 'Value': body['apellido']})
-        
+
         if 'telefono' in body:
             telefono = body['telefono']
             if telefono and not telefono.startswith('+'):
                 telefono = '+52' + telefono
             attributes.append({'Name': 'phone_number', 'Value': telefono})
-        
+
         if attributes:
             client.admin_update_user_attributes(
                 UserPoolId=USER_POOL_ID,
-                Username=user_id,
+                Username=cognito_username,
                 UserAttributes=attributes
             )
-            
+
         if 'grupo' in body:
             new_group = body['grupo']
             try:
-                # Quitar grupos anteriores
-                groups_res = client.admin_list_groups_for_user(UserPoolId=USER_POOL_ID, Username=user_id)
+                groups_res = client.admin_list_groups_for_user(UserPoolId=USER_POOL_ID, Username=cognito_username)
                 for g in groups_res.get('Groups', []):
                     client.admin_remove_user_from_group(
                         UserPoolId=USER_POOL_ID,
-                        Username=user_id,
+                        Username=cognito_username,
                         GroupName=g['GroupName']
                     )
-                # Asignar nuevo grupo
                 client.admin_add_user_to_group(
                     UserPoolId=USER_POOL_ID,
-                    Username=user_id,
+                    Username=cognito_username,
                     GroupName=new_group
                 )
             except Exception as e:
-                logger.warning(f"Error al cambiar el grupo del usuario {user_id}: {e}")
+                logger.warning(f"Error al cambiar el grupo del usuario {cognito_username}: {e}")
 
         if 'activo' in body:
             if body['activo']:
-                client.admin_enable_user(UserPoolId=USER_POOL_ID, Username=user_id)
+                client.admin_enable_user(UserPoolId=USER_POOL_ID, Username=cognito_username)
             else:
-                client.admin_disable_user(UserPoolId=USER_POOL_ID, Username=user_id)
-        
-        # Sincronizar actualización en MongoDB
-        tenant_db = get_tenant_db(tenant_id)
+                client.admin_disable_user(UserPoolId=USER_POOL_ID, Username=cognito_username)
+
         update_data = {}
         if 'nombre' in body: update_data['nombre'] = body['nombre']
         if 'apellido' in body: update_data['apellido'] = body['apellido']
         if 'telefono' in body: update_data['telefono'] = body['telefono']
         if 'grupo' in body: update_data['grupo'] = body['grupo']
         if 'activo' in body: update_data['activo'] = body['activo']
-        
+
         if update_data:
-            from bson import ObjectId
-            tenant_db["usuarios"].update_one({"_id": ObjectId(user_id)}, {"$set": update_data})
-            
+            tenant_db["usuarios"].update_one({"_id": object_id}, {"$set": update_data})
+
         body['id'] = user_id
+        body['email'] = cognito_username
         return create_response(200, "Usuario actualizado", body)
     except Exception as e:
         return handle_exception(e)
