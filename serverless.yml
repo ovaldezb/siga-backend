@@ -34,6 +34,12 @@ provider:
             - "s3:PutObjectAcl"
           Resource: 
             - !Sub "arn:aws:s3:::${self:service}-${self:provider.stage}-media/*"
+        - Effect: "Allow"
+          Action:
+            - "s3:PutObject"
+            - "s3:GetObject"
+          Resource: 
+            - !Sub "arn:aws:s3:::${self:service}-${self:provider.stage}-evidencia/*"
   environment:
     STAGE: ${self:provider.stage}
     MONGO_USER: ${env:MONGO_USER, ''}
@@ -43,6 +49,7 @@ provider:
     COGNITO_USER_POOL_ID: !Ref CognitoUserPool
     COGNITO_CLIENT_ID: !Ref CognitoUserPoolClient
     S3_MEDIA_BUCKET: ${self:service}-${self:provider.stage}-media
+    S3_EVIDENCIA_BUCKET: ${self:service}-${self:provider.stage}-evidencia
 
 plugins:
   - serverless-python-requirements
@@ -461,6 +468,48 @@ functions:
             type: COGNITO_USER_POOLS
             arn: !GetAtt CognitoUserPool.Arn
 
+  ordenes_get_upload_url:
+    handler: src/handlers/ordenes/evidencia_manager.get_upload_url_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: ordenes/{id}/evidencia/upload-url
+          method: post
+          cors: true
+          authorizer:
+            name: cognitoAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: !GetAtt CognitoUserPool.Arn
+
+  ordenes_add_evidencia:
+    handler: src/handlers/ordenes/evidencia_manager.add_evidencia_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: ordenes/{id}/evidencia
+          method: post
+          cors: true
+          authorizer:
+            name: cognitoAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: !GetAtt CognitoUserPool.Arn
+
+  ordenes_list_evidencia:
+    handler: src/handlers/ordenes/evidencia_manager.list_evidencia_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: ordenes/{id}/evidencia
+          method: get
+          cors: true
+          authorizer:
+            name: cognitoAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: !GetAtt CognitoUserPool.Arn
+
   list_vehiculos:
     handler: src/handlers/vehiculos/vehiculos_manager.list_vehiculos_handler
     layers:
@@ -699,6 +748,22 @@ resources:
               Effect: Allow
               Resource: !Sub "arn:aws:s3:::${self:service}-${self:provider.stage}-media/logotipos/*"
               Principal: "*"
+
+    S3BucketEvidencia:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:service}-${self:provider.stage}-evidencia
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: true
+          BlockPublicPolicy: true
+          IgnorePublicAcls: true
+          RestrictPublicBuckets: true
+        CorsConfiguration:
+          CorsRules:
+            - AllowedHeaders: ['*']
+              AllowedMethods: [GET, PUT, POST, DELETE, HEAD]
+              AllowedOrigins: ['*']
+              MaxAge: 3000
 
 
     # Cognito User Pool
