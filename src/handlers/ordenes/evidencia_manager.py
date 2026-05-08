@@ -25,14 +25,22 @@ def get_upload_url_handler(event, context):
         if not tenant_id or not orden_id or not file_name:
             return create_response(400, "Parámetros insuficientes")
 
+        db = get_tenant_db(tenant_id)
+        orden = db["ordenes"].find_one({"_id": ObjectId(orden_id)}, {"folio": 1})
+        folio = orden.get("folio", orden_id) if orden else orden_id
+
+        # Ajustar tenant_id (usar la mitad si es muy grande)
+        short_tenant = tenant_id
+        if len(tenant_id) > 16:
+            short_tenant = tenant_id[:len(tenant_id)//2]
+
         s3 = boto3.client('s3')
         bucket = os.environ.get('S3_EVIDENCIA_BUCKET')
         
-        # Estructura: evidencias/{tenant_id}/{orden_id}/{timestamp}_{file_name}
-        timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+        # Estructura: {TENANT_ID}/{NUMERO_OS}/{file_name}
         # Limpiar nombre de archivo para evitar problemas en S3
         safe_file_name = "".join([c if c.isalnum() or c in "._-" else "_" for c in file_name])
-        key = f"evidencias/{tenant_id}/{orden_id}/{timestamp}_{safe_file_name}"
+        key = f"{short_tenant}/{folio}/{safe_file_name}"
         
         url = s3.generate_presigned_url(
             'put_object',
