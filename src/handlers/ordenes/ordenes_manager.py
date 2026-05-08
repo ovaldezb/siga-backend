@@ -201,6 +201,13 @@ def list_ordenes_handler(event, context):
                 o['createdAt'] = o['createdAt'].isoformat()
             if 'updatedAt' in o and isinstance(o['updatedAt'], datetime):
                 o['updatedAt'] = o['updatedAt'].isoformat()
+
+            # Serializar evidencias si existen
+            if 'evidencia' in o and isinstance(o['evidencia'], list):
+                for ev in o['evidencia']:
+                    if 'createdAt' in ev and isinstance(ev['createdAt'], datetime):
+                        ev['createdAt'] = ev['createdAt'].isoformat()
+
             ordenes.append(o)
             
         response_data = {
@@ -249,6 +256,12 @@ def get_orden_handler(event, context):
         for f in ('createdAt', 'updatedAt'):
             if f in orden and isinstance(orden[f], datetime):
                 orden[f] = orden[f].isoformat()
+
+        # Serializar evidencias si existen
+        if 'evidencia' in orden and isinstance(orden['evidencia'], list):
+            for ev in orden['evidencia']:
+                if 'createdAt' in ev and isinstance(ev['createdAt'], datetime):
+                    ev['createdAt'] = ev['createdAt'].isoformat()
 
         return create_response(200, "Orden obtenida", orden)
     except Exception as e:

@@ -27,7 +27,8 @@ def get_upload_url_handler(event, context):
 
         logger.info(f"[EVIDENCE V3] Generando URL para orden {orden_id}")
         db = get_tenant_db(tenant_id)
-        orden = db["ordenes"].find_one({"_id": ObjectId(orden_id)}, {"folio": 1})
+        # CORRECCION: La coleccion correcta es 'ordenes_servicio'
+        orden = db["ordenes_servicio"].find_one({"_id": ObjectId(orden_id)}, {"folio": 1})
         
         if not orden:
             logger.warning(f"Orden {orden_id} no encontrada para el tenant {tenant_id}")
@@ -101,7 +102,7 @@ def add_evidencia_handler(event, context):
             "createdAt": datetime.utcnow()
         }
         
-        result = db["ordenes"].update_one(
+        result = db["ordenes_servicio"].update_one(
             {"_id": ObjectId(orden_id)},
             {"$push": {"evidencia": nueva_evidencia}}
         )
@@ -109,6 +110,23 @@ def add_evidencia_handler(event, context):
         if result.matched_count == 0:
             logger.warning(f"No se encontró la orden {orden_id} para registrar evidencia")
             return create_response(404, "Orden no encontrada en la base de datos")
+
+        # Serializar fecha para respuesta JSON
+        if isinstance(nueva_evidencia.get('createdAt'), datetime):
+            nueva_evidencia['createdAt'] = nueva_evidencia['createdAt'].isoformat()
+
+        # Generar URL de visualización para respuesta inmediata
+        s3 = boto3.client('s3')
+        bucket = os.environ.get('S3_EVIDENCIA_BUCKET')
+        try:
+            view_url = s3.generate_presigned_url(
+                'get_object',
+                Params={'Bucket': bucket, 'Key': s3_key},
+                ExpiresIn=3600
+            )
+            nueva_evidencia['url'] = view_url
+        except:
+            nueva_evidencia['url'] = None
 
         logger.info(f"Evidencia registrada exitosamente en orden {orden_id}")
         return create_response(200, "Evidencia registrada", nueva_evidencia)
@@ -130,7 +148,8 @@ def list_evidencia_handler(event, context):
             return create_response(400, "Parámetros insuficientes")
             
         db = get_tenant_db(tenant_id)
-        orden = db["ordenes"].find_one({"_id": ObjectId(orden_id)}, {"evidencia": 1})
+        # CORRECCION: La coleccion correcta es 'ordenes_servicio'
+        orden = db["ordenes_servicio"].find_one({"_id": ObjectId(orden_id)}, {"evidencia": 1})
         
         if not orden:
             return create_response(404, "Orden no encontrada")
