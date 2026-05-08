@@ -11,11 +11,12 @@ logger = Logger()
 @logger.inject_lambda_context
 def create_orden_handler(event, context):
     vehiculo_id = None
+    vehiculo_es_nuevo = False
     try:
         claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})\
-        
+
         tenant_id = claims.get('custom:tenant_id')
-        
+
         if not tenant_id:
             return create_response(403, "No se encontró un tenantId asociado.")
 
@@ -30,7 +31,6 @@ def create_orden_handler(event, context):
         # 2. VEHÍCULO: Existente o Nuevo
         vehiculo_id_recibido = body.get("vehiculo_id", "").strip() if body.get("vehiculo_id") else ""
         vehiculo_data = body.get("vehiculo_snapshot", {})
-        vehiculo_es_nuevo = False  # Flag para saber si hay que hacer rollback
 
         if vehiculo_id_recibido:
             # Vehículo ya existe en BD: solo usar el ID
