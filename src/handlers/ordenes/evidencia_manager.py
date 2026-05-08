@@ -25,22 +25,33 @@ def get_upload_url_handler(event, context):
         if not tenant_id or not orden_id or not file_name:
             return create_response(400, "Parámetros insuficientes")
 
+        logger.info(f"[EVIDENCE V3] Generando URL para orden {orden_id}")
         db = get_tenant_db(tenant_id)
         orden = db["ordenes"].find_one({"_id": ObjectId(orden_id)}, {"folio": 1})
-        folio = orden.get("folio", orden_id) if orden else orden_id
+        
+        if not orden:
+            logger.warning(f"Orden {orden_id} no encontrada para el tenant {tenant_id}")
+            folio = orden_id
+        else:
+            folio = orden.get("folio", orden_id)
+            logger.info(f"Generando URL para orden {orden_id} con folio {folio}")
 
         # Ajustar tenant_id (usar la mitad si es muy grande)
         short_tenant = tenant_id
         if len(tenant_id) > 16:
             short_tenant = tenant_id[:len(tenant_id)//2]
+            logger.info(f"Tenant ID truncado de {len(tenant_id)} a {len(short_tenant)} caracteres")
 
         s3 = boto3.client('s3')
         bucket = os.environ.get('S3_EVIDENCIA_BUCKET')
         
-        # Estructura: {TENANT_ID}/{NUMERO_OS}/{file_name}
+        # Estructura REQUERIDA: {SHORT_TENANT}/{FOLIO}/{file_name}
         # Limpiar nombre de archivo para evitar problemas en S3
         safe_file_name = "".join([c if c.isalnum() or c in "._-" else "_" for c in file_name])
+        
+        # FORZAR ELIMINACION DE CUALQUIER PREFIJO ANTERIOR
         key = f"{short_tenant}/{folio}/{safe_file_name}"
+        logger.info(f"[EVIDENCE V3] KEY FINAL: {key}")
         
         url = s3.generate_presigned_url(
             'put_object',
@@ -58,7 +69,7 @@ def get_upload_url_handler(event, context):
         })
         
     except Exception as e:
-        logger.error(f"Error generating upload URL: {str(e)}")
+        logger.error(f"Error generating upload URL: {str(e)}", exc_info=True)
         return handle_exception(e)
 
 def add_evidencia_handler(event, context):
@@ -77,6 +88,7 @@ def add_evidencia_handler(event, context):
         if not tenant_id or not orden_id or not s3_key:
             return create_response(400, "Parámetros insuficientes")
             
+        logger.info(f"Registrando evidencia para orden {orden_id} (Tenant: {tenant_id})")
         db = get_tenant_db(tenant_id)
         
         # Fecha formateada según solicitud del usuario
@@ -89,15 +101,20 @@ def add_evidencia_handler(event, context):
             "createdAt": datetime.utcnow()
         }
         
-        db["ordenes"].update_one(
+        result = db["ordenes"].update_one(
             {"_id": ObjectId(orden_id)},
             {"$push": {"evidencia": nueva_evidencia}}
         )
         
+        if result.matched_count == 0:
+            logger.warning(f"No se encontró la orden {orden_id} para registrar evidencia")
+            return create_response(404, "Orden no encontrada en la base de datos")
+
+        logger.info(f"Evidencia registrada exitosamente en orden {orden_id}")
         return create_response(200, "Evidencia registrada", nueva_evidencia)
         
     except Exception as e:
-        logger.error(f"Error adding evidencia: {str(e)}")
+        logger.error(f"Error adding evidencia: {str(e)}", exc_info=True)
         return handle_exception(e)
 
 def list_evidencia_handler(event, context):
