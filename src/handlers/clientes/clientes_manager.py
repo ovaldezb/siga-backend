@@ -69,7 +69,8 @@ def list_clientes_handler(event, context):
             "items": clientes,
             "total": total,
             "page": page,
-            "limit": limit
+            "limit": limit,
+            "totalPages": (total + limit - 1) // limit if limit > 0 else 0
         })
     except Exception as e:
         return handle_exception(e)

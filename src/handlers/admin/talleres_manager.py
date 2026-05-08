@@ -5,6 +5,7 @@ import boto3
 from datetime import datetime
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
+from src.shared.utils.date_utils import iso_utc
 from src.shared.infrastructure.database import get_platform_db, get_tenant_db
 
 logger = Logger()
@@ -26,11 +27,11 @@ def list_talleres_handler(event, context):
             # Convertir todos los objetos datetime a ISO string de forma genérica
             for key, value in taller.items():
                 if isinstance(value, datetime):
-                    taller[key] = value.isoformat()
-            
+                    taller[key] = iso_utc(value)
+
             # Normalización para el frontend
             taller["modulos"] = taller.get("modulos", [])
-                
+
             del taller["_id"]
             talleres_list.append(taller)
             
@@ -43,17 +44,20 @@ def create_taller_handler(event, context):
     try:
         body = json.loads(event.get("body") or "{}")
         required_fields = ["nombreComercial", "adminEmail", "adminNombre", "adminApellido"]
-        
+
         for field in required_fields:
             if field not in body:
                 return create_response(400, f"Campo requerido faltante: {field}")
-                
-        tenant_id = uuid.uuid4().hex
-        fecha_alta = body.get("fechaAlta", datetime.utcnow().isoformat())
-        
-        # 1. Create Cognito Admin User
+
         admin_email = body["adminEmail"]
-        
+        # Validación mínima: presencia de "@" + dominio con punto.
+        if "@" not in admin_email or "." not in admin_email.split("@")[-1]:
+            return create_response(400, "El correo electrónico del administrador no es válido.")
+
+        tenant_id = uuid.uuid4().hex
+        fecha_alta = body.get("fechaAlta", iso_utc())
+
+        # 1. Create Cognito Admin User
         try:
             client.admin_create_user(
                 UserPoolId=USER_POOL_ID,
@@ -102,7 +106,7 @@ def create_taller_handler(event, context):
         tenant_db = get_tenant_db(tenant_id)
         tenant_db["configuracion"].insert_one({
             "tenantId": tenant_id,
-            "createdAt": datetime.utcnow().isoformat(),
+            "createdAt": iso_utc(),
             "status": "INITIALIZED"
         })
         
@@ -121,12 +125,12 @@ def create_taller_handler(event, context):
             "activo": True,
             "telefono": body.get("adminTelefono", ""),
             "tenantId": tenant_id,
-            "createdAt": datetime.utcnow().isoformat()
+            "createdAt": iso_utc()
         })
-        
+
         taller_doc["id"] = str(result.inserted_id)
         if "createdAt" in taller_doc:
-            taller_doc["createdAt"] = taller_doc["createdAt"].isoformat()
+            taller_doc["createdAt"] = iso_utc(taller_doc["createdAt"])
         del taller_doc["_id"]
         
         return create_response(201, "Taller creado exitosamente", taller_doc)
@@ -212,7 +216,7 @@ def update_taller_handler(event, context):
         # Normalizar fechas
         for key, value in updated_taller.items():
             if isinstance(value, datetime):
-                updated_taller[key] = value.isoformat()
+                updated_taller[key] = iso_utc(value)
 
         return create_response(200, "Taller actualizado exitosamente", updated_taller)
 

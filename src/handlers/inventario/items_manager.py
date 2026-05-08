@@ -78,13 +78,13 @@ def create_item_handler(event, context):
         def to_float(val):
             try:
                 return float(val) if val not in [None, ""] else 0.0
-            except:
+            except (ValueError, TypeError):
                 return 0.0
 
         def to_int(val):
             try:
                 return int(val) if val not in [None, ""] else 0
-            except:
+            except (ValueError, TypeError):
                 return 0
 
         # 5. Preparar item
@@ -207,11 +207,14 @@ def update_stock_handler(event, context):
     try:
         claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
         tenant_id = claims.get('custom:tenant_id')
+        if not tenant_id:
+            return create_response(403, "No se encontró un tenantId asociado.")
+
         item_id = event['pathParameters']['id']
         body = json.loads(event.get('body', '{}'))
-        
+
         cantidad = int(body.get('cantidad', 0))
-        
+
         db = get_tenant_db(tenant_id)
         
         # Buscar item y validar que maneja inventario
