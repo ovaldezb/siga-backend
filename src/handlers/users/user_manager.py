@@ -100,7 +100,7 @@ def create_user_handler(event, context):
             {'Name': 'email_verified', 'Value': 'true'},
             {'Name': 'given_name', 'Value': nombre},
             {'Name': 'family_name', 'Value': apellido},
-            {'Name': 'custom:tenant_id', 'Value': tenant_id}
+            {'Name': 'custom:tenant_id', 'Value': str(tenant_id)}
         ]
         
         if telefono:
@@ -108,47 +108,48 @@ def create_user_handler(event, context):
                 telefono = '+52' + telefono
             user_attributes.append({'Name': 'phone_number', 'Value': telefono})
 
-        logger.info(f"Iniciando creación de usuario {email} para tenant {tenant_id}")
+        logger.info(f"DEBUG: Intentando admin_create_user en Pool {USER_POOL_ID} para {email}")
         
         try:
+            # PASO 1: CREACIÓN EN COGNITO
             response = client.admin_create_user(
                 UserPoolId=USER_POOL_ID,
                 Username=email,
                 UserAttributes=user_attributes,
                 DesiredDeliveryMediums=['EMAIL']
             )
-            logger.info(f"Usuario {email} creado en Cognito")
+            logger.info("✅ PASO 1 EXITOSO: Usuario creado en Cognito")
             
+            # PASO 2: ASIGNACIÓN DE GRUPO
             client.admin_add_user_to_group(
                 UserPoolId=USER_POOL_ID,
                 Username=email,
                 GroupName=grupo
             )
-            logger.info(f"Usuario {email} añadido al grupo {grupo}")
+            logger.info(f"✅ PASO 2 EXITOSO: Usuario añadido al grupo {grupo}")
+            
         except Exception as cognito_err:
-            logger.error(f"Error en Cognito: {str(cognito_err)}")
-            return create_response(500, f"Error al interactuar con Cognito: {str(cognito_err)}")
+            logger.error(f"❌ FALLO EN COGNITO: {str(cognito_err)}")
+            return create_response(500, f"Error en Cognito: {str(cognito_err)}")
 
         user_data = format_user(response['User'], grupo)
         
-        # Guardar copia en MongoDB del tenant
+        # PASO 3: PERSISTENCIA EN MONGO
         try:
             tenant_db = get_tenant_db(tenant_id)
             res_mongo = tenant_db["usuarios"].insert_one(user_data.copy())
             user_data["id"] = str(res_mongo.inserted_id)
-            logger.info(f"Usuario {email} guardado en MongoDB con ID {user_data['id']}")
+            logger.info(f"✅ PASO 3 EXITOSO: Usuario guardado en Mongo ID {user_data['id']}")
         except Exception as mongo_err:
-            logger.error(f"Error en MongoDB: {str(mongo_err)}")
-            # No retornamos error aquí para no duplicar en Cognito si Mongo falla, 
-            # pero el log nos dirá qué pasó.
-            user_data["id"] = "mongo_error"
+            logger.error(f"❌ FALLO EN MONGO: {str(mongo_err)}")
+            return create_response(500, f"Fallo al guardar en DB: {str(mongo_err)}")
             
         return create_response(201, "Usuario creado exitosamente", user_data)
     except client.exceptions.UsernameExistsException:
-        return create_response(400, "El correo electrónico ingresado ya se encuentra registrado.")
+        return create_response(400, "El correo electrónico ya está registrado.")
     except Exception as e:
-        logger.exception("Error no controlado en create_user_handler")
-        return handle_exception(e)
+        logger.exception("FATAL: Error no controlado")
+        return create_response(500, f"Error interno: {str(e)}")
 
 @logger.inject_lambda_context
 def update_user_handler(event, context):
