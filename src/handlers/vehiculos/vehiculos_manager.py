@@ -209,17 +209,20 @@ def create_vehiculo_handler(event, context):
 
         db = get_tenant_db(tenant_id)
 
+        # Crear objeto base con campos obligatorios
         nuevo_vehiculo = {
             "marca": body['marca'],
             "modelo": body['modelo'],
-            "anio": body.get('anio'),
             "placas": body['placas'],
-            "vin": body.get('vin', ''),
-            "color": body.get('color', ''),
             "cliente_id": body['cliente_id'],
             "tenant_id": tenant_id,
             "createdAt": datetime.utcnow()
         }
+
+        # Mezclar con el resto de los campos del body (color, vin, anio, kilometraje, etc.)
+        for k, v in body.items():
+            if k not in ['id', '_id', 'tenant_id', 'createdAt', 'marca', 'modelo', 'placas', 'cliente_id']:
+                nuevo_vehiculo[k] = v
 
         result = db["vehiculos"].insert_one(nuevo_vehiculo)
         nuevo_vehiculo['id'] = str(result.inserted_id)
