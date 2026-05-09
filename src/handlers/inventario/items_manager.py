@@ -95,6 +95,9 @@ def create_item_handler(event, context):
             "nombre": body['nombre'],
             "no_parte": body['no_parte'],
             "precio_venta": to_float(body['precio_venta']),
+            "precio_taller": to_float(body.get('precio_taller', 0)),
+            "precio_cliente": to_float(body.get('precio_cliente', 0)),
+            "precio_distribuidor": to_float(body.get('precio_distribuidor', 0)),
             "precio_compra": to_float(body.get('precio_compra', 0)),
             "categoria": body.get('categoria', 'GENERAL'),
             "marca": body.get('marca', ''),
@@ -159,9 +162,10 @@ def update_item_handler(event, context):
         body = json.loads(event.get('body', '{}'))
 
         allowed = {
-            "nombre", "no_parte", "tipo", "precio_venta", "precio_compra",
-            "categoria", "marca", "proveedor", "clave_sat", "unidad_sat",
-            "maneja_inventario", "activo", "icon"
+            "nombre", "no_parte", "tipo", "precio_venta", 
+            "precio_taller", "precio_cliente", "precio_distribuidor",
+            "precio_compra", "categoria", "marca", "proveedor", 
+            "clave_sat", "unidad_sat", "maneja_inventario", "activo", "icon"
         }
         update_data = {k: body[k] for k in allowed if k in body}
 
