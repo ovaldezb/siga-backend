@@ -356,6 +356,20 @@ functions:
             type: COGNITO_USER_POOLS
             arn: !GetAtt CognitoUserPool.Arn
 
+  ventas_create:
+    handler: src/handlers/ventas/ventas_manager.create_venta_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: ventas
+          method: post
+          cors: true
+          authorizer:
+            name: cognitoAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: !GetAtt CognitoUserPool.Arn
+
   taller_my_modulos:
     handler: src/handlers/admin/talleres_manager.get_my_modulos_handler
     layers:
