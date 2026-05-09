@@ -126,6 +126,20 @@ functions:
             type: COGNITO_USER_POOLS
             arn: !GetAtt CognitoUserPool.Arn
 
+  users_me:
+    handler: src/handlers/users/user_manager.get_me_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: usuarios/me
+          method: get
+          cors: true
+          authorizer:
+            name: cognitoAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: !GetAtt CognitoUserPool.Arn
+
   talleres_list:
     handler: src/handlers/admin/talleres_manager.list_talleres_handler
     layers:

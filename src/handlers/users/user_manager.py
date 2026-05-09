@@ -48,29 +48,54 @@ def format_user(cognito_user: Dict[str, Any], grupo: str = 'ASESOR') -> Dict[str
         "createdAt": created_at
     }
 
+def populate_user_sucursales(user, sucursales_map):
+    raw = user.get("sucursales", [])
+    populated = []
+    valid_refs = []
+    for item in raw:
+        sid = item.get("sucursal")
+        if sid and sid in sucursales_map:
+            populated.append(sucursales_map[sid])
+            valid_refs.append(item)
+    
+    # Limpiamos el objeto original para no arrastrar referencias muertas
+    user["sucursales"] = populated
+    return user
+
+def get_sucursales_map(tenant_db):
+    from datetime import datetime
+    sucursales_cursor = list(tenant_db["sucursales"].find())
+    sucursales_map = {}
+    for s in sucursales_cursor:
+        sid = str(s.pop('_id'))
+        s['id'] = sid
+        for k, v in s.items():
+            if isinstance(v, datetime):
+                s[k] = v.isoformat()
+        sucursales_map[sid] = s
+    return sucursales_map
+
 @logger.inject_lambda_context
 def list_users_handler(event, context):
     try:
         claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
         tenant_id = claims.get('custom:tenant_id')
         
+        tenant_db = get_tenant_db(tenant_id)
+        sucursales_map = get_sucursales_map(tenant_db)
+
         query_params = event.get('queryStringParameters') or {}
         grupo_filtro = query_params.get('grupo')
-        
-        tenant_db = get_tenant_db(tenant_id)
-        
         query = {}
         if grupo_filtro:
             query['grupo'] = grupo_filtro
             
-        logger.info(f"Buscando usuarios para tenant {tenant_id} con filtro: {query}")
         users_cursor = tenant_db["usuarios"].find(query)
-        
         users = []
         for u in users_cursor:
             u["id"] = str(u["_id"])
             del u["_id"]
-            users.append(u)
+            users.append(populate_user_sucursales(u, sucursales_map))
             
         return create_response(200, "Usuarios obtenidos", users)
     except Exception as e:
@@ -91,166 +116,120 @@ def create_user_handler(event, context):
         apellido = body.get('apellido', '')
         grupo = body.get('grupo', 'ASESOR')
         telefono = body.get('telefono', '')
-
-        # Valores por defecto para evitar fallos en Cognito attributes
-        nombre = nombre if nombre else "Usuario"
-        apellido = apellido if apellido else "SAE"
+        sucursales = body.get('sucursales', [])
 
         user_attributes = [
             {'Name': 'email', 'Value': email},
             {'Name': 'email_verified', 'Value': 'true'},
-            {'Name': 'given_name', 'Value': nombre},
-            {'Name': 'family_name', 'Value': apellido},
+            {'Name': 'given_name', 'Value': nombre if nombre else "Usuario"},
+            {'Name': 'family_name', 'Value': apellido if apellido else "SAE"},
             {'Name': 'custom:tenant_id', 'Value': str(tenant_id)}
         ]
         
         if telefono:
-            # Limpiar caracteres no numéricos
             clean_tel = "".join(filter(str.isdigit, telefono))
             if len(clean_tel) >= 10:
-                if not clean_tel.startswith('+'):
-                    # Asumimos México por defecto si no trae prefijo, 
-                    # pero si ya trae el 52 al inicio, solo ponemos el +
-                    if clean_tel.startswith('52') and len(clean_tel) > 10:
-                        telefono_cognito = '+' + clean_tel
-                    else:
-                        telefono_cognito = '+52' + clean_tel
-                else:
-                    telefono_cognito = clean_tel
+                telefono_cognito = clean_tel if clean_tel.startswith('+') else '+52' + clean_tel
                 user_attributes.append({'Name': 'phone_number', 'Value': telefono_cognito})
-            else:
-                logger.warning(f"⚠️ Teléfono ignorado por formato inválido: {telefono}")
 
-        logger.info(f"DEBUG: Intentando crear en Cognito: {email} en Pool {USER_POOL_ID}")
+        response = client.admin_create_user(
+            UserPoolId=USER_POOL_ID,
+            Username=email,
+            UserAttributes=user_attributes,
+            DesiredDeliveryMediums=['EMAIL']
+        )
         
         try:
-            # PASO 1: CREACIÓN EN COGNITO
-            response = client.admin_create_user(
-                UserPoolId=USER_POOL_ID,
-                Username=email,
-                UserAttributes=user_attributes,
-                DesiredDeliveryMediums=['EMAIL']
-            )
-            logger.info(f"✅ PASO 1: Usuario {email} creado en Cognito")
+            client.admin_add_user_to_group(UserPoolId=USER_POOL_ID, Username=email, GroupName=grupo)
+        except: pass
             
-            # PASO 2: ASIGNACIÓN DE GRUPO (Opcional, no debe romper todo)
-            try:
-                client.admin_add_user_to_group(
-                    UserPoolId=USER_POOL_ID,
-                    Username=email,
-                    GroupName=grupo
-                )
-                logger.info(f"✅ PASO 2: Grupo {grupo} asignado")
-            except Exception as grp_err:
-                logger.warning(f"⚠️ No se pudo asignar grupo {grupo} en Cognito: {str(grp_err)}")
-            
-        except Exception as cognito_err:
-            logger.error(f"❌ FALLO CRITICO EN COGNITO: {str(cognito_err)}")
-            # Error 400 si es un tema de parámetros, 500 si es otra cosa
-            status = 400 if "InvalidParameter" in str(cognito_err) else 500
-            return create_response(status, f"Error en Cognito: {str(cognito_err)}")
-
         user_data = format_user(response['User'], grupo)
+        user_data['sucursales'] = sucursales
         
-        # PASO 3: PERSISTENCIA EN MONGO
-        try:
-            tenant_db = get_tenant_db(tenant_id)
-            res_mongo = tenant_db["usuarios"].insert_one(user_data.copy())
-            user_data["id"] = str(res_mongo.inserted_id)
-            logger.info(f"✅ PASO 3: Usuario guardado en MongoDB")
-        except Exception as mongo_err:
-            logger.error(f"❌ FALLO EN MONGO: {str(mongo_err)}")
-            # Si llegó aquí, el usuario ya existe en Cognito. Retornamos éxito pero avisamos del ID.
-            user_data["id"] = "mongo_sync_error"
-            
-        return create_response(201, "Usuario creado exitosamente", user_data)
+        tenant_db = get_tenant_db(tenant_id)
+        res_mongo = tenant_db["usuarios"].insert_one(user_data.copy())
+        user_data["id"] = str(res_mongo.inserted_id)
+        
+        # Devolver poblado
+        sucursales_map = get_sucursales_map(tenant_db)
+        return create_response(201, "Usuario creado", populate_user_sucursales(user_data, sucursales_map))
+        
     except client.exceptions.UsernameExistsException:
-        return create_response(400, "El correo electrónico ya está registrado en el sistema.")
+        return create_response(400, "El correo electrónico ya está registrado.")
     except Exception as e:
-        logger.exception("FATAL: Error no controlado")
-        return create_response(500, f"Error inesperado: {str(e)}")
+        return handle_exception(e)
 
 @logger.inject_lambda_context
 def update_user_handler(event, context):
     try:
         claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
         tenant_id = claims.get('custom:tenant_id')
-
-        if not tenant_id:
-            return create_response(403, "No se encontró un tenantId válido para realizar esta acción.")
-
         user_id = event['pathParameters']['id']
         body = json.loads(event.get('body', '{}'))
 
-        # El path id es el _id de Mongo; Cognito usa email como Username.
         object_id, err = parse_object_id(user_id)
-        if err:
-            return create_response(400, err)
+        if err: return create_response(400, err)
 
         tenant_db = get_tenant_db(tenant_id)
         mongo_user = tenant_db["usuarios"].find_one({"_id": object_id})
-        if not mongo_user:
-            return create_response(404, "Usuario no encontrado.")
+        if not mongo_user: return create_response(404, "No encontrado.")
 
-        cognito_username = mongo_user.get('email')
-        if not cognito_username:
-            return create_response(409, "El usuario no tiene email registrado, no se puede sincronizar con Cognito.")
-
+        email = mongo_user.get('email')
         attributes = []
         if 'nombre' in body: attributes.append({'Name': 'given_name', 'Value': body['nombre']})
         if 'apellido' in body: attributes.append({'Name': 'family_name', 'Value': body['apellido']})
-
         if 'telefono' in body:
-            telefono = body['telefono']
-            if telefono and not telefono.startswith('+'):
-                telefono = '+52' + telefono
-            attributes.append({'Name': 'phone_number', 'Value': telefono})
+            tel = body['telefono']
+            attributes.append({'Name': 'phone_number', 'Value': tel if tel.startswith('+') else '+52' + tel})
 
         if attributes:
-            client.admin_update_user_attributes(
-                UserPoolId=USER_POOL_ID,
-                Username=cognito_username,
-                UserAttributes=attributes
-            )
+            client.admin_update_user_attributes(UserPoolId=USER_POOL_ID, Username=email, UserAttributes=attributes)
 
         if 'grupo' in body:
-            new_group = body['grupo']
             try:
-                groups_res = client.admin_list_groups_for_user(UserPoolId=USER_POOL_ID, Username=cognito_username)
+                groups_res = client.admin_list_groups_for_user(UserPoolId=USER_POOL_ID, Username=email)
                 for g in groups_res.get('Groups', []):
-                    client.admin_remove_user_from_group(
-                        UserPoolId=USER_POOL_ID,
-                        Username=cognito_username,
-                        GroupName=g['GroupName']
-                    )
-                client.admin_add_user_to_group(
-                    UserPoolId=USER_POOL_ID,
-                    Username=cognito_username,
-                    GroupName=new_group
-                )
-            except Exception as e:
-                logger.warning(f"Error al cambiar el grupo del usuario {cognito_username}: {e}")
+                    client.admin_remove_user_from_group(UserPoolId=USER_POOL_ID, Username=email, GroupName=g['GroupName'])
+                client.admin_add_user_to_group(UserPoolId=USER_POOL_ID, Username=email, GroupName=body['grupo'])
+            except: pass
 
         if 'activo' in body:
-            if body['activo']:
-                client.admin_enable_user(UserPoolId=USER_POOL_ID, Username=cognito_username)
-            else:
-                client.admin_disable_user(UserPoolId=USER_POOL_ID, Username=cognito_username)
+            if body['activo']: client.admin_enable_user(UserPoolId=USER_POOL_ID, Username=email)
+            else: client.admin_disable_user(UserPoolId=USER_POOL_ID, Username=email)
 
         update_data = {}
-        if 'nombre' in body: update_data['nombre'] = body['nombre']
-        if 'apellido' in body: update_data['apellido'] = body['apellido']
-        if 'telefono' in body: update_data['telefono'] = body['telefono']
-        if 'grupo' in body: 
-            update_data['grupo'] = body['grupo']
-            update_data['icon'] = get_icon_for_group(body['grupo'])
-        if 'activo' in body: update_data['activo'] = body['activo']
+        for k in ['nombre', 'apellido', 'telefono', 'grupo', 'activo', 'sucursales']:
+            if k in body: update_data[k] = body[k]
+        if 'grupo' in body: update_data['icon'] = get_icon_for_group(body['grupo'])
 
         if update_data:
             tenant_db["usuarios"].update_one({"_id": object_id}, {"$set": update_data})
 
-        body['id'] = user_id
-        body['email'] = cognito_username
-        return create_response(200, "Usuario actualizado", body)
+        # Recuperar usuario completo y devolverlo poblado
+        updated_user = tenant_db["usuarios"].find_one({"_id": object_id})
+        updated_user["id"] = str(updated_user.pop("_id"))
+        sucursales_map = get_sucursales_map(tenant_db)
+        
+        return create_response(200, "Actualizado", populate_user_sucursales(updated_user, sucursales_map))
+    except Exception as e:
+        return handle_exception(e)
+
+@logger.inject_lambda_context
+def get_me_handler(event, context):
+    try:
+        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        tenant_id = claims.get('custom:tenant_id')
+        email = claims.get('email')
+        
+        tenant_db = get_tenant_db(tenant_id)
+        user = tenant_db["usuarios"].find_one({"email": email})
+        
+        if not user:
+            return create_response(404, "Usuario no encontrado")
+            
+        user["id"] = str(user.pop("_id"))
+        sucursales_map = get_sucursales_map(tenant_db)
+        
+        return create_response(200, "Perfil obtenido", populate_user_sucursales(user, sucursales_map))
     except Exception as e:
         return handle_exception(e)
