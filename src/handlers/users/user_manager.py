@@ -11,7 +11,7 @@ logger = Logger()
 client = boto3.client('cognito-idp')
 
 USER_POOL_ID = os.environ.get('COGNITO_USER_POOL_ID')
-GROUPS = ['SUPER_ADMIN', 'ADMIN', 'ASESOR', 'MECANICO']
+GROUPS = ['SUPER_ADMIN', 'ADMIN', 'ASESOR', 'MECANICO', 'CAJERO']
 
 def parse_user_attributes(attributes: List[Dict[str, str]]) -> Dict[str, str]:
     return {attr['Name']: attr['Value'] for attr in attributes}
@@ -29,16 +29,23 @@ def get_icon_for_group(grupo: str) -> str:
 def format_user(cognito_user: Dict[str, Any], grupo: str = 'ASESOR') -> Dict[str, Any]:
     attrs = parse_user_attributes(cognito_user.get('Attributes', []))
     
+    # Manejo robusto de la fecha
+    raw_date = cognito_user.get('UserCreateDate', '')
+    if hasattr(raw_date, 'isoformat'):
+        created_at = raw_date.isoformat()
+    else:
+        created_at = str(raw_date)
+
     return {
-        "email": attrs.get('email', ''),
+        "email": attrs.get('email', cognito_user.get('Username', '')),
         "nombre": attrs.get('given_name', ''),
         "apellido": attrs.get('family_name', ''),
         "grupo": grupo,
         "icon": get_icon_for_group(grupo),
-        "activo": cognito_user.get('Enabled', False),
+        "activo": cognito_user.get('Enabled', True),
         "telefono": attrs.get('phone_number', ''),
         "tenantId": attrs.get('custom:tenant_id', ''),
-        "createdAt": str(cognito_user.get('UserCreateDate', ''))
+        "createdAt": created_at
     }
 
 @logger.inject_lambda_context
