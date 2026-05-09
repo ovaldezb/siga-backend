@@ -92,8 +92,9 @@ def create_user_handler(event, context):
         grupo = body.get('grupo', 'ASESOR')
         telefono = body.get('telefono', '')
 
-        if not email:
-            return create_response(400, "El email es requerido")
+        # Valores por defecto para evitar fallos en Cognito attributes
+        nombre = nombre if nombre else "Usuario"
+        apellido = apellido if apellido else "SAE"
 
         user_attributes = [
             {'Name': 'email', 'Value': email},
@@ -108,7 +109,7 @@ def create_user_handler(event, context):
                 telefono = '+52' + telefono
             user_attributes.append({'Name': 'phone_number', 'Value': telefono})
 
-        logger.info(f"DEBUG: Intentando admin_create_user en Pool {USER_POOL_ID} para {email}")
+        logger.info(f"DEBUG: Intentando crear en Cognito: {email} en Pool {USER_POOL_ID}")
         
         try:
             # PASO 1: CREACIÓN EN COGNITO
@@ -118,19 +119,24 @@ def create_user_handler(event, context):
                 UserAttributes=user_attributes,
                 DesiredDeliveryMediums=['EMAIL']
             )
-            logger.info("✅ PASO 1 EXITOSO: Usuario creado en Cognito")
+            logger.info(f"✅ PASO 1: Usuario {email} creado en Cognito")
             
-            # PASO 2: ASIGNACIÓN DE GRUPO
-            client.admin_add_user_to_group(
-                UserPoolId=USER_POOL_ID,
-                Username=email,
-                GroupName=grupo
-            )
-            logger.info(f"✅ PASO 2 EXITOSO: Usuario añadido al grupo {grupo}")
+            # PASO 2: ASIGNACIÓN DE GRUPO (Opcional, no debe romper todo)
+            try:
+                client.admin_add_user_to_group(
+                    UserPoolId=USER_POOL_ID,
+                    Username=email,
+                    GroupName=grupo
+                )
+                logger.info(f"✅ PASO 2: Grupo {grupo} asignado")
+            except Exception as grp_err:
+                logger.warning(f"⚠️ No se pudo asignar grupo {grupo} en Cognito: {str(grp_err)}")
             
         except Exception as cognito_err:
-            logger.error(f"❌ FALLO EN COGNITO: {str(cognito_err)}")
-            return create_response(500, f"Error en Cognito: {str(cognito_err)}")
+            logger.error(f"❌ FALLO CRITICO EN COGNITO: {str(cognito_err)}")
+            # Error 400 si es un tema de parámetros, 500 si es otra cosa
+            status = 400 if "InvalidParameter" in str(cognito_err) else 500
+            return create_response(status, f"Error en Cognito: {str(cognito_err)}")
 
         user_data = format_user(response['User'], grupo)
         
@@ -139,17 +145,18 @@ def create_user_handler(event, context):
             tenant_db = get_tenant_db(tenant_id)
             res_mongo = tenant_db["usuarios"].insert_one(user_data.copy())
             user_data["id"] = str(res_mongo.inserted_id)
-            logger.info(f"✅ PASO 3 EXITOSO: Usuario guardado en Mongo ID {user_data['id']}")
+            logger.info(f"✅ PASO 3: Usuario guardado en MongoDB")
         except Exception as mongo_err:
             logger.error(f"❌ FALLO EN MONGO: {str(mongo_err)}")
-            return create_response(500, f"Fallo al guardar en DB: {str(mongo_err)}")
+            # Si llegó aquí, el usuario ya existe en Cognito. Retornamos éxito pero avisamos del ID.
+            user_data["id"] = "mongo_sync_error"
             
         return create_response(201, "Usuario creado exitosamente", user_data)
     except client.exceptions.UsernameExistsException:
-        return create_response(400, "El correo electrónico ya está registrado.")
+        return create_response(400, "El correo electrónico ya está registrado en el sistema.")
     except Exception as e:
         logger.exception("FATAL: Error no controlado")
-        return create_response(500, f"Error interno: {str(e)}")
+        return create_response(500, f"Error inesperado: {str(e)}")
 
 @logger.inject_lambda_context
 def update_user_handler(event, context):
