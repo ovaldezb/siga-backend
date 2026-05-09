@@ -290,7 +290,15 @@ def update_vehiculo_handler(event, context):
         if result.matched_count == 0:
             return create_response(404, "Vehículo no encontrado.")
 
-        return create_response(200, "Vehículo actualizado exitosamente", {"id": vehiculo_id})
+        # Obtener el objeto actualizado para devolverlo completo
+        updated_vehiculo = db["vehiculos"].find_one({"_id": ObjectId(vehiculo_id)})
+        updated_vehiculo['id'] = str(updated_vehiculo.pop('_id'))
+        if 'createdAt' in updated_vehiculo and isinstance(updated_vehiculo['createdAt'], datetime):
+            updated_vehiculo['createdAt'] = updated_vehiculo['createdAt'].isoformat()
+        if 'updatedAt' in updated_vehiculo and isinstance(updated_vehiculo['updatedAt'], datetime):
+            updated_vehiculo['updatedAt'] = updated_vehiculo['updatedAt'].isoformat()
+
+        return create_response(200, "Vehículo actualizado exitosamente", updated_vehiculo)
 
     except Exception as e:
         return handle_exception(e)
