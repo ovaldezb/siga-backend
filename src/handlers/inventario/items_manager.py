@@ -100,7 +100,8 @@ def create_item_handler(event, context):
             "proveedor": body.get('proveedor'),
             "tenant_id": tenant_id,
             "createdAt": datetime.utcnow().isoformat() + "Z",
-            "activo": body.get('activo', True)
+            "activo": body.get('activo', True),
+            "icon": body.get('icon', 'ri-archive-line')
         }
 
         if tipo == 'PRODUCTO':
@@ -159,7 +160,7 @@ def update_item_handler(event, context):
         allowed = {
             "nombre", "no_parte", "tipo", "precio_venta", "precio_compra",
             "categoria", "marca", "proveedor", "clave_sat", "unidad_sat",
-            "maneja_inventario", "activo"
+            "maneja_inventario", "activo", "icon"
         }
         update_data = {k: body[k] for k in allowed if k in body}
 

@@ -16,6 +16,16 @@ GROUPS = ['SUPER_ADMIN', 'ADMIN', 'ASESOR', 'MECANICO']
 def parse_user_attributes(attributes: List[Dict[str, str]]) -> Dict[str, str]:
     return {attr['Name']: attr['Value'] for attr in attributes}
 
+def get_icon_for_group(grupo: str) -> str:
+    mapping = {
+        'SUPER_ADMIN': 'ri-shield-user-line',
+        'ADMIN': 'ri-user-settings-line',
+        'ASESOR': 'ri-customer-service-2-line',
+        'MECANICO': 'ri-tools-line',
+        'CAJERO': 'ri-money-dollar-box-line'
+    }
+    return mapping.get(grupo, 'ri-user-3-line')
+
 def format_user(cognito_user: Dict[str, Any], grupo: str = 'ASESOR') -> Dict[str, Any]:
     attrs = parse_user_attributes(cognito_user.get('Attributes', []))
     
@@ -24,6 +34,7 @@ def format_user(cognito_user: Dict[str, Any], grupo: str = 'ASESOR') -> Dict[str
         "nombre": attrs.get('given_name', ''),
         "apellido": attrs.get('family_name', ''),
         "grupo": grupo,
+        "icon": get_icon_for_group(grupo),
         "activo": cognito_user.get('Enabled', False),
         "telefono": attrs.get('phone_number', ''),
         "tenantId": attrs.get('custom:tenant_id', ''),
@@ -188,7 +199,9 @@ def update_user_handler(event, context):
         if 'nombre' in body: update_data['nombre'] = body['nombre']
         if 'apellido' in body: update_data['apellido'] = body['apellido']
         if 'telefono' in body: update_data['telefono'] = body['telefono']
-        if 'grupo' in body: update_data['grupo'] = body['grupo']
+        if 'grupo' in body: 
+            update_data['grupo'] = body['grupo']
+            update_data['icon'] = get_icon_for_group(body['grupo'])
         if 'activo' in body: update_data['activo'] = body['activo']
 
         if update_data:

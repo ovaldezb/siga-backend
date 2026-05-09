@@ -12,7 +12,8 @@ logger = Logger()
 
 ALLOWED_UPDATE_FIELDS = {
     "nombre", "apellido_paterno", "apellido_materno", "telefono", "email",
-    "rfc", "razon_social", "regimen_fiscal", "codigo_postal", "tipo_persona"
+    "rfc", "razon_social", "regimen_fiscal", "codigo_postal", "tipo_persona",
+    "limite_credito", "dias_credito", "nivel_precio"
 }
 
 def list_clientes_handler(event, context):
@@ -102,6 +103,9 @@ def create_cliente_handler(event, context):
             "regimen_fiscal": body.get('regimen_fiscal'),
             "codigo_postal": body.get('codigo_postal'),
             "tipo_persona": body.get('tipo_persona', 'FISICA'),
+            "limite_credito": float(body.get('limite_credito', 0)),
+            "dias_credito": int(body.get('dias_credito', 0)),
+            "nivel_precio": int(body.get('nivel_precio', 1)),
             "vehiculos_resumen": [],
             "createdAt": datetime.utcnow().isoformat(),
             "tenant_id": tenant_id

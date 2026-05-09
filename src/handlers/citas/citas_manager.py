@@ -85,15 +85,15 @@ def create_cita_handler(event, context):
         body = json.loads(event.get('body', '{}'))
 
         if not body.get('servicio'):
-            return create_response(400, "El servicio es requerido.")
+            return create_response(400, "El campo 'servicio' es requerido.")
         if not body.get('fecha'):
-            return create_response(400, "La fecha es requerida.")
+            return create_response(400, "El campo 'fecha' es requerido.")
         if not body.get('horaInicio'):
-            return create_response(400, "La hora de inicio es requerida.")
+            return create_response(400, "El campo 'horaInicio' es requerido.")
 
-        estado = body.get('estado', 'pendiente')
+        estado = body.get('estado') or 'pendiente'
         if estado not in VALID_ESTADOS:
-            return create_response(400, f"Estado inválido. Use: {', '.join(sorted(VALID_ESTADOS))}.")
+            estado = 'pendiente' # Fallback seguro
 
         db = get_tenant_db(tenant_id)
 
@@ -104,13 +104,14 @@ def create_cita_handler(event, context):
             "vehiculoDesc": body.get('vehiculoDesc'),
             "tecnicoId": body.get('tecnicoId'),
             "tecnicoNombre": body.get('tecnicoNombre'),
-            "fecha": body['fecha'],
-            "horaInicio": body['horaInicio'],
+            "fecha": body.get('fecha'),
+            "horaInicio": body.get('horaInicio'),
             "horaFin": body.get('horaFin'),
-            "servicio": body['servicio'],
+            "servicio": body.get('servicio'),
             "estado": estado,
             "notas": body.get('notas'),
             "createdAt": datetime.utcnow().isoformat(),
+            "updatedAt": datetime.utcnow().isoformat(),
             "tenant_id": tenant_id
         }
 
