@@ -87,21 +87,24 @@ def create_cliente_handler(event, context):
         body = json.loads(event.get('body', '{}'))
         
         # Validación básica manual para no sobrecomplicar el handler por ahora
-        if not body.get('nombre') or not body.get('telefono'):
-            return create_response(400, "Nombre y teléfono son requeridos.")
+        # VALIDACIÓN ESTRICTA
+        required = ["nombre", "apellido_paterno", "telefono"]
+        for field in required:
+            if not body.get(field):
+                return create_response(400, f"El campo '{field}' es obligatorio.")
 
         db = get_tenant_db(tenant_id)
         
         nuevo_cliente = {
             "nombre": body['nombre'],
             "apellido_paterno": body['apellido_paterno'],
-            "apellido_materno": body.get('apellido_materno'),
+            "apellido_materno": body.get('apellido_materno', ''),
             "telefono": body['telefono'],
-            "email": body.get('email'),
-            "rfc": body.get('rfc'),
-            "razon_social": body.get('razon_social'),
-            "regimen_fiscal": body.get('regimen_fiscal'),
-            "codigo_postal": body.get('codigo_postal'),
+            "email": body.get('email', ''),
+            "rfc": body.get('rfc', 'XAXX010101000'),
+            "razon_social": body.get('razon_social', ''),
+            "regimen_fiscal": body.get('regimen_fiscal', '612'), # Personas Físicas con Actividades Empresariales por defecto
+            "codigo_postal": body.get('codigo_postal', ''),
             "tipo_persona": body.get('tipo_persona', 'FISICA'),
             "limite_credito": float(body.get('limite_credito', 0)),
             "dias_credito": int(body.get('dias_credito', 0)),
