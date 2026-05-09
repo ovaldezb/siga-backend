@@ -105,9 +105,21 @@ def create_user_handler(event, context):
         ]
         
         if telefono:
-            if not telefono.startswith('+'):
-                telefono = '+52' + telefono
-            user_attributes.append({'Name': 'phone_number', 'Value': telefono})
+            # Limpiar caracteres no numéricos
+            clean_tel = "".join(filter(str.isdigit, telefono))
+            if len(clean_tel) >= 10:
+                if not clean_tel.startswith('+'):
+                    # Asumimos México por defecto si no trae prefijo, 
+                    # pero si ya trae el 52 al inicio, solo ponemos el +
+                    if clean_tel.startswith('52') and len(clean_tel) > 10:
+                        telefono_cognito = '+' + clean_tel
+                    else:
+                        telefono_cognito = '+52' + clean_tel
+                else:
+                    telefono_cognito = clean_tel
+                user_attributes.append({'Name': 'phone_number', 'Value': telefono_cognito})
+            else:
+                logger.warning(f"⚠️ Teléfono ignorado por formato inválido: {telefono}")
 
         logger.info(f"DEBUG: Intentando crear en Cognito: {email} en Pool {USER_POOL_ID}")
         
