@@ -81,12 +81,14 @@ def create_orden_handler(event, context):
             "kilometraje": body.get("kilometraje", 0),
             "nivel_tanque": body.get("nivel_tanque", 0),
             "testigos_encendidos": body.get("testigos_encendidos", []),
+            "inventario": body.get("inventario", []),
             "proximo_cambio_bujias": body.get("proximo_cambio_bujias", 0),
             "proximo_cambio_aceite": body.get("proximo_cambio_aceite", 0),
             "aplica_costo_revision": body.get("aplica_costo_revision", False),
             "costo_revision": body.get("costo_revision"),
             "anticipo": body.get("anticipo", 0),
             "total": body.get("total", 0),
+            "fechaEstimadaEntrega": body.get("fechaEstimadaEntrega"),
             "createdAt": datetime.utcnow(),
             "updatedAt": datetime.utcnow()
         }
@@ -292,10 +294,10 @@ def update_orden_handler(event, context):
         campos_permitidos = [
             'estado', 'motivo_cancelacion', 'puntosArreglar', 'total', 
             'mecanico_id', 'mecanico_nombre', 'falla_reportada', 'diagnostico',
-            'kilometraje', 'nivel_tanque', 'testigos_encendidos',
+            'kilometraje', 'nivel_tanque', 'testigos_encendidos', 'inventario',
             'proximo_cambio_bujias', 'proximo_cambio_aceite', 'anticipo',
             'cliente_snapshot', 'vehiculo_snapshot', 'bitacora_estados',
-            'aplica_costo_revision', 'costo_revision'
+            'aplica_costo_revision', 'costo_revision', 'fechaEstimadaEntrega'
         ]
         
         for campo in campos_permitidos:
