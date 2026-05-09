@@ -201,18 +201,22 @@ def create_vehiculo_handler(event, context):
         body = json.loads(event.get('body', '{}'))
         db = get_tenant_db(tenant_id)
 
-        # Campos obligatorios
-        if not body.get('marca') or not body.get('modelo') or not body.get('placas'):
-            return create_response(400, "Marca, modelo y placas son requeridos.")
+        # VALIDACIÓN ESTRICTA
+        required = ["marca", "modelo", "placas", "cliente_id"]
+        for field in required:
+            if not body.get(field):
+                return create_response(400, f"El campo '{field}' es obligatorio para registrar un vehículo.")
+
+        db = get_tenant_db(tenant_id)
 
         nuevo_vehiculo = {
             "marca": body['marca'],
             "modelo": body['modelo'],
             "anio": body.get('anio'),
             "placas": body['placas'],
-            "vin": body.get('vin'),
-            "color": body.get('color'),
-            "cliente_id": body.get('cliente_id'),
+            "vin": body.get('vin', ''),
+            "color": body.get('color', ''),
+            "cliente_id": body['cliente_id'],
             "tenant_id": tenant_id,
             "createdAt": datetime.utcnow()
         }
