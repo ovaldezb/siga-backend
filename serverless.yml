@@ -342,6 +342,20 @@ functions:
             type: COGNITO_USER_POOLS
             arn: !GetAtt CognitoUserPool.Arn
 
+  reportes_kpis:
+    handler: src/handlers/admin/reportes_manager.get_kpis_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: reportes/kpis
+          method: get
+          cors: true
+          authorizer:
+            name: cognitoAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: !GetAtt CognitoUserPool.Arn
+
   taller_my_modulos:
     handler: src/handlers/admin/talleres_manager.get_my_modulos_handler
     layers:
