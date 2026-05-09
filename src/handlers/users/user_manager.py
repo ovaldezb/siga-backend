@@ -101,31 +101,46 @@ def create_user_handler(event, context):
                 telefono = '+52' + telefono
             user_attributes.append({'Name': 'phone_number', 'Value': telefono})
 
-        response = client.admin_create_user(
-            UserPoolId=USER_POOL_ID,
-            Username=email,
-            UserAttributes=user_attributes,
-            DesiredDeliveryMediums=['EMAIL']
-        )
+        logger.info(f"Iniciando creación de usuario {email} para tenant {tenant_id}")
         
-        client.admin_add_user_to_group(
-            UserPoolId=USER_POOL_ID,
-            Username=email,
-            GroupName=grupo
-        )
+        try:
+            response = client.admin_create_user(
+                UserPoolId=USER_POOL_ID,
+                Username=email,
+                UserAttributes=user_attributes,
+                DesiredDeliveryMediums=['EMAIL']
+            )
+            logger.info(f"Usuario {email} creado en Cognito")
+            
+            client.admin_add_user_to_group(
+                UserPoolId=USER_POOL_ID,
+                Username=email,
+                GroupName=grupo
+            )
+            logger.info(f"Usuario {email} añadido al grupo {grupo}")
+        except Exception as cognito_err:
+            logger.error(f"Error en Cognito: {str(cognito_err)}")
+            return create_response(500, f"Error al interactuar con Cognito: {str(cognito_err)}")
 
         user_data = format_user(response['User'], grupo)
         
         # Guardar copia en MongoDB del tenant
-        tenant_db = get_tenant_db(tenant_id)
-        res_mongo = tenant_db["usuarios"].insert_one(user_data.copy())
-        
-        user_data["id"] = str(res_mongo.inserted_id)
+        try:
+            tenant_db = get_tenant_db(tenant_id)
+            res_mongo = tenant_db["usuarios"].insert_one(user_data.copy())
+            user_data["id"] = str(res_mongo.inserted_id)
+            logger.info(f"Usuario {email} guardado en MongoDB con ID {user_data['id']}")
+        except Exception as mongo_err:
+            logger.error(f"Error en MongoDB: {str(mongo_err)}")
+            # No retornamos error aquí para no duplicar en Cognito si Mongo falla, 
+            # pero el log nos dirá qué pasó.
+            user_data["id"] = "mongo_error"
             
         return create_response(201, "Usuario creado exitosamente", user_data)
     except client.exceptions.UsernameExistsException:
         return create_response(400, "El correo electrónico ingresado ya se encuentra registrado.")
     except Exception as e:
+        logger.exception("Error no controlado en create_user_handler")
         return handle_exception(e)
 
 @logger.inject_lambda_context
