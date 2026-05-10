@@ -12,11 +12,26 @@ def get_kpis_handler(event, context):
         tenant_id = claims.get('custom:tenant_id')
         if not tenant_id: return create_response(403, "No autorizado")
 
+        query_params = event.get('queryStringParameters') or {}
+        sucursal_id = query_params.get('sucursal_id')
+        
+        # Filtro base para sucursal (lenient)
+        sucursal_filter = {}
+        if sucursal_id:
+            sucursal_filter = {"$or": [
+                {"sucursal_id": sucursal_id},
+                {"sucursal_id": {"$exists": False}},
+                {"sucursal_id": None}
+            ]}
+
         db = get_tenant_db(tenant_id)
         
-        # 1. MEJORES CLIENTES (Top 5 por monto en órdenes finalizadas/entregadas)
+        # 1. MEJORES CLIENTES
+        match_clientes = {"tenant_id": tenant_id, "estado": {"$in": ["FINALIZADO", "ENTREGADO"]}}
+        if sucursal_filter: match_clientes.update(sucursal_filter)
+        
         top_clientes = list(db["ordenes"].aggregate([
-            {"$match": {"tenant_id": tenant_id, "estado": {"$in": ["FINALIZADO", "ENTREGADO"]}}},
+            {"$match": match_clientes},
             {"$group": {
                 "_id": "$cliente_id",
                 "total_gastado": {"$sum": "$total"},
@@ -27,10 +42,12 @@ def get_kpis_handler(event, context):
             {"$limit": 5}
         ]))
 
-        # 2. PROVEEDORES (Gasto por proveedor en items)
-        # Nota: Aquí asumo que las órdenes tienen items con proveedor
+        # 2. PROVEEDORES
+        match_proveedores = {"tenant_id": tenant_id, "tipo": "PRODUCTO"}
+        if sucursal_filter: match_proveedores.update(sucursal_filter)
+        
         top_proveedores = list(db["items"].aggregate([
-            {"$match": {"tenant_id": tenant_id, "tipo": "PRODUCTO"}},
+            {"$match": match_proveedores},
             {"$group": {
                 "_id": "$proveedor",
                 "total_inventario": {"$sum": {"$multiply": ["$stock", "$precio_compra"]}},
@@ -40,9 +57,12 @@ def get_kpis_handler(event, context):
             {"$limit": 5}
         ]))
 
-        # 3. RENDIMIENTO MECÁNICOS (Órdenes por mecánico)
+        # 3. RENDIMIENTO MECÁNICOS
+        match_mecanicos = {"tenant_id": tenant_id, "mecanico_id": {"$ne": None}}
+        if sucursal_filter: match_mecanicos.update(sucursal_filter)
+        
         mecanicos_stats = list(db["ordenes"].aggregate([
-            {"$match": {"tenant_id": tenant_id, "mecanico_id": {"$ne": None}}},
+            {"$match": match_mecanicos},
             {"$group": {
                 "_id": "$mecanico_id",
                 "nombre": {"$first": "$mecanico_nombre"},
@@ -53,17 +73,18 @@ def get_kpis_handler(event, context):
             {"$sort": {"completadas": -1}}
         ]))
 
-        # 4. TRENDS (Ingresos últimos 6 meses)
-        # Generar labels de meses
+        # 4. TRENDS
         history = []
         for i in range(5, -1, -1):
             date = datetime.now() - timedelta(days=i*30)
             month_year = date.strftime("%Y-%m")
             history.append({"mes": month_year, "total": 0})
 
-        # Agregación por mes
+        match_ingresos = {"tenant_id": tenant_id, "estado": {"$in": ["FINALIZADO", "ENTREGADO"]}}
+        if sucursal_filter: match_ingresos.update(sucursal_filter)
+        
         ingresos_mensuales = list(db["ordenes"].aggregate([
-            {"$match": {"tenant_id": tenant_id, "estado": {"$in": ["FINALIZADO", "ENTREGADO"]}}},
+            {"$match": match_ingresos},
             {"$group": {
                 "_id": {"$substr": ["$createdAt", 0, 7]},
                 "total": {"$sum": "$total"}
