@@ -136,7 +136,11 @@ def list_ordenes_handler(event, context):
         filter_query = {}
         sucursal_id = query_params.get('sucursal_id')
         if sucursal_id:
-            filter_query['sucursal_id'] = sucursal_id
+            filter_query['$or'] = [
+                {'sucursal_id': sucursal_id},
+                {'sucursal_id': {'$exists': False}},
+                {'sucursal_id': None}
+            ]
 
         vehiculo_id_filter = query_params.get('vehiculo_id')
         if vehiculo_id_filter:

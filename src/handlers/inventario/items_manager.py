@@ -26,7 +26,11 @@ def list_items_handler(event, context):
         query = {}
         sucursal_id = query_params.get('sucursal_id')
         if sucursal_id:
-            query['sucursal_id'] = sucursal_id
+            query['$or'] = [
+                {'sucursal_id': sucursal_id},
+                {'sucursal_id': {'$exists': False}},
+                {'sucursal_id': None}
+            ]
             
         if tipo:
             query['tipo'] = tipo
@@ -240,7 +244,11 @@ def update_stock_handler(event, context):
         query = {"_id": ObjectId(item_id)}
         sucursal_id = body.get('sucursal_id')
         if sucursal_id:
-            query['sucursal_id'] = sucursal_id
+            query['$or'] = [
+                {'sucursal_id': sucursal_id},
+                {'sucursal_id': {'$exists': False}},
+                {'sucursal_id': None}
+            ]
 
         result = db["items"].find_one_and_update(
             query,
