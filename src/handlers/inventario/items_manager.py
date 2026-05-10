@@ -24,6 +24,10 @@ def list_items_handler(event, context):
         
         # Filtros
         query = {}
+        sucursal_id = query_params.get('sucursal_id')
+        if sucursal_id:
+            query['sucursal_id'] = sucursal_id
+            
         if tipo:
             query['tipo'] = tipo
         if search:
@@ -103,6 +107,7 @@ def create_item_handler(event, context):
             "marca": body.get('marca', ''),
             "proveedor": body.get('proveedor', ''),
             "tenant_id": tenant_id,
+            "sucursal_id": body.get('sucursal_id'),
             "createdAt": datetime.utcnow().isoformat() + "Z",
             "activo": body.get('activo', True),
             "icon": body.get('icon', 'ri-archive-line')
@@ -232,8 +237,13 @@ def update_stock_handler(event, context):
             return create_response(400, "Este item no maneja inventario.")
 
         # Actualizar stock con $inc
+        query = {"_id": ObjectId(item_id)}
+        sucursal_id = body.get('sucursal_id')
+        if sucursal_id:
+            query['sucursal_id'] = sucursal_id
+
         result = db["items"].find_one_and_update(
-            {"_id": ObjectId(item_id)},
+            query,
             {"$inc": {"stock": cantidad}},
             return_document=True
         )

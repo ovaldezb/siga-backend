@@ -65,6 +65,7 @@ def create_orden_handler(event, context):
         orden_doc = {
             "folio": folio,
             "tenant_id": tenant_id,
+            "sucursal_id": body.get("sucursal_id"),
             "estado": estado_inicial,
             "bitacora_estados": [{
                 "estado": estado_inicial,
@@ -133,6 +134,10 @@ def list_ordenes_handler(event, context):
         skip = (page - 1) * limit
         
         filter_query = {}
+        sucursal_id = query_params.get('sucursal_id')
+        if sucursal_id:
+            filter_query['sucursal_id'] = sucursal_id
+
         vehiculo_id_filter = query_params.get('vehiculo_id')
         if vehiculo_id_filter:
             filter_query['vehiculo_id'] = vehiculo_id_filter

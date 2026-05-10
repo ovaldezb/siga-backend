@@ -24,6 +24,7 @@ def create_venta_handler(event, context):
         nueva_venta = {
             "folio": f"V-{datetime.now().strftime('%Y%m%d')}-{str(uuid.uuid4())[:4].upper()}",
             "cliente_id": body.get('cliente_id', 'PUBLICO_GENERAL'),
+            "sucursal_id": body.get('sucursal_id'),
             "items": items,
             "subtotal": body.get('subtotal', 0),
             "iva": body.get('iva', 0),
