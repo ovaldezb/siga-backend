@@ -1,10 +1,13 @@
 import json
 from datetime import datetime, timedelta
 from bson import ObjectId
-from src.utils.response import create_response
-from src.utils.db import get_tenant_db
-from src.utils.logger import logger
+from aws_lambda_powertools import Logger
+from src.shared.utils.response_handler import create_response, handle_exception
+from src.shared.infrastructure.database import get_tenant_db
 
+logger = Logger()
+
+@logger.inject_lambda_context
 def get_kpis_handler(event, context):
     """GET /reportes/kpis — Obtiene métricas generales y tendencias."""
     try:
@@ -78,7 +81,7 @@ def get_kpis_handler(event, context):
         for i in range(5, -1, -1):
             date = datetime.now() - timedelta(days=i*30)
             month_year = date.strftime("%Y-%m")
-            history.append({"mes": month_year, "total": 0})
+            history.append({"mes": month_year, "total": 0, "count": 0})
 
         match_ingresos = {"tenant_id": tenant_id, "estado": {"$in": ["FINALIZADO", "ENTREGADO"]}}
         if sucursal_filter: match_ingresos.update(sucursal_filter)
@@ -87,7 +90,8 @@ def get_kpis_handler(event, context):
             {"$match": match_ingresos},
             {"$group": {
                 "_id": {"$substr": ["$createdAt", 0, 7]},
-                "total": {"$sum": "$total"}
+                "total": {"$sum": "$total"},
+                "count": {"$sum": 1}
             }}
         ]))
 
@@ -95,6 +99,7 @@ def get_kpis_handler(event, context):
             for h in history:
                 if h['mes'] == res['_id']:
                     h['total'] = res['total']
+                    h['count'] = res['count']
 
         return create_response(200, "KPIs generados", {
             "top_clientes": top_clientes,
@@ -104,5 +109,4 @@ def get_kpis_handler(event, context):
         })
 
     except Exception as e:
-        logger.exception("Error en get_kpis_handler")
-        return create_response(500, str(e))
+        return handle_exception(e)
