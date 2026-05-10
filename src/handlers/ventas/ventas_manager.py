@@ -1,9 +1,11 @@
 import json
 import uuid
 from datetime import datetime
-from src.utils.response import create_response
-from src.utils.db import get_tenant_db
-from src.utils.logger import logger
+from aws_lambda_powertools import Logger
+from src.shared.utils.response_handler import create_response, handle_exception
+from src.shared.infrastructure.database import get_tenant_db
+
+logger = Logger()
 from bson import ObjectId
 
 def create_venta_handler(event, context):
@@ -55,7 +57,7 @@ def create_venta_handler(event, context):
 
         # 4. CERRAR ORDEN DE SERVICIO (Integración)
         if orden_id:
-            db["ordenes"].update_one(
+            db["ordenes_servicio"].update_one(
                 {"_id": ObjectId(orden_id)},
                 {"$set": {
                     "estado": "ENTREGADO", # O un nuevo estado "PAGADA"
@@ -72,5 +74,4 @@ def create_venta_handler(event, context):
         return create_response(201, "Venta procesada con éxito", nueva_venta)
 
     except Exception as e:
-        logger.exception("Error en create_venta_handler")
-        return create_response(500, str(e))
+        return handle_exception(e)

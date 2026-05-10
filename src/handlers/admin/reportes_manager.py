@@ -18,14 +18,10 @@ def get_kpis_handler(event, context):
         query_params = event.get('queryStringParameters') or {}
         sucursal_id = query_params.get('sucursal_id')
         
-        # Filtro base para sucursal (lenient)
+        # Filtro base para sucursal (estricto para aislamiento)
         sucursal_filter = {}
         if sucursal_id:
-            sucursal_filter = {"$or": [
-                {"sucursal_id": sucursal_id},
-                {"sucursal_id": {"$exists": False}},
-                {"sucursal_id": None}
-            ]}
+            sucursal_filter = {"sucursal_id": sucursal_id}
 
         db = get_tenant_db(tenant_id)
         
@@ -33,7 +29,7 @@ def get_kpis_handler(event, context):
         match_clientes = {"tenant_id": tenant_id, "estado": {"$in": ["FINALIZADO", "ENTREGADO"]}}
         if sucursal_filter: match_clientes.update(sucursal_filter)
         
-        top_clientes = list(db["ordenes"].aggregate([
+        top_clientes = list(db["ordenes_servicio"].aggregate([
             {"$match": match_clientes},
             {"$group": {
                 "_id": "$cliente_id",
@@ -64,7 +60,7 @@ def get_kpis_handler(event, context):
         match_mecanicos = {"tenant_id": tenant_id, "mecanico_id": {"$ne": None}}
         if sucursal_filter: match_mecanicos.update(sucursal_filter)
         
-        mecanicos_stats = list(db["ordenes"].aggregate([
+        mecanicos_stats = list(db["ordenes_servicio"].aggregate([
             {"$match": match_mecanicos},
             {"$group": {
                 "_id": "$mecanico_id",
@@ -86,7 +82,7 @@ def get_kpis_handler(event, context):
         match_ingresos = {"tenant_id": tenant_id, "estado": {"$in": ["FINALIZADO", "ENTREGADO"]}}
         if sucursal_filter: match_ingresos.update(sucursal_filter)
         
-        ingresos_mensuales = list(db["ordenes"].aggregate([
+        ingresos_mensuales = list(db["ordenes_servicio"].aggregate([
             {"$match": match_ingresos},
             {"$group": {
                 "_id": {"$substr": ["$createdAt", 0, 7]},
@@ -106,7 +102,7 @@ def get_kpis_handler(event, context):
         match_hoy = {"tenant_id": tenant_id, "createdAt": {"$regex": f"^{today_str}"}, "estado": {"$in": ["FINALIZADO", "ENTREGADO"]}}
         if sucursal_filter: match_hoy.update(sucursal_filter)
         
-        res_hoy = list(db["ordenes"].aggregate([
+        res_hoy = list(db["ordenes_servicio"].aggregate([
             {"$match": match_hoy},
             {"$group": {"_id": None, "total": {"$sum": "$total"}}}
         ]))
