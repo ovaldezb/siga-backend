@@ -101,11 +101,29 @@ def get_kpis_handler(event, context):
                     h['total'] = res['total']
                     h['count'] = res['count']
 
+        # 5. VENTAS HOY
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        match_hoy = {"tenant_id": tenant_id, "createdAt": {"$regex": f"^{today_str}"}, "estado": {"$in": ["FINALIZADO", "ENTREGADO"]}}
+        if sucursal_filter: match_hoy.update(sucursal_filter)
+        
+        res_hoy = list(db["ordenes"].aggregate([
+            {"$match": match_hoy},
+            {"$group": {"_id": None, "total": {"$sum": "$total"}}}
+        ]))
+        ventas_hoy = res_hoy[0]['total'] if res_hoy else 0
+
+        # 6. CITAS PENDIENTES
+        match_citas = {"tenant_id": tenant_id, "estado": "pendiente"}
+        if sucursal_filter: match_citas.update(sucursal_filter)
+        citas_pendientes = db["citas"].count_documents(match_citas)
+
         return create_response(200, "KPIs generados", {
             "top_clientes": top_clientes,
             "top_proveedores": top_proveedores,
             "mecanicos": mecanicos_stats,
-            "history": history
+            "history": history,
+            "ventas_hoy": ventas_hoy,
+            "citas_pendientes": citas_pendientes
         })
 
     except Exception as e:
