@@ -24,21 +24,27 @@ def list_items_handler(event, context):
         
         # Filtros
         query = {}
+        and_conditions = []
+        
         sucursal_id = query_params.get('sucursal_id')
         if sucursal_id:
-            query['$or'] = [
+            and_conditions.append({'$or': [
                 {'sucursal_id': sucursal_id},
                 {'sucursal_id': {'$exists': False}},
                 {'sucursal_id': None}
-            ]
+            ]})
             
         if tipo:
             query['tipo'] = tipo
+            
         if search:
-            query['$or'] = [
+            and_conditions.append({'$or': [
                 {"nombre": {"$regex": search, "$options": "i"}},
                 {"no_parte": {"$regex": search, "$options": "i"}}
-            ]
+            ]})
+            
+        if and_conditions:
+            query['$and'] = and_conditions
 
         total = db["items"].count_documents(query)
         items_result = list(db["items"].find(query).skip(skip).limit(limit))

@@ -39,15 +39,27 @@ def list_citas_handler(event, context):
         skip = (page - 1) * limit
 
         db = get_tenant_db(tenant_id)
-
         filter_query = {}
+        and_conditions = []
+
+        sucursal_id = query_params.get('sucursal_id')
+        if sucursal_id:
+            and_conditions.append({'$or': [
+                {'sucursal_id': sucursal_id},
+                {'sucursal_id': {'$exists': False}},
+                {'sucursal_id': None}
+            ]})
         if search_query:
             regex = re.compile(re.escape(search_query), re.IGNORECASE)
-            filter_query["$or"] = [
+            and_conditions.append({'$or': [
                 {"clienteNombre": regex},
                 {"servicio": regex},
                 {"tecnicoNombre": regex}
-            ]
+            ]})
+        
+        if and_conditions:
+            filter_query['$and'] = and_conditions
+            
         if estado and estado != 'todos':
             filter_query["estado"] = estado
         if fecha_desde or fecha_hasta:
@@ -112,7 +124,8 @@ def create_cita_handler(event, context):
             "notas": body.get('notas'),
             "createdAt": datetime.utcnow().isoformat(),
             "updatedAt": datetime.utcnow().isoformat(),
-            "tenant_id": tenant_id
+            "tenant_id": tenant_id,
+            "sucursal_id": body.get('sucursal_id')
         }
 
         result = db.citas.insert_one(nueva)

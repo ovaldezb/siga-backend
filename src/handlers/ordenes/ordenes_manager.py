@@ -134,13 +134,15 @@ def list_ordenes_handler(event, context):
         skip = (page - 1) * limit
         
         filter_query = {}
+        and_conditions = []
+        
         sucursal_id = query_params.get('sucursal_id')
         if sucursal_id:
-            filter_query['$or'] = [
+            and_conditions.append({'$or': [
                 {'sucursal_id': sucursal_id},
                 {'sucursal_id': {'$exists': False}},
                 {'sucursal_id': None}
-            ]
+            ]})
 
         vehiculo_id_filter = query_params.get('vehiculo_id')
         if vehiculo_id_filter:
@@ -150,11 +152,14 @@ def list_ordenes_handler(event, context):
         if search_query:
             import re
             regex = re.compile(re.escape(search_query), re.IGNORECASE)
-            filter_query["$or"] = [
+            and_conditions.append({'$or': [
                 {"folio": regex},
                 {"cliente_snapshot.nombre": regex},
                 {"cliente_snapshot.apellido_paterno": regex}
-            ]
+            ]})
+
+        if and_conditions:
+            filter_query['$and'] = and_conditions
 
         db = get_tenant_db(tenant_id)
         
