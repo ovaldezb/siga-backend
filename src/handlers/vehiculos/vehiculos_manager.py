@@ -79,7 +79,9 @@ def list_vehiculos_handler(event, context):
                                 "$concat": [
                                     {"$arrayElemAt": ["$cliente_info.nombre", 0]},
                                     " ",
-                                    {"$arrayElemAt": ["$cliente_info.apellido_paterno", 0]}
+                                    {"$arrayElemAt": ["$cliente_info.apellido_paterno", 0]},
+                                    " ",
+                                    {"$ifNull": [{"$arrayElemAt": ["$cliente_info.apellido_materno", 0]}, ""]}
                                 ]
                             },
                             "else": "Cliente Desconocido"
@@ -160,7 +162,9 @@ def get_vehiculo_handler(event, context):
                                 "$concat": [
                                     {"$arrayElemAt": ["$cliente_info.nombre", 0]},
                                     " ",
-                                    {"$arrayElemAt": ["$cliente_info.apellido_paterno", 0]}
+                                    {"$arrayElemAt": ["$cliente_info.apellido_paterno", 0]},
+                                    " ",
+                                    {"$ifNull": [{"$arrayElemAt": ["$cliente_info.apellido_materno", 0]}, ""]}
                                 ]
                             },
                             "else": "Cliente Desconocido"
@@ -220,8 +224,9 @@ def create_vehiculo_handler(event, context):
         }
 
         # Mezclar con el resto de los campos del body (color, vin, anio, kilometraje, etc.)
+        # EXCLUIMOS campos de UI como 'cliente_nombre' para no ensuciar la DB
         for k, v in body.items():
-            if k not in ['id', '_id', 'tenant_id', 'createdAt', 'marca', 'modelo', 'placas', 'cliente_id']:
+            if k not in ['id', '_id', 'tenant_id', 'createdAt', 'marca', 'modelo', 'placas', 'cliente_id', 'cliente_nombre']:
                 nuevo_vehiculo[k] = v
 
         result = db["vehiculos"].insert_one(nuevo_vehiculo)
