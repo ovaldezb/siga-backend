@@ -1,6 +1,7 @@
 import json
 import re
 from datetime import datetime
+from bson import ObjectId
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.utils.auth_utils import parse_object_id, get_tenant_id
@@ -12,7 +13,7 @@ logger = Logger()
 ALLOWED_FIELDS = {
     "clienteId", "clienteNombre", "vehiculoId", "vehiculoDesc",
     "tecnicoId", "tecnicoNombre", "fecha", "horaInicio", "horaFin",
-    "servicio", "estado", "notas"
+    "servicio", "estado", "notas", "orden_id"
 }
 
 VALID_ESTADOS = {"pendiente", "confirmada", "en_proceso", "completada", "cancelada"}
@@ -118,6 +119,7 @@ def create_cita_handler(event, context):
             "servicio": body.get('servicio'),
             "estado": estado,
             "notas": body.get('notas'),
+            "orden_id": body.get('orden_id'),
             "createdAt": datetime.utcnow().isoformat(),
             "updatedAt": datetime.utcnow().isoformat(),
             "tenant_id": tenant_id,
@@ -125,10 +127,77 @@ def create_cita_handler(event, context):
         }
 
         result = db.citas.insert_one(nueva)
-        nueva['id'] = str(result.inserted_id)
+        cita_id = str(result.inserted_id)
+        nueva['id'] = cita_id
         del nueva['_id']
 
-        return create_response(201, "Cita creada exitosamente", nueva)
+        # NUEVO: Crear Orden de Servicio automáticamente
+        try:
+            # 1. Obtener siguiente folio de OS
+            folio_res = db.folios.find_one_and_update(
+                {"tipo": "os"},
+                {"$inc": {"secuencia": 1}},
+                upsert=True,
+                return_document=ReturnDocument.AFTER
+            )
+            secuencia = folio_res.get('secuencia', 1)
+            folio = f"OS-{str(secuencia).zfill(4)}"
+
+            # 2. Crear snapshot del cliente
+            cliente_id = body.get('clienteId')
+            cliente_doc = db.clientes.find_one({"_id": ObjectId(cliente_id)}) if cliente_id else None
+            cliente_snapshot = {}
+            if cliente_doc:
+                cliente_snapshot = {
+                    "id": str(cliente_doc["_id"]),
+                    "nombre": cliente_doc.get("nombre"),
+                    "apellido_paterno": cliente_doc.get("apellido_paterno"),
+                    "telefono": cliente_doc.get("telefono"),
+                    "email": cliente_doc.get("email")
+                }
+            else:
+                cliente_snapshot = {"nombre": body.get("clienteNombre"), "id": cliente_id}
+
+            # 3. Crear documento de OS
+            responsable = body.get('usuario_email') or 'system'
+            os_doc = {
+                "folio": folio,
+                "tenant_id": tenant_id,
+                "sucursal_id": body.get("sucursal_id"),
+                "estado": "RECEPCION",
+                "bitacora_estados": [{
+                    "estado": "RECEPCION",
+                    "fecha": datetime.utcnow().isoformat() + "Z",
+                    "usuario_id": responsable
+                }],
+                "cliente_snapshot": cliente_snapshot,
+                "vehiculo_id": body.get("vehiculoId"),
+                "cita_id": cita_id,
+                "puntosArreglar": [{
+                    "nombre": body.get("servicio", "Servicio General"),
+                    "items": []
+                }],
+                "falla_reportada": body.get("notas", ""),
+                "mecanico_id": body.get("tecnicoId"),
+                "mecanico_nombre": body.get("tecnicoNombre"),
+                "total": 0,
+                "anticipo": 0,
+                "createdAt": datetime.utcnow(),
+                "updatedAt": datetime.utcnow()
+            }
+
+            os_result = db.ordenes_servicio.insert_one(os_doc)
+            orden_id = str(os_result.inserted_id)
+            
+            # Actualizar la cita con el orden_id
+            db.citas.update_one({"_id": ObjectId(cita_id)}, {"$set": {"orden_id": orden_id}})
+            nueva['orden_id'] = orden_id
+
+        except Exception as os_err:
+            # No bloqueamos la creación de la cita si falla la OS automática, pero lo logueamos
+            print(f"Error creando OS automática para cita {cita_id}: {os_err}")
+
+        return create_response(201, "Cita y Orden de Servicio creadas exitosamente", nueva)
     except Exception as e:
         return handle_exception(e)
 

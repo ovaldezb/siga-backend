@@ -17,10 +17,11 @@ class MongoDBConnection:
                 host = os.environ.get("MONGO_HOST")
                 db_name = os.environ.get("MONGO_DB", "siga")
 
-                if user and password and host:
-                    mongo_uri = f"mongodb+srv://{user}:{password}@{host}/{db_name}?retryWrites=true&w=majority"
-                else:
-                    raise ValueError("No MongoDB connection string or components found in environment variables.")
+                if not (user and password and host):
+                    missing = [k for k, v in {"MONGO_USER": user, "MONGO_PASSWORD": password, "MONGO_HOST": host}.items() if not v]
+                    raise ValueError(f"Faltan componentes de conexión a MongoDB en variables de entorno: {', '.join(missing)}")
+
+                mongo_uri = f"mongodb+srv://{user}:{password}@{host}/{db_name}?retryWrites=true&w=majority"
 
                 logger.info("Connecting to MongoDB Atlas...")
                 cls._instance = MongoClient(mongo_uri)

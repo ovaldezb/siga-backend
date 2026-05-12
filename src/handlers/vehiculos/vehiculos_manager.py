@@ -77,9 +77,9 @@ def list_vehiculos_handler(event, context):
                             "if": {"$gt": [{"$size": "$cliente_info"}, 0]},
                             "then": {
                                 "$concat": [
-                                    {"$arrayElemAt": ["$cliente_info.nombre", 0]},
+                                    {"$ifNull": [{"$arrayElemAt": ["$cliente_info.nombre", 0]}, ""]},
                                     " ",
-                                    {"$arrayElemAt": ["$cliente_info.apellido_paterno", 0]},
+                                    {"$ifNull": [{"$arrayElemAt": ["$cliente_info.apellido_paterno", 0]}, ""]},
                                     " ",
                                     {"$ifNull": [{"$arrayElemAt": ["$cliente_info.apellido_materno", 0]}, ""]}
                                 ]
@@ -160,9 +160,9 @@ def get_vehiculo_handler(event, context):
                             "if": {"$gt": [{"$size": "$cliente_info"}, 0]},
                             "then": {
                                 "$concat": [
-                                    {"$arrayElemAt": ["$cliente_info.nombre", 0]},
+                                    {"$ifNull": [{"$arrayElemAt": ["$cliente_info.nombre", 0]}, ""]},
                                     " ",
-                                    {"$arrayElemAt": ["$cliente_info.apellido_paterno", 0]},
+                                    {"$ifNull": [{"$arrayElemAt": ["$cliente_info.apellido_paterno", 0]}, ""]},
                                     " ",
                                     {"$ifNull": [{"$arrayElemAt": ["$cliente_info.apellido_materno", 0]}, ""]}
                                 ]

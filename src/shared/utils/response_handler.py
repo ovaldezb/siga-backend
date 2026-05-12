@@ -29,7 +29,7 @@ def handle_exception(e: Exception) -> Dict[str, Any]:
     """Map common client-side exceptions to 4xx; otherwise 500 with generic message."""
     if isinstance(e, (KeyError, ValueError, InvalidId)):
         logger.warning(f"Client error: {type(e).__name__}: {str(e)}")
-        return create_response(400, "Solicitud inválida.")
+        return create_response(400, f"Solicitud inválida: {str(e)}")
 
     logger.exception(f"An error occurred: {str(e)}")
     return create_response(500, "Ha ocurrido un error interno en el servidor.")

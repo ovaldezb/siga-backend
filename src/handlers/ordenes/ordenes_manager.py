@@ -13,7 +13,7 @@ def create_orden_handler(event, context):
     vehiculo_id = None
     vehiculo_es_nuevo = False
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})\
+        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
 
         tenant_id = claims.get('custom:tenant_id')
 
@@ -74,6 +74,7 @@ def create_orden_handler(event, context):
             }],
             "cliente_snapshot": body.get("cliente_snapshot"),
             "vehiculo_id": str(vehiculo_id),
+            "cita_id": body.get("cita_id"),
             "puntosArreglar": body.get("puntosArreglar", []),
             "falla_reportada": body.get("falla_reportada", ""),
             "diagnostico": body.get("diagnostico", ""),
@@ -108,6 +109,22 @@ def create_orden_handler(event, context):
                 vs['createdAt'] = vs['createdAt'].isoformat()
             if 'updatedAt' in vs and isinstance(vs['updatedAt'], datetime):
                 vs['updatedAt'] = vs['updatedAt'].isoformat()
+
+        # 4. Si viene de una cita, actualizar la cita con la referencia a la OS
+        cita_id = body.get("cita_id")
+        if cita_id:
+            try:
+                db["citas"].update_one(
+                    {"_id": ObjectId(cita_id)},
+                    {"$set": {
+                        "orden_id": orden_doc["id"],
+                        "estado": "en_proceso",
+                        "updatedAt": datetime.utcnow().isoformat()
+                    }}
+                )
+                logger.info(f"Cita {cita_id} vinculada a OS {orden_doc['id']}")
+            except Exception as cita_err:
+                logger.warning(f"No se pudo actualizar la cita {cita_id}: {cita_err}")
 
         return create_response(201, "Orden de servicio creada exitosamente", orden_doc)
 
@@ -307,7 +324,8 @@ def update_orden_handler(event, context):
             'kilometraje', 'nivel_tanque', 'testigos_encendidos', 'inventario',
             'proximo_cambio_bujias', 'proximo_cambio_aceite', 'anticipo',
             'cliente_snapshot', 'vehiculo_snapshot', 'bitacora_estados',
-            'aplica_costo_revision', 'costo_revision', 'fechaEstimadaEntrega'
+            'aplica_costo_revision', 'costo_revision', 'fechaEstimadaEntrega',
+            'cita_id'
         ]
         
         for campo in campos_permitidos:
