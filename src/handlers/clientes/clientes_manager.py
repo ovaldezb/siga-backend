@@ -26,7 +26,7 @@ def list_clientes_handler(event, context):
 
         query_params = event.get('queryStringParameters') or {}
         search_query = query_params.get('q', '').strip()
-        sucursal_id = query_params.get('sucursalId')
+        sucursal_id = query_params.get('sucursalId') or query_params.get('sucursal_id')
         page = int(query_params.get('page', 1))
         limit = int(query_params.get('limit', 20))
         skip = (page - 1) * limit
@@ -94,9 +94,12 @@ def create_cliente_handler(event, context):
 
         body = json.loads(event.get('body', '{}'))
         
+        if 'sucursalId' in body and 'sucursal_id' not in body:
+            body['sucursal_id'] = body.pop('sucursalId')
+
         # Validación básica manual para no sobrecomplicar el handler por ahora
         # VALIDACIÓN ESTRICTA
-        required = ["nombre", "apellido_paterno", "telefono", "sucursalId"]
+        required = ["nombre", "apellido_paterno", "telefono", "sucursal_id"]
         for field in required:
             if not body.get(field):
                 return create_response(400, f"El campo '{field}' es obligatorio.")
@@ -118,7 +121,7 @@ def create_cliente_handler(event, context):
             "dias_credito": int(body.get('dias_credito', 0)),
             "nivel_precio": int(body.get('nivel_precio', 1)),
             "vehiculos_resumen": [],
-            "sucursal_id": body['sucursalId'],
+            "sucursal_id": body['sucursal_id'],
             "createdAt": datetime.utcnow().isoformat(),
             "tenant_id": tenant_id
         }
@@ -246,8 +249,11 @@ def add_vehiculo_handler(event, context):
         if not cliente:
             return create_response(404, "Cliente no encontrado.")
 
-        if not body.get("sucursalId"):
-            return create_response(400, "El campo 'sucursalId' es obligatorio.")
+        if 'sucursalId' in body and 'sucursal_id' not in body:
+            body['sucursal_id'] = body.pop('sucursalId')
+
+        if not body.get("sucursal_id"):
+            return create_response(400, "El campo 'sucursal_id' es obligatorio.")
 
         nuevo_vehiculo = {
             "vehiculo_id": str(uuid.uuid4()),
@@ -257,7 +263,7 @@ def add_vehiculo_handler(event, context):
             "modelo": body['modelo'],
             "año": body.get('año') or body.get('anio'),
             "vin": body.get('vin'),
-            "sucursal_id": body['sucursalId'],
+            "sucursal_id": body['sucursal_id'],
             "tenant_id": tenant_id,
             "createdAt": datetime.utcnow().isoformat()
         }
