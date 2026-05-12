@@ -20,6 +20,7 @@ def list_vehiculos_handler(event, context):
         query_params = event.get('queryStringParameters') or {}
         cliente_id = query_params.get('cliente_id', '').strip()
         search = query_params.get('search', '').strip()
+        sucursal_id = query_params.get('sucursalId')
         
         # Paginación
         page = int(query_params.get('page', 1))
@@ -30,16 +31,26 @@ def list_vehiculos_handler(event, context):
 
         # Filtro base
         filtro = {}
+        if sucursal_id:
+            filtro["sucursal_id"] = sucursal_id
+
         if cliente_id:
             filtro["cliente_id"] = cliente_id
             
         if search:
             regex = {"$regex": search, "$options": "i"}
-            filtro["$or"] = [
+            search_filters = [
                 {"marca": regex},
                 {"modelo": regex},
                 {"placas": regex}
             ]
+            if filtro:
+                if "$or" in filtro: # Por si acaso
+                    filtro = {"$and": [filtro, {"$or": search_filters}]}
+                else:
+                    filtro["$or"] = search_filters
+            else:
+                filtro["$or"] = search_filters
         
         # Total de registros para el filtro dado
         total = db["vehiculos"].count_documents(filtro)
@@ -97,6 +108,8 @@ def list_vehiculos_handler(event, context):
         vehiculos = []
         for v in cursor:
             v['id'] = str(v.pop('_id'))
+            if 'sucursal_id' in v:
+                v['sucursalId'] = v.pop('sucursal_id')
             if 'createdAt' in v and isinstance(v['createdAt'], datetime):
                 v['createdAt'] = v['createdAt'].isoformat()
             if 'updatedAt' in v and isinstance(v['updatedAt'], datetime):
@@ -182,6 +195,8 @@ def get_vehiculo_handler(event, context):
 
         vehiculo = resultado[0]
         vehiculo['id'] = str(vehiculo.pop('_id'))
+        if 'sucursal_id' in vehiculo:
+            vehiculo['sucursalId'] = vehiculo.pop('sucursal_id')
         if 'createdAt' in vehiculo and isinstance(vehiculo['createdAt'], datetime):
             vehiculo['createdAt'] = vehiculo['createdAt'].isoformat()
         if 'updatedAt' in vehiculo and isinstance(vehiculo['updatedAt'], datetime):
@@ -206,7 +221,7 @@ def create_vehiculo_handler(event, context):
         db = get_tenant_db(tenant_id)
 
         # VALIDACIÓN ESTRICTA
-        required = ["marca", "modelo", "placas", "cliente_id"]
+        required = ["marca", "modelo", "placas", "cliente_id", "sucursalId"]
         for field in required:
             if not body.get(field):
                 return create_response(400, f"El campo '{field}' es obligatorio para registrar un vehículo.")
@@ -219,6 +234,7 @@ def create_vehiculo_handler(event, context):
             "modelo": body['modelo'],
             "placas": body['placas'],
             "cliente_id": body['cliente_id'],
+            "sucursal_id": body['sucursalId'],
             "tenant_id": tenant_id,
             "createdAt": datetime.utcnow()
         }
@@ -232,6 +248,8 @@ def create_vehiculo_handler(event, context):
         result = db["vehiculos"].insert_one(nuevo_vehiculo)
         nuevo_vehiculo['id'] = str(result.inserted_id)
         del nuevo_vehiculo['_id']
+        if 'sucursal_id' in nuevo_vehiculo:
+            nuevo_vehiculo['sucursalId'] = nuevo_vehiculo.pop('sucursal_id')
         nuevo_vehiculo['createdAt'] = nuevo_vehiculo['createdAt'].isoformat()
 
         return create_response(201, "Vehículo creado exitosamente", nuevo_vehiculo)
@@ -285,6 +303,11 @@ def update_vehiculo_handler(event, context):
 
         # Limpiar datos para el update (evitar cambiar IDs o tenant)
         update_data = {k: v for k, v in body.items() if k not in ['id', '_id', 'tenant_id', 'createdAt', 'cliente_nombre']}
+        
+        # Mapear sucursalId (camelCase FE) a sucursal_id (snake_case DB)
+        if 'sucursalId' in update_data:
+            update_data['sucursal_id'] = update_data.pop('sucursalId')
+            
         update_data['updatedAt'] = datetime.utcnow()
 
         result = db["vehiculos"].update_one(
@@ -298,6 +321,8 @@ def update_vehiculo_handler(event, context):
         # Obtener el objeto actualizado para devolverlo completo
         updated_vehiculo = db["vehiculos"].find_one({"_id": ObjectId(vehiculo_id)})
         updated_vehiculo['id'] = str(updated_vehiculo.pop('_id'))
+        if 'sucursal_id' in updated_vehiculo:
+            updated_vehiculo['sucursalId'] = updated_vehiculo.pop('sucursal_id')
         if 'createdAt' in updated_vehiculo and isinstance(updated_vehiculo['createdAt'], datetime):
             updated_vehiculo['createdAt'] = updated_vehiculo['createdAt'].isoformat()
         if 'updatedAt' in updated_vehiculo and isinstance(updated_vehiculo['updatedAt'], datetime):

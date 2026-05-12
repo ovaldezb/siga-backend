@@ -13,7 +13,7 @@ logger = Logger()
 ALLOWED_UPDATE_FIELDS = {
     "nombre", "apellido_paterno", "apellido_materno", "telefono", "email",
     "rfc", "razon_social", "regimen_fiscal", "codigo_postal", "tipo_persona",
-    "limite_credito", "dias_credito", "nivel_precio"
+    "limite_credito", "dias_credito", "nivel_precio", "sucursal_id"
 }
 
 def list_clientes_handler(event, context):
@@ -26,6 +26,7 @@ def list_clientes_handler(event, context):
 
         query_params = event.get('queryStringParameters') or {}
         search_query = query_params.get('q', '').strip()
+        sucursal_id = query_params.get('sucursalId')
         page = int(query_params.get('page', 1))
         limit = int(query_params.get('limit', 20))
         skip = (page - 1) * limit
@@ -33,16 +34,21 @@ def list_clientes_handler(event, context):
         db = get_tenant_db(tenant_id)
         
         filter_query = {}
+        if sucursal_id:
+            filter_query["sucursal_id"] = sucursal_id
+
         if search_query:
             import re
             regex = re.compile(re.escape(search_query), re.IGNORECASE)
-            filter_query = {
-                "$or": [
-                    {"nombre": regex},
-                    {"apellido_paterno": regex},
-                    {"telefono": regex}
-                ]
-            }
+            search_filters = [
+                {"nombre": regex},
+                {"apellido_paterno": regex},
+                {"telefono": regex}
+            ]
+            if filter_query:
+                filter_query = {"$and": [filter_query, {"$or": search_filters}]}
+            else:
+                filter_query = {"$or": search_filters}
 
         total = db.clientes.count_documents(filter_query)
         clientes = list(db.clientes.find(filter_query).skip(skip).limit(limit))
@@ -51,6 +57,8 @@ def list_clientes_handler(event, context):
         client_ids = []
         for c in clientes:
             c['id'] = str(c.pop('_id'))
+            if 'sucursal_id' in c:
+                c['sucursalId'] = c.pop('sucursal_id')
             client_ids.append(c['id'])
         
         # Conteo de vehículos eficiente (una sola consulta para toda la página)
@@ -88,7 +96,7 @@ def create_cliente_handler(event, context):
         
         # Validación básica manual para no sobrecomplicar el handler por ahora
         # VALIDACIÓN ESTRICTA
-        required = ["nombre", "apellido_paterno", "telefono"]
+        required = ["nombre", "apellido_paterno", "telefono", "sucursalId"]
         for field in required:
             if not body.get(field):
                 return create_response(400, f"El campo '{field}' es obligatorio.")
@@ -110,6 +118,7 @@ def create_cliente_handler(event, context):
             "dias_credito": int(body.get('dias_credito', 0)),
             "nivel_precio": int(body.get('nivel_precio', 1)),
             "vehiculos_resumen": [],
+            "sucursal_id": body['sucursalId'],
             "createdAt": datetime.utcnow().isoformat(),
             "tenant_id": tenant_id
         }
@@ -117,6 +126,8 @@ def create_cliente_handler(event, context):
         result = db.clientes.insert_one(nuevo_cliente)
         nuevo_cliente['id'] = str(result.inserted_id)
         del nuevo_cliente['_id']
+        if 'sucursal_id' in nuevo_cliente:
+            nuevo_cliente['sucursalId'] = nuevo_cliente.pop('sucursal_id')
         
         return create_response(201, "Cliente creado exitosamente", nuevo_cliente)
     except Exception as e:
@@ -139,6 +150,8 @@ def get_cliente_handler(event, context):
             return create_response(404, "Cliente no encontrado.")
 
         cliente['id'] = str(cliente.pop('_id'))
+        if 'sucursal_id' in cliente:
+            cliente['sucursalId'] = cliente.pop('sucursal_id')
         return create_response(200, "Detalle del cliente", cliente)
     except Exception as e:
         return handle_exception(e)
@@ -158,6 +171,11 @@ def update_cliente_handler(event, context):
             return create_response(400, err)
 
         body = json.loads(event.get('body', '{}'))
+        
+        # Mapear sucursalId a sucursal_id
+        if 'sucursalId' in body:
+            body['sucursal_id'] = body.pop('sucursalId')
+
         update_doc = {k: body[k] for k in ALLOWED_UPDATE_FIELDS if k in body}
 
         if not update_doc:
@@ -176,6 +194,8 @@ def update_cliente_handler(event, context):
             return create_response(404, "Cliente no encontrado.")
 
         result['id'] = str(result.pop('_id'))
+        if 'sucursal_id' in result:
+            result['sucursalId'] = result.pop('sucursal_id')
         return create_response(200, "Cliente actualizado", result)
     except Exception as e:
         return handle_exception(e)
@@ -226,6 +246,9 @@ def add_vehiculo_handler(event, context):
         if not cliente:
             return create_response(404, "Cliente no encontrado.")
 
+        if not body.get("sucursalId"):
+            return create_response(400, "El campo 'sucursalId' es obligatorio.")
+
         nuevo_vehiculo = {
             "vehiculo_id": str(uuid.uuid4()),
             "cliente_id": cliente_id,
@@ -234,6 +257,7 @@ def add_vehiculo_handler(event, context):
             "modelo": body['modelo'],
             "año": body.get('año') or body.get('anio'),
             "vin": body.get('vin'),
+            "sucursal_id": body['sucursalId'],
             "tenant_id": tenant_id,
             "createdAt": datetime.utcnow().isoformat()
         }
@@ -242,6 +266,8 @@ def add_vehiculo_handler(event, context):
         result = db.vehiculos.insert_one(nuevo_vehiculo)
         nuevo_vehiculo['id'] = str(result.inserted_id)
         if '_id' in nuevo_vehiculo: del nuevo_vehiculo['_id']
+        if 'sucursal_id' in nuevo_vehiculo:
+            nuevo_vehiculo['sucursalId'] = nuevo_vehiculo.pop('sucursal_id')
         
         # Actualizar resumen en el cliente
         vehiculo_resumen = {

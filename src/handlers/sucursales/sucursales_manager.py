@@ -52,7 +52,16 @@ def create_sucursal_handler(event, context):
         }
 
         result = db["sucursales"].insert_one(nueva_sucursal)
-        nueva_sucursal['id'] = str(result.inserted_id)
+        sid = str(result.inserted_id)
+        
+        # Inicializar contador de folios para esta sucursal
+        db["folios"].insert_one({
+            "tipo": "os",
+            "secuencia": 0, # Empezamos en 0 para que el primer next sea 1
+            "sucursal_id": sid
+        })
+
+        nueva_sucursal['id'] = sid
         del nueva_sucursal['_id']
         nueva_sucursal['createdAt'] = nueva_sucursal['createdAt'].isoformat()
         nueva_sucursal['updatedAt'] = nueva_sucursal['updatedAt'].isoformat()

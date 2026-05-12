@@ -110,12 +110,7 @@ def create_taller_handler(event, context):
             "status": "INITIALIZED"
         })
         
-        # 4. Insert initial Admin and Folio counter into Tenant DB
-        tenant_db["folios"].insert_one({
-            "tipo": "os",
-            "secuencia": 1
-        })
-
+        # 4. Insert initial Admin into Tenant DB
         tenant_db["usuarios"].insert_one({
             "id": admin_email, # Will be replaced by Cognito Username if needed, but email is fine for now as it's the username
             "email": admin_email,

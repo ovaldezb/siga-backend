@@ -23,6 +23,11 @@ def create_orden_handler(event, context):
         body = json.loads(event.get('body', '{}'))
         db = get_tenant_db(tenant_id)
 
+        # 0. Validar sucursalId
+        sucursal_id_os = body.get("sucursalId")
+        if not sucursal_id_os:
+            return create_response(400, "El campo 'sucursalId' es obligatorio para crear una orden de servicio.")
+
         # 1. Validar folio
         folio = body.get("folio")
         if not folio:
@@ -44,6 +49,7 @@ def create_orden_handler(event, context):
             vehiculo_doc = {
                 "cliente_id": body.get("cliente_snapshot", {}).get("id"),
                 "tenant_id": tenant_id,
+                "sucursal_id": sucursal_id_os, # Vinculado a la sucursal de la OS
                 "placas": vehiculo_data.get("placas", ""),
                 "marca": vehiculo_data.get("marca", ""),
                 "modelo": vehiculo_data.get("modelo", ""),
@@ -105,6 +111,8 @@ def create_orden_handler(event, context):
 
         vs = orden_doc.get('vehiculo_snapshot')
         if vs and isinstance(vs, dict):
+            if 'sucursal_id' in vs:
+                vs['sucursalId'] = vs.pop('sucursal_id')
             if 'createdAt' in vs and isinstance(vs['createdAt'], datetime):
                 vs['createdAt'] = vs['createdAt'].isoformat()
             if 'updatedAt' in vs and isinstance(vs['updatedAt'], datetime):
@@ -200,6 +208,8 @@ def list_ordenes_handler(event, context):
                 del v['_id']
                 
                 # Serializar fechas del vehículo para evitar error 500 en JSON
+                if 'sucursal_id' in v:
+                    v['sucursalId'] = v.pop('sucursal_id')
                 if 'createdAt' in v and isinstance(v['createdAt'], datetime):
                     v['createdAt'] = v['createdAt'].isoformat()
                 if 'updatedAt' in v and isinstance(v['updatedAt'], datetime):
@@ -220,10 +230,15 @@ def list_ordenes_handler(event, context):
             # Serializar fechas dentro del snapshot si existen (por seguridad)
             vs = o.get('vehiculo_snapshot')
             if vs and isinstance(vs, dict):
+                if 'sucursal_id' in vs:
+                    vs['sucursalId'] = vs.pop('sucursal_id')
                 if 'createdAt' in vs and isinstance(vs['createdAt'], datetime):
                     vs['createdAt'] = vs['createdAt'].isoformat()
                 if 'updatedAt' in vs and isinstance(vs['updatedAt'], datetime):
                     vs['updatedAt'] = vs['updatedAt'].isoformat()
+            
+            if 'sucursal_id' in o:
+                o['sucursalId'] = o.pop('sucursal_id')
 
             # Serializar fechas
             if 'createdAt' in o and isinstance(o['createdAt'], datetime):
@@ -265,6 +280,9 @@ def get_orden_handler(event, context):
         orden = db["ordenes_servicio"].find_one({"_id": ObjectId(orden_id)})
         if not orden:
             return create_response(404, "Orden no encontrada.")
+        
+        if 'sucursal_id' in orden:
+            orden['sucursalId'] = orden.pop('sucursal_id')
 
         orden['id'] = str(orden.pop('_id'))
 
@@ -274,6 +292,8 @@ def get_orden_handler(event, context):
                 vehiculo = db["vehiculos"].find_one({"_id": ObjectId(v_id)})
                 if vehiculo:
                     vehiculo['id'] = str(vehiculo.pop('_id'))
+                    if 'sucursal_id' in vehiculo:
+                        vehiculo['sucursalId'] = vehiculo.pop('sucursal_id')
                     if 'createdAt' in vehiculo and isinstance(vehiculo['createdAt'], datetime):
                         vehiculo['createdAt'] = vehiculo['createdAt'].isoformat()
                     if 'updatedAt' in vehiculo and isinstance(vehiculo['updatedAt'], datetime):
@@ -325,9 +345,13 @@ def update_orden_handler(event, context):
             'proximo_cambio_bujias', 'proximo_cambio_aceite', 'anticipo',
             'cliente_snapshot', 'vehiculo_snapshot', 'bitacora_estados',
             'aplica_costo_revision', 'costo_revision', 'fechaEstimadaEntrega',
-            'cita_id'
+            'cita_id','sucursal_id'
         ]
         
+        # Mapear sucursalId a sucursal_id
+        if 'sucursalId' in body:
+            body['sucursal_id'] = body.pop('sucursalId')
+
         for campo in campos_permitidos:
             if campo in body:
                 update_data[campo] = body[campo]
@@ -364,8 +388,13 @@ def update_orden_handler(event, context):
         if 'updatedAt' in orden and isinstance(orden['updatedAt'], datetime):
             orden['updatedAt'] = orden['updatedAt'].isoformat()
             
+        if 'sucursal_id' in orden:
+            orden['sucursalId'] = orden.pop('sucursal_id')
+            
         vs = orden.get('vehiculo_snapshot')
         if vs and isinstance(vs, dict):
+            if 'sucursal_id' in vs:
+                vs['sucursalId'] = vs.pop('sucursal_id')
             if 'createdAt' in vs and isinstance(vs['createdAt'], datetime):
                 vs['createdAt'] = vs['createdAt'].isoformat()
             if 'updatedAt' in vs and isinstance(vs['updatedAt'], datetime):

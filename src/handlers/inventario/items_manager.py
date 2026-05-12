@@ -16,6 +16,7 @@ def list_items_handler(event, context):
         query_params = event.get('queryStringParameters') or {}
         tipo = query_params.get('tipo')
         search = query_params.get('search')
+        sucursal_id = query_params.get('sucursalId')
         page = int(query_params.get('page', 1))
         limit = int(query_params.get('limit', 50))
         skip = (page - 1) * limit
@@ -47,6 +48,8 @@ def list_items_handler(event, context):
         
         for i in items_result:
             i['id'] = str(i.pop('_id'))
+            if 'sucursal_id' in i:
+                i['sucursalId'] = i.pop('sucursal_id')
             
         return create_response(200, "Items obtenidos", {
             "items": items_result,
@@ -112,6 +115,7 @@ def create_item_handler(event, context):
             "categoria": body.get('categoria', 'GENERAL'),
             "marca": body.get('marca', ''),
             "proveedor": body.get('proveedor', ''),
+            "sucursal_id": body.get('sucursalId'),
             "tenant_id": tenant_id,
             "sucursal_id": body.get('sucursal_id'),
             "createdAt": datetime.utcnow().isoformat() + "Z",
@@ -136,6 +140,8 @@ def create_item_handler(event, context):
         result = db["items"].insert_one(nuevo_item)
         nuevo_item['id'] = str(result.inserted_id)
         del nuevo_item['_id']
+        if 'sucursal_id' in nuevo_item:
+            nuevo_item['sucursalId'] = nuevo_item.pop('sucursal_id')
         
         return create_response(201, "Item creado exitosamente", nuevo_item)
     except Exception as e:
@@ -156,6 +162,8 @@ def get_item_handler(event, context):
             return create_response(404, "Item no encontrado.")
 
         item['id'] = str(item.pop('_id'))
+        if 'sucursal_id' in item:
+            item['sucursalId'] = item.pop('sucursal_id')
         return create_response(200, "Detalle del item", item)
     except Exception as e:
         return handle_exception(e)
@@ -176,8 +184,14 @@ def update_item_handler(event, context):
             "nombre", "no_parte", "tipo", "precio_venta", 
             "precio_taller", "precio_cliente", "precio_distribuidor",
             "precio_compra", "categoria", "marca", "proveedor", 
-            "clave_sat", "unidad_sat", "maneja_inventario", "activo", "icon"
+            "clave_sat", "unidad_sat", "maneja_inventario", "activo", "icon",
+            "sucursal_id"
         }
+        
+        # Mapear sucursalId a sucursal_id
+        if 'sucursalId' in body:
+            body['sucursal_id'] = body.pop('sucursalId')
+
         update_data = {k: body[k] for k in allowed if k in body}
 
         if not update_data:
@@ -196,6 +210,8 @@ def update_item_handler(event, context):
 
         item = db["items"].find_one({"_id": ObjectId(item_id)})
         item['id'] = str(item.pop('_id'))
+        if 'sucursal_id' in item:
+            i['sucursalId'] = i.pop('sucursal_id')
         return create_response(200, "Item actualizado", item)
     except Exception as e:
         return handle_exception(e)
@@ -232,10 +248,16 @@ def update_stock_handler(event, context):
 
         cantidad = int(body.get('cantidad', 0))
 
+        sucursal_id = body.get('sucursalId')
+        
         db = get_tenant_db(tenant_id)
         
-        # Buscar item y validar que maneja inventario
-        item = db["items"].find_one({"_id": ObjectId(item_id)})
+        # Buscar item y validar que maneja inventario y sucursal
+        query = {"_id": ObjectId(item_id)}
+        if sucursal_id:
+            query["sucursal_id"] = sucursal_id
+            
+        item = db["items"].find_one(query)
         if not item:
             return create_response(404, "Item no encontrado.")
         
