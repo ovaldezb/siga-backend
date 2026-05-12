@@ -85,7 +85,7 @@ def get_kpis_handler(event, context):
         ingresos_mensuales = list(db["ordenes_servicio"].aggregate([
             {"$match": match_ingresos},
             {"$group": {
-                "_id": {"$substr": ["$createdAt", 0, 7]},
+                "_id": {"$dateToString": {"format": "%Y-%m", "date": "$createdAt"}},
                 "total": {"$sum": "$total"},
                 "count": {"$sum": 1}
             }}
@@ -98,8 +98,12 @@ def get_kpis_handler(event, context):
                     h['count'] = res['count']
 
         # 5. VENTAS HOY
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        match_hoy = {"tenant_id": tenant_id, "createdAt": {"$regex": f"^{today_str}"}, "estado": {"$in": ["FINALIZADO", "ENTREGADO"]}}
+        today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        match_hoy = {
+            "tenant_id": tenant_id, 
+            "createdAt": {"$gte": today}, 
+            "estado": {"$in": ["FINALIZADO", "ENTREGADO"]}
+        }
         if sucursal_filter: match_hoy.update(sucursal_filter)
         
         res_hoy = list(db["ordenes_servicio"].aggregate([
