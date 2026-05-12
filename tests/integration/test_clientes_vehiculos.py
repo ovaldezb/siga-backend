@@ -9,7 +9,7 @@ def test_create_cliente_with_apellidos(mock_db):
     """Verifica que el cliente se cree con nombre y apellidos separados."""
     event = {
         "body": json.dumps({
-            "sucursal_id": "sucursal123",
+            "sucursalId": "sucursal123",
             "nombre": "Juan",
             "apellido_paterno": "Perez",
             "apellido_materno": "Lopez",
@@ -50,7 +50,7 @@ def test_add_vehiculo_to_cliente_and_summary(mock_db):
     event = {
         "pathParameters": {"id": cliente_id},
         "body": json.dumps({
-            "sucursal_id": "sucursal123",
+            "sucursalId": "sucursal123",
             "marca": "Toyota",
             "modelo": "Corolla",
             "año": 2022,
