@@ -256,7 +256,6 @@ def add_vehiculo_handler(event, context):
             return create_response(400, "El campo 'sucursal_id' es obligatorio.")
 
         nuevo_vehiculo = {
-            "vehiculo_id": str(uuid.uuid4()),
             "cliente_id": cliente_id,
             "placas": body['placas'],
             "marca": body['marca'],

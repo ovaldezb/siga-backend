@@ -103,7 +103,6 @@ def create_item_handler(event, context):
         # 5. Preparar item
         tipo = body.get('tipo', 'PRODUCTO')
         nuevo_item = {
-            "item_id": str(uuid.uuid4()),
             "tipo": tipo,
             "nombre": body['nombre'],
             "no_parte": body['no_parte'],
