@@ -131,10 +131,43 @@ def get_kpis_handler(event, context):
                     h['total'] += res['total']
                     h['count'] += res['count']
 
-        # 5. CITAS PENDIENTES
+        # 5. UTILIDAD Y MARGEN (Consolidado)
+        # Utility from Sales (POS)
+        res_util_ventas = list(db["ventas"].aggregate([
+            {"$match": filter_base},
+            {"$unwind": "$items"},
+            {"$group": {
+                "_id": None,
+                "utilidad": {"$sum": {"$multiply": [{"$subtract": ["$items.precio_unitario", {"$ifNull": ["$items.producto.precio_compra", 0]}]}, "$items.cantidad"]}}
+            }}
+        ]))
+        
+        # Utility from OS
+        res_util_os = list(db["ordenes_servicio"].aggregate([
+            {"$match": {**filter_base, "estado": "ENTREGADO"}},
+            {"$unwind": {"path": "$puntosArreglar", "preserveNullAndEmptyArrays": True}},
+            {"$unwind": {"path": "$puntosArreglar.items", "preserveNullAndEmptyArrays": True}},
+            {"$group": {
+                "_id": None,
+                "utilidad": {"$sum": {"$multiply": [{"$subtract": ["$puntosArreglar.items.precioVenta", {"$ifNull": ["$puntosArreglar.items.precioCompra", 0]}]}, "$puntosArreglar.items.piezas"]}}
+            }}
+        ]))
+        
+        utilidad_total = (res_util_ventas[0]['utilidad'] if res_util_ventas else 0) + \
+                         (res_util_os[0]['utilidad'] if res_util_os else 0)
+        
+        # Ingresos totales para margen
+        ingresos_totales = list(db["ventas"].aggregate([
+            {"$match": filter_base},
+            {"$group": {"_id": None, "total": {"$sum": "$total"}}}
+        ]))
+        ingresos_totales_val = (ingresos_totales[0]['total'] if ingresos_totales else 0)
+        margen = (utilidad_total / ingresos_totales_val * 100) if ingresos_totales_val > 0 else 0
+
+        # 6. CITAS PENDIENTES
         citas_pendientes = db["citas"].count_documents({**filter_base, "estado": "pendiente"})
 
-        # 6. PRODUCTO MÁS VENDIDO (Top 1)
+        # 7. PRODUCTO MÁS VENDIDO (Top 1)
         top_producto = list(db["ventas"].aggregate([
             {"$match": filter_base},
             {"$unwind": "$items"},
@@ -153,7 +186,9 @@ def get_kpis_handler(event, context):
             "history": history,
             "ventas_hoy": ventas_hoy,
             "citas_pendientes": citas_pendientes,
-            "top_producto": top_producto[0] if top_producto else None
+            "top_producto": top_producto[0] if top_producto else None,
+            "utilidad_total": round(utilidad_total, 2),
+            "margen_promedio": round(margen, 2)
         })
 
     except Exception as e:
