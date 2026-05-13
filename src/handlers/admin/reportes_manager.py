@@ -27,18 +27,29 @@ def get_kpis_handler(event, context):
 
         # 1. INGRESOS HOY (OS + POS)
         today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-        filter_hoy = {**filter_base, "createdAt": {"$gte": today}}
         
+        # Helper to convert createdAt to date if it's a string for match stage
+        match_date_expr = {
+            "$cond": [
+                {"$eq": [{"$type": "$createdAt"}, "string"]},
+                {"$dateFromString": {"dateString": "$createdAt"}},
+                "$createdAt"
+            ]
+        }
+
         # Ventas POS Hoy
         res_ventas_hoy = list(db["ventas"].aggregate([
-            {"$match": filter_hoy},
+            {"$match": filter_base},
+            {"$addFields": {"__date": match_date_expr}},
+            {"$match": {"__date": {"$gte": today}}},
             {"$group": {"_id": None, "total": {"$sum": "$total"}}}
         ]))
         
         # OS Hoy (Entregadas)
-        filter_os_hoy = {**filter_hoy, "estado": "ENTREGADO"}
         res_os_hoy = list(db["ordenes_servicio"].aggregate([
-            {"$match": filter_os_hoy},
+            {"$match": {**filter_base, "estado": "ENTREGADO"}},
+            {"$addFields": {"__date": match_date_expr}},
+            {"$match": {"__date": {"$gte": today}}},
             {"$group": {"_id": None, "total": {"$sum": "$total"}}}
         ]))
         
@@ -80,11 +91,21 @@ def get_kpis_handler(event, context):
             month_year = date.strftime("%Y-%m")
             history.append({"mes": month_year, "total": 0, "count": 0})
 
+        # Helper to convert createdAt to date if it's a string
+        date_expr = {
+            "$cond": [
+                {"$eq": [{"$type": "$createdAt"}, "string"]},
+                {"$dateFromString": {"dateString": "$createdAt"}},
+                "$createdAt"
+            ]
+        }
+
         # Agregación mensual de Ventas POS
         ventas_mensuales = list(db["ventas"].aggregate([
             {"$match": filter_base},
+            {"$addFields": {"__date": date_expr}},
             {"$group": {
-                "_id": {"$dateToString": {"format": "%Y-%m", "date": "$createdAt"}},
+                "_id": {"$dateToString": {"format": "%Y-%m", "date": "$__date"}},
                 "total": {"$sum": "$total"},
                 "count": {"$sum": 1}
             }}
@@ -93,8 +114,9 @@ def get_kpis_handler(event, context):
         # Agregación mensual de OS
         os_mensuales = list(db["ordenes_servicio"].aggregate([
             {"$match": {**filter_base, "estado": "ENTREGADO"}},
+            {"$addFields": {"__date": date_expr}},
             {"$group": {
-                "_id": {"$dateToString": {"format": "%Y-%m", "date": "$createdAt"}},
+                "_id": {"$dateToString": {"format": "%Y-%m", "date": "$__date"}},
                 "total": {"$sum": "$total"},
                 "count": {"$sum": 1}
             }}
@@ -102,6 +124,7 @@ def get_kpis_handler(event, context):
 
         # Combinar resultados en history
         for res in (ventas_mensuales + os_mensuales):
+            if not res.get('_id'): continue
             for h in history:
                 if h['mes'] == res['_id']:
                     h['total'] += res['total']
@@ -115,8 +138,8 @@ def get_kpis_handler(event, context):
             {"$match": filter_base},
             {"$unwind": "$items"},
             {"$group": {
-                "_id": "$items.producto.id",
-                "nombre": {"$first": "$items.producto.nombre"},
+                "_id": {"$ifNull": ["$items.producto.id", "$items.id"]},
+                "nombre": {"$first": "$items.nombre"},
                 "cantidad": {"$sum": "$items.cantidad"}
             }},
             {"$sort": {"cantidad": -1}},
@@ -133,7 +156,5 @@ def get_kpis_handler(event, context):
         })
 
     except Exception as e:
-        return handle_exception(e)
-
-    except Exception as e:
+        logger.exception("Error in get_kpis_handler")
         return handle_exception(e)
