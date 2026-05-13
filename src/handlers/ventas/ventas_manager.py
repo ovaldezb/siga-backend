@@ -51,6 +51,22 @@ def create_venta_handler(event, context):
         # 3. FOLIO SECUENCIAL (MongoDB atómico, no UUID)
         folio = _get_next_folio_internal(tenant_id, "venta", sucursal_id)
 
+        # 3.5 VALIDAR CRÉDITO SI APLICA
+        metodo_pago = body.get('metodo_pago', 'EFECTIVO').upper()
+        if metodo_pago == 'CREDITO':
+            cliente_id = body.get('cliente_id')
+            if not cliente_id or cliente_id == 'PUBLICO_GENERAL':
+                return create_response(400, "Ventas a crédito requieren un cliente registrado.")
+            
+            cliente = db["clientes"].find_one({"_id": ObjectId(cliente_id)})
+            if not cliente:
+                return create_response(404, "Cliente no encontrado.")
+            
+            limite = float(cliente.get('limite_credito', 0))
+            # TODO: En un sistema completo, restar saldo deudor actual
+            if total_calculado > limite:
+                 return create_response(400, f"Crédito insuficiente. Límite: ${limite:,.2f}, Compra: ${total_calculado:,.2f}")
+
         nueva_venta = {
             "folio": folio,
             "cliente_id": body.get('cliente_id', 'PUBLICO_GENERAL'),
@@ -60,7 +76,7 @@ def create_venta_handler(event, context):
             "descuento": descuento,
             "iva": iva_calculado,
             "total": total_calculado,
-            "metodo_pago": body.get('metodo_pago', 'EFECTIVO'),
+            "metodo_pago": metodo_pago,
             "pagos": body.get('pagos', []),
             "orden_id": orden_id,
             "usuario_id": usuario_id,
