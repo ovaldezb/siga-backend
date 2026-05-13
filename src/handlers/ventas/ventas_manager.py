@@ -33,6 +33,7 @@ def create_venta_handler(event, context):
             "descuento": body.get('descuento', 0),
             "total": total,
             "metodo_pago": body.get('metodo_pago', 'EFECTIVO'),
+            "pagos": body.get('pagos', []),
             "orden_id": orden_id,
             "tenant_id": tenant_id,
             "createdAt": datetime.utcnow().isoformat() + "Z"
