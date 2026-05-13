@@ -20,9 +20,12 @@ def _get_next_folio_internal(tenant_id, tipo, sucursal_id):
 
     secuencia = result.get('secuencia', 1)
     
-    # Formateo (ej: OS-0001)
-    prefix = tipo.upper()
-    return f"{prefix}-{str(secuencia).zfill(4)}"
+    # Formateo (ej: V-20240513-0001)
+    from datetime import datetime
+    date_str = datetime.now().strftime('%Y%m%d')
+    prefix = "V" if tipo == "venta" else tipo.upper()
+    
+    return f"{prefix}-{date_str}-{str(secuencia).zfill(4)}"
 
 def get_next_folio_handler(event, context):
     try:
