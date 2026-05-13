@@ -166,18 +166,10 @@ def list_ventas_handler(event, context):
         
         query = {"tenant_id": tenant_id}
         if sucursal_id:
-            parsed_sid = try_parse_id(sucursal_id)
-            if isinstance(parsed_sid, ObjectId):
-                query["sucursal_id"] = {"$in": [sucursal_id, parsed_sid]}
-            else:
-                query["sucursal_id"] = sucursal_id
+            query["sucursal_id"] = sucursal_id
 
         if cliente_id:
-            parsed_cid = try_parse_id(cliente_id)
-            if isinstance(parsed_cid, ObjectId):
-                query["cliente_id"] = {"$in": [cliente_id, parsed_cid]}
-            else:
-                query["cliente_id"] = cliente_id
+            query["cliente_id"] = cliente_id
 
         ventas = list(db["ventas"].find(query).sort("createdAt", -1).limit(100))
         

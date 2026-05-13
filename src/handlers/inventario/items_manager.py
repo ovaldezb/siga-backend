@@ -27,11 +27,7 @@ def list_items_handler(event, context):
         query = {}
         and_conditions = []
         if sucursal_id:
-            parsed_sid = try_parse_id(sucursal_id)
-            if isinstance(parsed_sid, ObjectId):
-                and_conditions.append({'sucursal_id': {"$in": [sucursal_id, parsed_sid]}})
-            else:
-                and_conditions.append({'sucursal_id': sucursal_id})
+            and_conditions.append({'sucursal_id': sucursal_id})
             
         if tipo:
             query['tipo'] = tipo

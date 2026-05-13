@@ -19,12 +19,7 @@ def parse_object_id(value: str) -> Tuple[Optional[ObjectId], Optional[str]]:
         return None, "ID inválido."
 
 def try_parse_id(value: Any) -> Any:
-    """Intenta convertir a ObjectId si es un string de 24 hex chars."""
-    if not isinstance(value, str):
-        return value
-    if len(value) == 24:
-        try:
-            return ObjectId(value)
-        except (InvalidId, TypeError):
-            pass
-    return value
+    """Retorna siempre el string para evitar problemas de tipo con ObjectId."""
+    if value is None:
+        return None
+    return str(value)

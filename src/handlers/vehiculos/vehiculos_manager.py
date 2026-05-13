@@ -33,18 +33,10 @@ def list_vehiculos_handler(event, context):
         # Filtro base
         filtro = {}
         if sucursal_id:
-            parsed_sid = try_parse_id(sucursal_id)
-            if isinstance(parsed_sid, ObjectId):
-                filtro["sucursal_id"] = {"$in": [sucursal_id, parsed_sid]}
-            else:
-                filtro["sucursal_id"] = sucursal_id
+            filtro["sucursal_id"] = sucursal_id
 
         if cliente_id:
-            parsed_cid = try_parse_id(cliente_id)
-            if isinstance(parsed_cid, ObjectId):
-                filtro["cliente_id"] = {"$in": [cliente_id, parsed_cid]}
-            else:
-                filtro["cliente_id"] = cliente_id
+            filtro["cliente_id"] = cliente_id
             
         if search:
             regex = {"$regex": search, "$options": "i"}
@@ -71,22 +63,15 @@ def list_vehiculos_handler(event, context):
             {"$skip": skip},
             {"$limit": limit},
             {
-                "$addFields": {
-                    "cliente_oid": {
-                        "$convert": {
-                            "input": "$cliente_id",
-                            "to": "objectId",
-                            "onError": "$cliente_id",
-                            "onNull": None
-                        }
-                    }
-                }
-            },
-            {
                 "$lookup": {
                     "from": "clientes",
-                    "localField": "cliente_oid",
-                    "foreignField": "_id",
+                    "let": {"cid": "$cliente_id"},
+                    "pipeline": [
+                        {"$match": {"$expr": {"$or": [
+                            {"$eq": ["$_id", "$$cid"]},
+                            {"$eq": ["$_id", {"$toObjectId": "$$cid"}]}
+                        ]}}}
+                    ],
                     "as": "cliente_info"
                 }
             },
@@ -109,7 +94,7 @@ def list_vehiculos_handler(event, context):
                     }
                 }
             },
-            {"$project": {"cliente_info": 0, "cliente_oid": 0}}
+            {"$project": {"cliente_info": 0}}
         ]
         
         cursor = db["vehiculos"].aggregate(pipeline)

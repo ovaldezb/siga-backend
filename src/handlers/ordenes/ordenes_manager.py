@@ -164,19 +164,11 @@ def list_ordenes_handler(event, context):
         
         sucursal_id = query_params.get('sucursal_id')
         if sucursal_id:
-            parsed_sid = try_parse_id(sucursal_id)
-            if isinstance(parsed_sid, ObjectId):
-                and_conditions.append({'sucursal_id': {"$in": [sucursal_id, parsed_sid]}})
-            else:
-                and_conditions.append({'sucursal_id': sucursal_id})
+            and_conditions.append({'sucursal_id': sucursal_id})
 
         vehiculo_id_filter = query_params.get('vehiculo_id')
         if vehiculo_id_filter:
-            parsed_vid = try_parse_id(vehiculo_id_filter)
-            if isinstance(parsed_vid, ObjectId):
-                filter_query['vehiculo_id'] = {"$in": [vehiculo_id_filter, parsed_vid]}
-            else:
-                filter_query['vehiculo_id'] = vehiculo_id_filter
+            filter_query['vehiculo_id'] = vehiculo_id_filter
             
         search_query = query_params.get('q')
         if search_query:
@@ -199,18 +191,19 @@ def list_ordenes_handler(event, context):
         ordenes_list = list(ordenes_cursor)
         
         # Obtener datos de vehículos por lote para evitar lazy loading en el front
-        vehiculo_ids = []
-        for o in ordenes_list:
-            v_id = o.get('vehiculo_id')
-            if v_id:
-                parsed_v = try_parse_id(v_id)
-                if isinstance(parsed_v, ObjectId):
-                    vehiculo_ids.append(parsed_v)
+        vehiculo_ids = list(set([o.get('vehiculo_id') for o in ordenes_list if o.get('vehiculo_id')]))
         
         vehiculos_map = {}
         if vehiculo_ids:
-            # Buscar por ID (ObjectId o string si existe alguno residual)
-            vehiculos_data = db["vehiculos"].find({"$or": [{"_id": {"$in": vehiculo_ids}}, {"_id": {"$in": [str(vid) for vid in vehiculo_ids]}}]})
+            # Buscar por ID
+            query_ids = []
+            for vid in vehiculo_ids:
+                query_ids.append(vid)
+                try:
+                    query_ids.append(ObjectId(vid))
+                except:
+                    pass
+            vehiculos_data = db["vehiculos"].find({"_id": {"$in": query_ids}})
             for v in vehiculos_data:
                 v_id_str = str(v['_id'])
                 v['id'] = v_id_str

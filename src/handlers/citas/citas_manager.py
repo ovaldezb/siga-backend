@@ -45,11 +45,7 @@ def list_citas_handler(event, context):
 
         sucursal_id = query_params.get('sucursal_id')
         if sucursal_id:
-            parsed_sid = try_parse_id(sucursal_id)
-            if isinstance(parsed_sid, ObjectId):
-                and_conditions.append({'sucursal_id': {"$in": [sucursal_id, parsed_sid]}})
-            else:
-                and_conditions.append({'sucursal_id': sucursal_id})
+            and_conditions.append({'sucursal_id': sucursal_id})
         if search_query:
             regex = re.compile(re.escape(search_query), re.IGNORECASE)
             and_conditions.append({'$or': [
