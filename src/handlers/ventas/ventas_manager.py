@@ -80,10 +80,26 @@ def create_venta_handler(event, context):
             if total_calculado > limite:
                  return create_response(400, f"Crédito insuficiente. Límite: ${limite:,.2f}, Compra: ${total_calculado:,.2f}")
 
+        # 3.7 VINCULAR VEHÍCULO SI VIENE DE OS
+        vehiculo_id = body.get('vehiculo_id')
+        vehiculo_snapshot = body.get('vehiculo_snapshot')
+        if orden_id and not vehiculo_id:
+             os_doc = db["ordenes_servicio"].find_one({"_id": ObjectId(orden_id)})
+             if os_doc:
+                 vehiculo_id = os_doc.get('vehiculo_id')
+                 # Si no hay snapshot en body, intentar obtenerlo del vehículo real
+                 if not vehiculo_snapshot and vehiculo_id:
+                      v_doc = db["vehiculos"].find_one({"_id": ObjectId(vehiculo_id)})
+                      if v_doc:
+                          v_doc['id'] = str(v_doc.pop('_id'))
+                          vehiculo_snapshot = v_doc
+
         nueva_venta = {
             "folio": folio,
             "cliente_id": body.get('cliente_id', 'PUBLICO_GENERAL'),
             "cliente_nombre": body.get('cliente_nombre', 'Público General'),
+            "vehiculo_id": vehiculo_id,
+            "vehiculo_snapshot": vehiculo_snapshot,
             "sucursal_id": sucursal_id,
             "items": items,
             "subtotal": round(subtotal_calculado, 2),

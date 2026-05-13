@@ -112,6 +112,7 @@ def create_item_handler(event, context):
             "categoria": body.get('categoria', 'GENERAL'),
             "marca": body.get('marca', ''),
             "proveedor": body.get('proveedor', ''),
+            "proveedor_id": body.get('proveedor_id') or body.get('proveedorId'),
             "sucursal_id": body.get('sucursalId') or body.get('sucursal_id'),
             "tenant_id": tenant_id,
             "createdAt": datetime.utcnow().isoformat() + "Z",
@@ -179,14 +180,16 @@ def update_item_handler(event, context):
         allowed = {
             "nombre", "no_parte", "tipo", "precio_venta", 
             "precio_taller", "precio_cliente", "precio_distribuidor",
-            "precio_compra", "categoria", "marca", "proveedor", 
+            "precio_compra", "categoria", "marca", "proveedor", "proveedor_id",
             "clave_sat", "unidad_sat", "maneja_inventario", "activo", "icon",
             "sucursal_id"
         }
         
-        # Mapear sucursalId a sucursal_id
+        # Mapear IDs
         if 'sucursalId' in body:
             body['sucursal_id'] = body.pop('sucursalId')
+        if 'proveedorId' in body:
+            body['proveedor_id'] = body.pop('proveedorId')
 
         update_data = {k: body[k] for k in allowed if k in body}
 

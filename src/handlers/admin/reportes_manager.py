@@ -159,3 +159,73 @@ def get_kpis_handler(event, context):
     except Exception as e:
         logger.exception("Error in get_kpis_handler")
         return handle_exception(e)
+
+
+@logger.inject_lambda_context
+def get_customer_history_handler(event, context):
+    """GET /reportes/cliente/{id} — Historial completo de un cliente (360°)."""
+    try:
+        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        tenant_id = claims.get('custom:tenant_id')
+        if not tenant_id: return create_response(403, "No autorizado")
+
+        cliente_id = event['pathParameters']['id']
+        db = get_tenant_db(tenant_id)
+
+        # 1. Citas
+        citas = list(db["citas"].find({"cliente_id": cliente_id}).sort("fecha", -1))
+        for c in citas: 
+            c["id"] = str(c.pop("_id"))
+
+        # 2. Ordenes de Servicio
+        # Buscamos por cliente_snapshot.id (que es como se guarda) o por cliente_id si existiera
+        ordenes = list(db["ordenes_servicio"].find({
+            "$or": [
+                {"cliente_snapshot.id": cliente_id},
+                {"cliente_id": cliente_id}
+            ]
+        }).sort("createdAt", -1))
+        for o in ordenes:
+            o["id"] = str(o.pop("_id"))
+            if "createdAt" in o and isinstance(o["createdAt"], datetime):
+                o["createdAt"] = o["createdAt"].isoformat()
+
+        # 3. Ventas (POS + OS)
+        ventas = list(db["ventas"].find({"cliente_id": cliente_id}).sort("createdAt", -1))
+        total_gastado = 0
+        items_comprados = {}
+
+        for v in ventas:
+            v["id"] = str(v.pop("_id"))
+            total_gastado += v.get("total", 0)
+            if "createdAt" in v and isinstance(v["createdAt"], datetime):
+                v["createdAt"] = v["createdAt"].isoformat()
+            
+            # Analizar qué compra el cliente
+            for item in v.get("items", []):
+                prod = item.get("producto", {})
+                name = prod.get("nombre") or item.get("nombre")
+                if name:
+                    items_comprados[name] = items_comprados.get(name, 0) + item.get("cantidad", 1)
+
+        # 4. Formatear items comprados
+        resumen_compras = sorted(
+            [{"nombre": k, "cantidad": v} for k, v in items_comprados.items()],
+            key=lambda x: x["cantidad"],
+            reverse=True
+        )
+
+        return create_response(200, "Historial del cliente recuperado", {
+            "citas": citas,
+            "ordenes": ordenes,
+            "ventas": ventas,
+            "metricas": {
+                "total_gastado": round(total_gastado, 2),
+                "total_visitas": len(ventas),
+                "resumen_compras": resumen_compras
+            }
+        })
+
+    except Exception as e:
+        logger.exception("Error in get_customer_history_handler")
+        return handle_exception(e)
