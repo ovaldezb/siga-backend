@@ -9,7 +9,7 @@ logger = Logger()
 
 @logger.inject_lambda_context
 def get_kpis_handler(event, context):
-    """GET /reportes/kpis — Obtiene métricas generales y tendencias."""
+    """GET /reportes/kpis — Obtiene métricas consolidadas (OS + POS)."""
     try:
         claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
         tenant_id = claims.get('custom:tenant_id')
@@ -18,50 +18,51 @@ def get_kpis_handler(event, context):
         query_params = event.get('queryStringParameters') or {}
         sucursal_id = query_params.get('sucursal_id')
         
-        # Filtro base para sucursal (estricto para aislamiento)
-        sucursal_filter = {}
-        if sucursal_id:
-            sucursal_filter = {"sucursal_id": sucursal_id}
-
         db = get_tenant_db(tenant_id)
         
-        # 1. MEJORES CLIENTES
-        match_clientes = {"tenant_id": tenant_id, "estado": {"$in": ["FINALIZADO", "ENTREGADO"]}}
-        if sucursal_filter: match_clientes.update(sucursal_filter)
+        # Filtro base
+        filter_base = {"tenant_id": tenant_id}
+        if sucursal_id:
+            filter_base["sucursal_id"] = sucursal_id
+
+        # 1. INGRESOS HOY (OS + POS)
+        today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        filter_hoy = {**filter_base, "createdAt": {"$gte": today}}
         
-        top_clientes = list(db["ordenes_servicio"].aggregate([
-            {"$match": match_clientes},
+        # Ventas POS Hoy
+        res_ventas_hoy = list(db["ventas"].aggregate([
+            {"$match": filter_hoy},
+            {"$group": {"_id": None, "total": {"$sum": "$total"}}}
+        ]))
+        
+        # OS Hoy (Entregadas)
+        filter_os_hoy = {**filter_hoy, "estado": "ENTREGADO"}
+        res_os_hoy = list(db["ordenes_servicio"].aggregate([
+            {"$match": filter_os_hoy},
+            {"$group": {"_id": None, "total": {"$sum": "$total"}}}
+        ]))
+        
+        ventas_hoy = (res_ventas_hoy[0]['total'] if res_ventas_hoy else 0) + \
+                     (res_os_hoy[0]['total'] if res_os_hoy else 0)
+
+        # 2. MEJORES CLIENTES (Consolidado)
+        # Nota: En un sistema real usaríamos una colección de clientes, 
+        # pero aquí promediamos desde ventas y OS por simplicidad del reporte actual
+        top_clientes = list(db["ventas"].aggregate([
+            {"$match": filter_base},
             {"$group": {
                 "_id": "$cliente_id",
                 "total_gastado": {"$sum": "$total"},
                 "visitas": {"$sum": 1},
-                "nombre_cliente": {"$first": "$cliente_nombre"}
+                "nombre_cliente": {"$first": "$cliente_nombre"} # Si se guarda en venta
             }},
             {"$sort": {"total_gastado": -1}},
             {"$limit": 5}
         ]))
 
-        # 2. PROVEEDORES
-        match_proveedores = {"tenant_id": tenant_id, "tipo": "PRODUCTO"}
-        if sucursal_filter: match_proveedores.update(sucursal_filter)
-        
-        top_proveedores = list(db["items"].aggregate([
-            {"$match": match_proveedores},
-            {"$group": {
-                "_id": "$proveedor",
-                "total_inventario": {"$sum": {"$multiply": ["$stock", "$precio_compra"]}},
-                "productos": {"$sum": 1}
-            }},
-            {"$sort": {"total_inventario": -1}},
-            {"$limit": 5}
-        ]))
-
-        # 3. RENDIMIENTO MECÁNICOS
-        match_mecanicos = {"tenant_id": tenant_id, "mecanico_id": {"$ne": None}}
-        if sucursal_filter: match_mecanicos.update(sucursal_filter)
-        
+        # 3. RENDIMIENTO MECÁNICOS (Solo OS)
         mecanicos_stats = list(db["ordenes_servicio"].aggregate([
-            {"$match": match_mecanicos},
+            {"$match": filter_base},
             {"$group": {
                 "_id": "$mecanico_id",
                 "nombre": {"$first": "$mecanico_nombre"},
@@ -72,18 +73,26 @@ def get_kpis_handler(event, context):
             {"$sort": {"completadas": -1}}
         ]))
 
-        # 4. TRENDS
+        # 4. TENDENCIAS (History - 6 meses)
         history = []
         for i in range(5, -1, -1):
             date = datetime.now() - timedelta(days=i*30)
             month_year = date.strftime("%Y-%m")
             history.append({"mes": month_year, "total": 0, "count": 0})
 
-        match_ingresos = {"tenant_id": tenant_id, "estado": {"$in": ["FINALIZADO", "ENTREGADO"]}}
-        if sucursal_filter: match_ingresos.update(sucursal_filter)
+        # Agregación mensual de Ventas POS
+        ventas_mensuales = list(db["ventas"].aggregate([
+            {"$match": filter_base},
+            {"$group": {
+                "_id": {"$dateToString": {"format": "%Y-%m", "date": "$createdAt"}},
+                "total": {"$sum": "$total"},
+                "count": {"$sum": 1}
+            }}
+        ]))
         
-        ingresos_mensuales = list(db["ordenes_servicio"].aggregate([
-            {"$match": match_ingresos},
+        # Agregación mensual de OS
+        os_mensuales = list(db["ordenes_servicio"].aggregate([
+            {"$match": {**filter_base, "estado": "ENTREGADO"}},
             {"$group": {
                 "_id": {"$dateToString": {"format": "%Y-%m", "date": "$createdAt"}},
                 "total": {"$sum": "$total"},
@@ -91,40 +100,40 @@ def get_kpis_handler(event, context):
             }}
         ]))
 
-        for res in ingresos_mensuales:
+        # Combinar resultados en history
+        for res in (ventas_mensuales + os_mensuales):
             for h in history:
                 if h['mes'] == res['_id']:
-                    h['total'] = res['total']
-                    h['count'] = res['count']
+                    h['total'] += res['total']
+                    h['count'] += res['count']
 
-        # 5. VENTAS HOY
-        today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-        match_hoy = {
-            "tenant_id": tenant_id, 
-            "createdAt": {"$gte": today}, 
-            "estado": {"$in": ["FINALIZADO", "ENTREGADO"]}
-        }
-        if sucursal_filter: match_hoy.update(sucursal_filter)
-        
-        res_hoy = list(db["ordenes_servicio"].aggregate([
-            {"$match": match_hoy},
-            {"$group": {"_id": None, "total": {"$sum": "$total"}}}
+        # 5. CITAS PENDIENTES
+        citas_pendientes = db["citas"].count_documents({**filter_base, "estado": "pendiente"})
+
+        # 6. PRODUCTO MÁS VENDIDO (Top 1)
+        top_producto = list(db["ventas"].aggregate([
+            {"$match": filter_base},
+            {"$unwind": "$items"},
+            {"$group": {
+                "_id": "$items.producto.id",
+                "nombre": {"$first": "$items.producto.nombre"},
+                "cantidad": {"$sum": "$items.cantidad"}
+            }},
+            {"$sort": {"cantidad": -1}},
+            {"$limit": 1}
         ]))
-        ventas_hoy = res_hoy[0]['total'] if res_hoy else 0
 
-        # 6. CITAS PENDIENTES
-        match_citas = {"tenant_id": tenant_id, "estado": "pendiente"}
-        if sucursal_filter: match_citas.update(sucursal_filter)
-        citas_pendientes = db["citas"].count_documents(match_citas)
-
-        return create_response(200, "KPIs generados", {
+        return create_response(200, "KPIs consolidados generados", {
             "top_clientes": top_clientes,
-            "top_proveedores": top_proveedores,
             "mecanicos": mecanicos_stats,
             "history": history,
             "ventas_hoy": ventas_hoy,
-            "citas_pendientes": citas_pendientes
+            "citas_pendientes": citas_pendientes,
+            "top_producto": top_producto[0] if top_producto else None
         })
+
+    except Exception as e:
+        return handle_exception(e)
 
     except Exception as e:
         return handle_exception(e)

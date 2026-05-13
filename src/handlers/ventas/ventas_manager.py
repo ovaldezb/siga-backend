@@ -82,6 +82,7 @@ def create_venta_handler(event, context):
         nueva_venta = {
             "folio": folio,
             "cliente_id": body.get('cliente_id', 'PUBLICO_GENERAL'),
+            "cliente_nombre": body.get('cliente_nombre', 'Público General'),
             "sucursal_id": sucursal_id,
             "items": items,
             "subtotal": round(subtotal_calculado, 2),
@@ -144,6 +145,35 @@ def create_venta_handler(event, context):
             del nueva_venta['_id']
 
         return create_response(201, "Venta procesada con éxito", nueva_venta)
+
+    except Exception as e:
+        return handle_exception(e)
+
+
+def list_ventas_handler(event, context):
+    """GET /ventas — Lista el historial de ventas (POS)."""
+    try:
+        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        tenant_id = claims.get('custom:tenant_id')
+        if not tenant_id: return create_response(403, "No autorizado")
+
+        query_params = event.get('queryStringParameters') or {}
+        sucursal_id = query_params.get('sucursal_id')
+        cliente_id = query_params.get('cliente_id')
+
+        db = get_tenant_db(tenant_id)
+        
+        query = {"tenant_id": tenant_id}
+        if sucursal_id: query["sucursal_id"] = sucursal_id
+        if cliente_id: query["cliente_id"] = cliente_id
+
+        ventas = list(db["ventas"].find(query).sort("createdAt", -1).limit(100))
+        
+        for v in ventas:
+            v["id"] = str(v["_id"])
+            del v["_id"]
+
+        return create_response(200, "Lista de ventas obtenida", ventas)
 
     except Exception as e:
         return handle_exception(e)

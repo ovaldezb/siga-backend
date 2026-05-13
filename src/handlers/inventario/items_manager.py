@@ -221,6 +221,16 @@ def delete_item_handler(event, context):
 
         item_id = event['pathParameters']['id']
         db = get_tenant_db(tenant_id)
+        
+        # 1. Verificar stock antes de borrar
+        item = db["items"].find_one({"_id": ObjectId(item_id)})
+        if not item:
+            return create_response(404, "Item no encontrado.")
+            
+        if item.get('tipo') == 'PRODUCTO' and item.get('stock', 0) > 0:
+            return create_response(400, f"No se puede eliminar un producto con stock activo ({item['stock']}). Por favor ajuste el stock a 0 primero.")
+
+        # 2. Proceder con el borrado
         result = db["items"].delete_one({"_id": ObjectId(item_id)})
 
         if result.deleted_count == 0:
