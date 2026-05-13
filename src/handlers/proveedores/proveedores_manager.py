@@ -12,7 +12,7 @@ logger = Logger()
 
 ALLOWED_FIELDS = {
     "nombre", "contacto", "email", "telefono", "rfc",
-    "direccion", "ciudad", "categoria", "notas", "activo"
+    "direccion", "ciudad", "categoria", "notas", "activo", "marcas"
 }
 
 
@@ -95,6 +95,7 @@ def create_proveedor_handler(event, context):
             "ciudad": body.get('ciudad'),
             "categoria": body.get('categoria'),
             "notas": body.get('notas'),
+            "marcas": body.get('marcas', []),
             "activo": body.get('activo', True),
             "createdAt": datetime.utcnow().isoformat(),
             "tenant_id": tenant_id
