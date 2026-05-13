@@ -1,5 +1,4 @@
 import json
-import uuid
 from datetime import datetime
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
@@ -16,7 +15,7 @@ def list_items_handler(event, context):
         query_params = event.get('queryStringParameters') or {}
         tipo = query_params.get('tipo')
         search = query_params.get('search')
-        sucursal_id = query_params.get('sucursalId')
+        sucursal_id = query_params.get('sucursalId') or query_params.get('sucursal_id')
         page = int(query_params.get('page', 1))
         limit = int(query_params.get('limit', 50))
         skip = (page - 1) * limit
@@ -26,8 +25,6 @@ def list_items_handler(event, context):
         # Filtros
         query = {}
         and_conditions = []
-        
-        sucursal_id = query_params.get('sucursal_id')
         if sucursal_id:
             and_conditions.append({'sucursal_id': sucursal_id})
             
@@ -105,7 +102,7 @@ def create_item_handler(event, context):
         nuevo_item = {
             "tipo": tipo,
             "nombre": body['nombre'],
-            "no_parte": body['no_parte'],
+            "no_parte": body['no_parte'] or body.get('noParte'),
             "precio_venta": to_float(body['precio_venta']),
             "precio_taller": to_float(body.get('precio_taller', 0)),
             "precio_cliente": to_float(body.get('precio_cliente', 0)),
@@ -114,9 +111,8 @@ def create_item_handler(event, context):
             "categoria": body.get('categoria', 'GENERAL'),
             "marca": body.get('marca', ''),
             "proveedor": body.get('proveedor', ''),
-            "sucursal_id": body.get('sucursalId'),
+            "sucursal_id": body.get('sucursalId') or body.get('sucursal_id'),
             "tenant_id": tenant_id,
-            "sucursal_id": body.get('sucursal_id'),
             "createdAt": datetime.utcnow().isoformat() + "Z",
             "activo": body.get('activo', True),
             "icon": body.get('icon', 'ri-archive-line')
@@ -210,7 +206,7 @@ def update_item_handler(event, context):
         item = db["items"].find_one({"_id": ObjectId(item_id)})
         item['id'] = str(item.pop('_id'))
         if 'sucursal_id' in item:
-            i['sucursalId'] = i.pop('sucursal_id')
+            item['sucursalId'] = item.pop('sucursal_id')
         return create_response(200, "Item actualizado", item)
     except Exception as e:
         return handle_exception(e)
@@ -247,7 +243,7 @@ def update_stock_handler(event, context):
 
         cantidad = int(body.get('cantidad', 0))
 
-        sucursal_id = body.get('sucursalId')
+        sucursal_id = body.get('sucursalId') or body.get('sucursal_id')
         
         db = get_tenant_db(tenant_id)
         
@@ -262,12 +258,6 @@ def update_stock_handler(event, context):
         
         if item.get('tipo') == 'SERVICIO' or not item.get('maneja_inventario'):
             return create_response(400, "Este item no maneja inventario.")
-
-        # Actualizar stock con $inc
-        query = {"_id": ObjectId(item_id)}
-        sucursal_id = body.get('sucursal_id')
-        if sucursal_id:
-            query['sucursal_id'] = sucursal_id
 
         result = db["items"].find_one_and_update(
             query,

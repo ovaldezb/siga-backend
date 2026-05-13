@@ -71,7 +71,7 @@ def create_orden_handler(event, context):
         orden_doc = {
             "folio": folio,
             "tenant_id": tenant_id,
-            "sucursal_id": body.get("sucursal_id"),
+            "sucursal_id": sucursal_id_os,
             "estado": estado_inicial,
             "bitacora_estados": [{
                 "estado": estado_inicial,

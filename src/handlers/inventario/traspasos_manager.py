@@ -27,7 +27,7 @@ def create_traspaso_handler(event, context):
 
         # 1. Descontar stock de origen
         for item in items:
-            db["inventario"].update_one(
+            db["items"].update_one(
                 {"_id": ObjectId(item['item_id']), "tenant_id": tenant_id, "sucursal_id": origen_id},
                 {"$inc": {"stock": -item['cantidad']}}
             )
@@ -128,7 +128,7 @@ def receive_traspaso_handler(event, context):
                 if cant_recibida > 0:
                     # Buscar si el item ya existe en la sucursal destino
                     # (Si no existe, habría que crearlo, pero simplificamos asumiendo que el item existe o se actualiza por no_parte)
-                    db["inventario"].update_one(
+                    db["items"].update_one(
                         {"_id": ObjectId(item_id), "tenant_id": tenant_id, "sucursal_id": destino_id},
                         {"$inc": {"stock": cant_recibida}}
                     )
