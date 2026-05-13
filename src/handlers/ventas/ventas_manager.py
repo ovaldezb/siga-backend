@@ -2,6 +2,7 @@ import json
 from datetime import datetime
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
+from src.shared.utils.auth_utils import try_parse_id
 from src.shared.infrastructure.database import get_tenant_db
 from src.handlers.admin.folios_manager import _get_next_folio_internal
 from bson import ObjectId
@@ -164,8 +165,19 @@ def list_ventas_handler(event, context):
         db = get_tenant_db(tenant_id)
         
         query = {"tenant_id": tenant_id}
-        if sucursal_id: query["sucursal_id"] = sucursal_id
-        if cliente_id: query["cliente_id"] = cliente_id
+        if sucursal_id:
+            parsed_sid = try_parse_id(sucursal_id)
+            if isinstance(parsed_sid, ObjectId):
+                query["sucursal_id"] = {"$in": [sucursal_id, parsed_sid]}
+            else:
+                query["sucursal_id"] = sucursal_id
+
+        if cliente_id:
+            parsed_cid = try_parse_id(cliente_id)
+            if isinstance(parsed_cid, ObjectId):
+                query["cliente_id"] = {"$in": [cliente_id, parsed_cid]}
+            else:
+                query["cliente_id"] = cliente_id
 
         ventas = list(db["ventas"].find(query).sort("createdAt", -1).limit(100))
         

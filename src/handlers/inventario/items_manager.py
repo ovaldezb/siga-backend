@@ -3,6 +3,7 @@ from datetime import datetime
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.infrastructure.database import get_tenant_db
+from src.shared.utils.auth_utils import try_parse_id
 from bson import ObjectId
 
 logger = Logger()
@@ -26,7 +27,11 @@ def list_items_handler(event, context):
         query = {}
         and_conditions = []
         if sucursal_id:
-            and_conditions.append({'sucursal_id': sucursal_id})
+            parsed_sid = try_parse_id(sucursal_id)
+            if isinstance(parsed_sid, ObjectId):
+                and_conditions.append({'sucursal_id': {"$in": [sucursal_id, parsed_sid]}})
+            else:
+                and_conditions.append({'sucursal_id': sucursal_id})
             
         if tipo:
             query['tipo'] = tipo

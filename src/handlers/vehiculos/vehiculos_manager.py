@@ -4,6 +4,7 @@ from datetime import datetime
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.infrastructure.database import get_tenant_db
+from src.shared.utils.auth_utils import try_parse_id
 
 logger = Logger()
 
@@ -32,10 +33,18 @@ def list_vehiculos_handler(event, context):
         # Filtro base
         filtro = {}
         if sucursal_id:
-            filtro["sucursal_id"] = sucursal_id
+            parsed_sid = try_parse_id(sucursal_id)
+            if isinstance(parsed_sid, ObjectId):
+                filtro["sucursal_id"] = {"$in": [sucursal_id, parsed_sid]}
+            else:
+                filtro["sucursal_id"] = sucursal_id
 
         if cliente_id:
-            filtro["cliente_id"] = cliente_id
+            parsed_cid = try_parse_id(cliente_id)
+            if isinstance(parsed_cid, ObjectId):
+                filtro["cliente_id"] = {"$in": [cliente_id, parsed_cid]}
+            else:
+                filtro["cliente_id"] = cliente_id
             
         if search:
             regex = {"$regex": search, "$options": "i"}

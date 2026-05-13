@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
-from src.shared.utils.auth_utils import parse_object_id
+from src.shared.utils.auth_utils import parse_object_id, try_parse_id
 from src.shared.infrastructure.database import get_tenant_db
 from bson import ObjectId
 from pymongo import ReturnDocument
@@ -35,7 +35,12 @@ def list_clientes_handler(event, context):
         
         filter_query = {}
         if sucursal_id:
-            filter_query["sucursal_id"] = sucursal_id
+            # Soporta tanto string como ObjectId
+            parsed_sid = try_parse_id(sucursal_id)
+            if isinstance(parsed_sid, ObjectId):
+                filter_query["sucursal_id"] = {"$in": [sucursal_id, parsed_sid]}
+            else:
+                filter_query["sucursal_id"] = sucursal_id
 
         if search_query:
             import re
@@ -61,10 +66,14 @@ def list_clientes_handler(event, context):
                 c['sucursalId'] = c.pop('sucursal_id')
             client_ids.append(c['id'])
         
-        # Conteo de vehículos eficiente (una sola consulta para toda la página)
+        # Conteo de vehículos eficiente
         if client_ids:
+            # Convertir IDs a ObjectIds para el $match si es necesario
+            parsed_ids = [try_parse_id(cid) for cid in client_ids]
+            search_ids = list(set(client_ids + [pid for pid in parsed_ids if isinstance(pid, ObjectId)]))
+            
             counts = list(db["vehiculos"].aggregate([
-                {"$match": {"cliente_id": {"$in": client_ids}}},
+                {"$match": {"cliente_id": {"$in": search_ids}}},
                 {"$group": {"_id": "$cliente_id", "count": {"$sum": 1}}}
             ]))
             counts_dict = {item['_id']: item['count'] for item in counts}

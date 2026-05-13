@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from bson import ObjectId
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
+from src.shared.utils.auth_utils import try_parse_id
 from src.shared.infrastructure.database import get_tenant_db
 
 logger = Logger()
@@ -23,7 +24,11 @@ def get_kpis_handler(event, context):
         # Filtro base
         filter_base = {"tenant_id": tenant_id}
         if sucursal_id:
-            filter_base["sucursal_id"] = sucursal_id
+            parsed_sid = try_parse_id(sucursal_id)
+            if isinstance(parsed_sid, ObjectId):
+                filter_base["sucursal_id"] = {"$in": [sucursal_id, parsed_sid]}
+            else:
+                filter_base["sucursal_id"] = sucursal_id
 
         # 1. INGRESOS HOY (OS + POS)
         today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)

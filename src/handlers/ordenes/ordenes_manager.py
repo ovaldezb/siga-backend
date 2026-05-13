@@ -4,6 +4,7 @@ from datetime import datetime
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.infrastructure.database import get_tenant_db
+from src.shared.utils.auth_utils import try_parse_id
 from src.handlers.admin.folios_manager import get_next_folio_handler
 
 logger = Logger()
@@ -163,11 +164,19 @@ def list_ordenes_handler(event, context):
         
         sucursal_id = query_params.get('sucursal_id')
         if sucursal_id:
-            and_conditions.append({'sucursal_id': sucursal_id})
+            parsed_sid = try_parse_id(sucursal_id)
+            if isinstance(parsed_sid, ObjectId):
+                and_conditions.append({'sucursal_id': {"$in": [sucursal_id, parsed_sid]}})
+            else:
+                and_conditions.append({'sucursal_id': sucursal_id})
 
         vehiculo_id_filter = query_params.get('vehiculo_id')
         if vehiculo_id_filter:
-            filter_query['vehiculo_id'] = vehiculo_id_filter
+            parsed_vid = try_parse_id(vehiculo_id_filter)
+            if isinstance(parsed_vid, ObjectId):
+                filter_query['vehiculo_id'] = {"$in": [vehiculo_id_filter, parsed_vid]}
+            else:
+                filter_query['vehiculo_id'] = vehiculo_id_filter
             
         search_query = query_params.get('q')
         if search_query:
@@ -193,15 +202,15 @@ def list_ordenes_handler(event, context):
         vehiculo_ids = []
         for o in ordenes_list:
             v_id = o.get('vehiculo_id')
-            if v_id and isinstance(v_id, str) and len(v_id) == 24:
-                try:
-                    vehiculo_ids.append(ObjectId(v_id))
-                except:
-                    pass
+            if v_id:
+                parsed_v = try_parse_id(v_id)
+                if isinstance(parsed_v, ObjectId):
+                    vehiculo_ids.append(parsed_v)
         
         vehiculos_map = {}
         if vehiculo_ids:
-            vehiculos_data = db["vehiculos"].find({"_id": {"$in": vehiculo_ids}})
+            # Buscar por ID (ObjectId o string si existe alguno residual)
+            vehiculos_data = db["vehiculos"].find({"$or": [{"_id": {"$in": vehiculo_ids}}, {"_id": {"$in": [str(vid) for vid in vehiculo_ids]}}]})
             for v in vehiculos_data:
                 v_id_str = str(v['_id'])
                 v['id'] = v_id_str

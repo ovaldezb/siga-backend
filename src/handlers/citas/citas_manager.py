@@ -4,7 +4,7 @@ from datetime import datetime
 from bson import ObjectId
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
-from src.shared.utils.auth_utils import parse_object_id, get_tenant_id
+from src.shared.utils.auth_utils import parse_object_id, get_tenant_id, try_parse_id
 from src.shared.infrastructure.database import get_tenant_db
 from pymongo import ReturnDocument
 
@@ -45,7 +45,11 @@ def list_citas_handler(event, context):
 
         sucursal_id = query_params.get('sucursal_id')
         if sucursal_id:
-            and_conditions.append({'sucursal_id': sucursal_id})
+            parsed_sid = try_parse_id(sucursal_id)
+            if isinstance(parsed_sid, ObjectId):
+                and_conditions.append({'sucursal_id': {"$in": [sucursal_id, parsed_sid]}})
+            else:
+                and_conditions.append({'sucursal_id': sucursal_id})
         if search_query:
             regex = re.compile(re.escape(search_query), re.IGNORECASE)
             and_conditions.append({'$or': [
