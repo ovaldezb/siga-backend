@@ -51,7 +51,19 @@ def create_venta_handler(event, context):
         # 3. FOLIO SECUENCIAL (MongoDB atómico, no UUID)
         folio = _get_next_folio_internal(tenant_id, "venta", sucursal_id)
 
-        # 3.5 VALIDAR CRÉDITO SI APLICA
+        # 3.5 VALIDAR STOCK ATÓMICAMENTE ANTES DE PROCESAR
+        for item in items:
+            producto = item.get('producto', {})
+            item_id = producto.get('id')
+            cantidad = int(item.get('cantidad', 0))
+            if item_id and item_id != 'manual' and producto.get('tipo') == 'PRODUCTO':
+                 p = db["items"].find_one({"_id": ObjectId(item_id)})
+                 if not p:
+                     return create_response(404, f"Producto no encontrado: {producto.get('nombre')}")
+                 if p.get('stock', 0) < cantidad:
+                      return create_response(400, f"Stock insuficiente para {producto.get('nombre')}. Disponible: {p.get('stock', 0)}")
+
+        # 3.6 VALIDAR CRÉDITO SI APLICA
         metodo_pago = body.get('metodo_pago', 'EFECTIVO').upper()
         if metodo_pago == 'CREDITO':
             cliente_id = body.get('cliente_id')
