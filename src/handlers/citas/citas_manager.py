@@ -133,15 +133,12 @@ def create_cita_handler(event, context):
 
         # NUEVO: Crear Orden de Servicio automáticamente
         try:
-            # 1. Obtener siguiente folio de OS
-            folio_res = db.folios.find_one_and_update(
-                {"tipo": "os"},
-                {"$inc": {"secuencia": 1}},
-                upsert=True,
-                return_document=ReturnDocument.AFTER
-            )
-            secuencia = folio_res.get('secuencia', 1)
-            folio = f"OS-{str(secuencia).zfill(4)}"
+            # 1. Obtener siguiente folio de OS scoped por sucursal (consistente con ventas/folios_manager)
+            from src.handlers.admin.folios_manager import _get_next_folio_internal
+            sucursal_id_cita = body.get("sucursal_id")
+            if not sucursal_id_cita:
+                raise ValueError("La cita no tiene sucursal_id, no se puede crear folio de OS")
+            folio = _get_next_folio_internal(tenant_id, "os", sucursal_id_cita)
 
             # 2. Crear snapshot del cliente
             cliente_id = body.get('clienteId')

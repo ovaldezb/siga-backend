@@ -18,26 +18,68 @@ def create_traspaso_handler(event, context):
         body = json.loads(event.get('body', '{}'))
         origen_id = body.get('origen_id')
         destino_id = body.get('destino_id')
-        items = body.get('items', []) # [{"item_id": "...", "cantidad": 5}]
+        items = body.get('items', [])  # [{"item_id": "...", "cantidad": 5}]
 
         if not origen_id or not destino_id or not items:
             return create_response(400, "Origen, destino y items son requeridos")
+        if origen_id == destino_id:
+            return create_response(400, "El origen y el destino no pueden ser la misma sucursal.")
 
         db = get_tenant_db(tenant_id)
 
-        # 1. Descontar stock de origen
+        # 1. Validar stock disponible en origen ANTES de descontar (evita traspasos negativos)
         for item in items:
-            db["items"].update_one(
-                {"_id": ObjectId(item['item_id']), "tenant_id": tenant_id, "sucursal_id": origen_id},
-                {"$inc": {"stock": -item['cantidad']}}
-            )
+            try:
+                cantidad = int(item.get('cantidad', 0))
+            except (TypeError, ValueError):
+                return create_response(400, f"Cantidad inválida para item {item.get('item_id')}")
+            if cantidad <= 0:
+                return create_response(400, "Las cantidades de traspaso deben ser mayores a cero.")
+            doc_item = db["items"].find_one({"_id": ObjectId(item['item_id']), "sucursal_id": origen_id})
+            if not doc_item:
+                return create_response(404, f"Item {item.get('item_id')} no existe en la sucursal origen.")
+            if int(doc_item.get('stock', 0)) < cantidad:
+                return create_response(400, f"Stock insuficiente en origen para {doc_item.get('nombre')}: {doc_item.get('stock', 0)} disponibles, solicitas {cantidad}.")
 
-        # 2. Crear registro de traspaso en tránsito
+        # 2. Descontar stock de origen (atómico con guard $gte para evitar carrera)
+        descontados = []
+        try:
+            for item in items:
+                cantidad = int(item['cantidad'])
+                res = db["items"].update_one(
+                    {"_id": ObjectId(item['item_id']), "sucursal_id": origen_id, "stock": {"$gte": cantidad}},
+                    {"$inc": {"stock": -cantidad}}
+                )
+                if res.modified_count != 1:
+                    raise RuntimeError(f"Race condition: stock cambió mientras se procesaba el traspaso para {item['item_id']}")
+                descontados.append(item)
+        except Exception as dec_err:
+            # Rollback de lo que sí descontamos
+            for d in descontados:
+                db["items"].update_one(
+                    {"_id": ObjectId(d['item_id']), "sucursal_id": origen_id},
+                    {"$inc": {"stock": int(d['cantidad'])}}
+                )
+            return create_response(409, f"No se pudo crear el traspaso: {dec_err}")
+
+        # 3. Snapshot de no_parte/nombre para que el destino pueda recibir aunque no tenga el item
+        items_enriched = []
+        for it in items:
+            origen_doc = db["items"].find_one({"_id": ObjectId(it['item_id']), "sucursal_id": origen_id})
+            items_enriched.append({
+                "item_id": str(it['item_id']),
+                "cantidad": int(it['cantidad']),
+                "no_parte": (origen_doc or {}).get('no_parte'),
+                "nombre": (origen_doc or {}).get('nombre'),
+                "precio_compra": (origen_doc or {}).get('precio_compra', 0),
+            })
+
+        # 4. Crear registro de traspaso en tránsito
         doc = {
             "tenant_id": tenant_id,
             "origen_id": origen_id,
             "destino_id": destino_id,
-            "items": items,
+            "items": items_enriched,
             "estado": "EN_TRANSITO",
             "creado_por": {"id": usuario_id, "nombre": usuario_nombre},
             "createdAt": datetime.utcnow(),
@@ -49,8 +91,6 @@ def create_traspaso_handler(event, context):
         del doc["_id"]
         doc["createdAt"] = doc["createdAt"].isoformat()
         doc["updatedAt"] = doc["updatedAt"].isoformat()
-
-        # Opcional: Crear notificación para la sucursal destino en la colección de autorizaciones/notificaciones
 
         return create_response(201, "Traspaso creado y en tránsito", doc)
     except Exception as e:
@@ -121,17 +161,52 @@ def receive_traspaso_handler(event, context):
         destino_id = traspaso['destino_id']
 
         if estado in ['COMPLETADO', 'PARCIAL']:
-            # Sumar stock al destino según lo recibido
+            # Mapa de snapshot por item_id para poder clonar si el item no existe en destino
+            snapshot_by_id = {str(s.get('item_id')): s for s in (traspaso.get('items') or [])}
+
             for rec in items_recibidos:
                 item_id = rec.get('item_id')
-                cant_recibida = rec.get('cantidad_recibida', 0)
-                if cant_recibida > 0:
-                    # Buscar si el item ya existe en la sucursal destino
-                    # (Si no existe, habría que crearlo, pero simplificamos asumiendo que el item existe o se actualiza por no_parte)
-                    db["items"].update_one(
-                        {"_id": ObjectId(item_id), "tenant_id": tenant_id, "sucursal_id": destino_id},
+                try:
+                    cant_recibida = int(rec.get('cantidad_recibida', 0))
+                except (TypeError, ValueError):
+                    cant_recibida = 0
+                if cant_recibida <= 0:
+                    continue
+
+                # 1) Intentar sumar stock por _id si el item ya existe en destino
+                res = db["items"].update_one(
+                    {"_id": ObjectId(item_id), "sucursal_id": destino_id},
+                    {"$inc": {"stock": cant_recibida}}
+                )
+                if res.matched_count == 1:
+                    continue
+
+                snap = snapshot_by_id.get(str(item_id), {})
+                no_parte = snap.get('no_parte')
+
+                # 2) Reconciliar por no_parte: misma SKU pero ya existe en destino con otro _id
+                if no_parte:
+                    res2 = db["items"].update_one(
+                        {"no_parte": no_parte, "sucursal_id": destino_id},
                         {"$inc": {"stock": cant_recibida}}
                     )
+                    if res2.matched_count == 1:
+                        continue
+
+                # 3) Clonar el item del origen para crear stock inicial en destino
+                origen_doc = db["items"].find_one({"_id": ObjectId(item_id)})
+                if origen_doc:
+                    clone = {k: v for k, v in origen_doc.items() if k != '_id'}
+                    clone["sucursal_id"] = destino_id
+                    clone["stock"] = cant_recibida
+                    clone["createdAt"] = datetime.utcnow().isoformat() + "Z"
+                    clone["clonado_de"] = str(origen_doc['_id'])
+                    try:
+                        db["items"].insert_one(clone)
+                    except Exception as clone_err:
+                        logger.warning(f"No se pudo clonar item {item_id} a sucursal {destino_id}: {clone_err}")
+                else:
+                    logger.warning(f"Recepción de traspaso: item {item_id} no existe en origen ni destino; stock perdido")
 
         update_data = {
             "estado": estado,

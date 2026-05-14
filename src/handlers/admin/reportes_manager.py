@@ -167,6 +167,22 @@ def get_kpis_handler(event, context):
         # 6. CITAS PENDIENTES
         citas_pendientes = db["citas"].count_documents({**filter_base, "estado": "pendiente"})
 
+        # 6.5 CONTEOS GLOBALES PARA DASHBOARD
+        clientes_filter = {}
+        if sucursal_id:
+            clientes_filter["sucursal_id"] = sucursal_id
+        total_clientes = db["clientes"].count_documents(clientes_filter)
+        ordenes_activas = db["ordenes_servicio"].count_documents({
+            **filter_base,
+            "estado": {"$in": ["RECEPCION", "COTIZADO", "APROBADO", "EN_PROCESO", "FINALIZADO"]}
+        })
+        cuentas_por_cobrar_agg = list(db["ventas"].aggregate([
+            {"$match": {**filter_base, "saldo_pendiente": {"$gt": 0}}},
+            {"$group": {"_id": None, "total": {"$sum": "$saldo_pendiente"}, "count": {"$sum": 1}}}
+        ]))
+        cxc_total = cuentas_por_cobrar_agg[0]['total'] if cuentas_por_cobrar_agg else 0
+        cxc_count = cuentas_por_cobrar_agg[0]['count'] if cuentas_por_cobrar_agg else 0
+
         # 7. PRODUCTO MÁS VENDIDO (Top 1)
         top_producto = list(db["ventas"].aggregate([
             {"$match": filter_base},
@@ -188,7 +204,13 @@ def get_kpis_handler(event, context):
             "citas_pendientes": citas_pendientes,
             "top_producto": top_producto[0] if top_producto else None,
             "utilidad_total": round(utilidad_total, 2),
-            "margen_promedio": round(margen, 2)
+            "margen_promedio": round(margen, 2),
+            "total_clientes": total_clientes,
+            "ordenes_activas": ordenes_activas,
+            "cuentas_por_cobrar": {
+                "total": round(cxc_total, 2),
+                "count": cxc_count
+            }
         })
 
     except Exception as e:

@@ -1014,6 +1014,34 @@ functions:
             type: COGNITO_USER_POOLS
             arn: !GetAtt CognitoUserPool.Arn
 
+  ventas_cxc:
+    handler: src/handlers/ventas/ventas_manager.list_cxc_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: ventas/cxc
+          method: get
+          cors: true
+          authorizer:
+            name: cognitoAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: !GetAtt CognitoUserPool.Arn
+
+  ventas_abono:
+    handler: src/handlers/ventas/ventas_manager.registrar_abono_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: ventas/{id}/pagos
+          method: post
+          cors: true
+          authorizer:
+            name: cognitoAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: !GetAtt CognitoUserPool.Arn
+
 resources:
   Resources:
     S3BucketImages:

@@ -132,16 +132,23 @@ def create_user_handler(event, context):
                 telefono_cognito = clean_tel if clean_tel.startswith('+') else '+52' + clean_tel
                 user_attributes.append({'Name': 'phone_number', 'Value': telefono_cognito})
 
+        # Validaciones previas
+        if not email:
+            return create_response(400, "El campo 'email' es obligatorio.")
+        if grupo not in GROUPS:
+            return create_response(400, f"Grupo inválido. Valores permitidos: {', '.join(GROUPS)}")
+
         response = client.admin_create_user(
             UserPoolId=USER_POOL_ID,
             Username=email,
             UserAttributes=user_attributes,
             DesiredDeliveryMediums=['EMAIL']
         )
-        
+
         try:
             client.admin_add_user_to_group(UserPoolId=USER_POOL_ID, Username=email, GroupName=grupo)
-        except: pass
+        except Exception as grp_err:
+            logger.warning(f"No se pudo agregar usuario {email} al grupo {grupo}: {grp_err}")
             
         user_data = format_user(response['User'], grupo)
         user_data['sucursales'] = sucursales
@@ -186,12 +193,15 @@ def update_user_handler(event, context):
             client.admin_update_user_attributes(UserPoolId=USER_POOL_ID, Username=email, UserAttributes=attributes)
 
         if 'grupo' in body:
+            if body['grupo'] not in GROUPS:
+                return create_response(400, f"Grupo inválido. Valores permitidos: {', '.join(GROUPS)}")
             try:
                 groups_res = client.admin_list_groups_for_user(UserPoolId=USER_POOL_ID, Username=email)
                 for g in groups_res.get('Groups', []):
                     client.admin_remove_user_from_group(UserPoolId=USER_POOL_ID, Username=email, GroupName=g['GroupName'])
                 client.admin_add_user_to_group(UserPoolId=USER_POOL_ID, Username=email, GroupName=body['grupo'])
-            except: pass
+            except Exception as grp_err:
+                logger.warning(f"No se pudo cambiar grupo de {email} a {body['grupo']}: {grp_err}")
 
         if 'activo' in body:
             if body['activo']: client.admin_enable_user(UserPoolId=USER_POOL_ID, Username=email)

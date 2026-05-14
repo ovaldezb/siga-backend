@@ -104,6 +104,11 @@ def list_vehiculos_handler(event, context):
             v['id'] = str(v.pop('_id'))
             if 'sucursal_id' in v:
                 v['sucursalId'] = v.pop('sucursal_id')
+            # Compat datos legacy: documentos viejos guardados con 'año'
+            if 'año' in v and 'anio' not in v:
+                v['anio'] = v.pop('año')
+            elif 'año' in v:
+                v.pop('año')
             if 'createdAt' in v and isinstance(v['createdAt'], datetime):
                 v['createdAt'] = v['createdAt'].isoformat()
             if 'updatedAt' in v and isinstance(v['updatedAt'], datetime):
@@ -191,6 +196,11 @@ def get_vehiculo_handler(event, context):
         vehiculo['id'] = str(vehiculo.pop('_id'))
         if 'sucursal_id' in vehiculo:
             vehiculo['sucursalId'] = vehiculo.pop('sucursal_id')
+        # Compat datos legacy: documentos viejos guardados con 'año'
+        if 'año' in vehiculo and 'anio' not in vehiculo:
+            vehiculo['anio'] = vehiculo.pop('año')
+        elif 'año' in vehiculo:
+            vehiculo.pop('año')
         if 'createdAt' in vehiculo and isinstance(vehiculo['createdAt'], datetime):
             vehiculo['createdAt'] = vehiculo['createdAt'].isoformat()
         if 'updatedAt' in vehiculo and isinstance(vehiculo['updatedAt'], datetime):
@@ -233,10 +243,16 @@ def create_vehiculo_handler(event, context):
             "createdAt": datetime.utcnow()
         }
 
+        # Normalizar 'año' → 'anio' antes de mezclar (canónico = anio sin tilde)
+        if 'año' in body and 'anio' not in body:
+            body['anio'] = body.pop('año')
+        elif 'año' in body:
+            body.pop('año')  # ya tenemos anio, descartar duplicado
+
         # Mezclar con el resto de los campos del body (color, vin, anio, kilometraje, etc.)
         # EXCLUIMOS campos de UI como 'cliente_nombre' para no ensuciar la DB
         for k, v in body.items():
-            if k not in ['id', '_id', 'tenant_id', 'createdAt', 'marca', 'modelo', 'placas', 'cliente_id', 'cliente_nombre']:
+            if k not in ['id', '_id', 'tenant_id', 'createdAt', 'marca', 'modelo', 'placas', 'cliente_id', 'cliente_nombre', 'año']:
                 nuevo_vehiculo[k] = v
 
         result = db["vehiculos"].insert_one(nuevo_vehiculo)
@@ -295,9 +311,13 @@ def update_vehiculo_handler(event, context):
         body = json.loads(event.get('body', '{}'))
         db = get_tenant_db(tenant_id)
 
+        # Normalizar 'año' → 'anio'
+        if 'año' in body:
+            body['anio'] = body.pop('año')
+
         # Limpiar datos para el update (evitar cambiar IDs o tenant)
         update_data = {k: v for k, v in body.items() if k not in ['id', '_id', 'tenant_id', 'createdAt', 'cliente_nombre']}
-        
+
         # Mapear sucursalId (camelCase FE) a sucursal_id (snake_case DB)
         if 'sucursalId' in update_data:
             update_data['sucursal_id'] = update_data.pop('sucursalId')

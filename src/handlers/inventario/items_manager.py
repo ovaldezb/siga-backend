@@ -109,6 +109,9 @@ def create_item_handler(event, context):
             "precio_cliente": to_float(body.get('precio_cliente', 0)),
             "precio_distribuidor": to_float(body.get('precio_distribuidor', 0)),
             "precio_compra": to_float(body.get('precio_compra', 0)),
+            # Flags fiscales: por defecto los precios capturados YA incluyen IVA (convención SIGA)
+            "precio_incluye_iva": bool(body.get('precio_incluye_iva', True)),
+            "iva_exento": bool(body.get('iva_exento', False)),
             "categoria": body.get('categoria', 'GENERAL'),
             "marca": body.get('marca', ''),
             "proveedor": body.get('proveedor', ''),
@@ -152,8 +155,18 @@ def get_item_handler(event, context):
             return create_response(403, "No se encontró un tenantId asociado.")
 
         item_id = event['pathParameters']['id']
+        query_params = event.get('queryStringParameters') or {}
+        sucursal_id = query_params.get('sucursalId') or query_params.get('sucursal_id')
+
         db = get_tenant_db(tenant_id)
-        item = db["items"].find_one({"_id": ObjectId(item_id)})
+        query = {"_id": ObjectId(item_id)}
+        # SUPER_ADMIN/ADMIN pueden leer entre sucursales si pasan ?ignoreScope=1
+        grupo = claims.get('cognito:groups') or ''
+        ignore_scope = (query_params.get('ignoreScope') == '1') and ('ADMIN' in grupo or 'SUPER_ADMIN' in grupo)
+        if sucursal_id and not ignore_scope:
+            query["sucursal_id"] = sucursal_id
+
+        item = db["items"].find_one(query)
 
         if not item:
             return create_response(404, "Item no encontrado.")
@@ -167,7 +180,7 @@ def get_item_handler(event, context):
 
 
 def update_item_handler(event, context):
-    """PUT /items/{id} — Actualiza datos del item (no incluye stock)."""
+    """PUT /items/{id} — Actualiza datos del item (no incluye stock). Scoped por sucursal activa."""
     try:
         claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
         tenant_id = claims.get('custom:tenant_id')
@@ -177,10 +190,20 @@ def update_item_handler(event, context):
         item_id = event['pathParameters']['id']
         body = json.loads(event.get('body', '{}'))
 
+        # Sucursal scope: usamos el sucursalId del body o query como guard salvo ADMIN+ignoreScope
+        query_params = event.get('queryStringParameters') or {}
+        sucursal_id_guard = (
+            body.get('sucursalId') or body.get('sucursal_id')
+            or query_params.get('sucursalId') or query_params.get('sucursal_id')
+        )
+        grupo = claims.get('cognito:groups') or ''
+        ignore_scope = (query_params.get('ignoreScope') == '1') and ('ADMIN' in grupo or 'SUPER_ADMIN' in grupo)
+
         allowed = {
-            "nombre", "no_parte", "tipo", "precio_venta", 
+            "nombre", "no_parte", "tipo", "precio_venta",
             "precio_taller", "precio_cliente", "precio_distribuidor",
-            "precio_compra", "categoria", "marca", "proveedor", "proveedor_id",
+            "precio_compra", "precio_incluye_iva", "iva_exento",
+            "categoria", "marca", "proveedor", "proveedor_id",
             "clave_sat", "unidad_sat", "maneja_inventario", "activo", "icon",
             "sucursal_id"
         }
@@ -199,13 +222,13 @@ def update_item_handler(event, context):
         update_data['updatedAt'] = datetime.utcnow().isoformat() + "Z"
 
         db = get_tenant_db(tenant_id)
-        result = db["items"].update_one(
-            {"_id": ObjectId(item_id)},
-            {"$set": update_data}
-        )
+        update_query = {"_id": ObjectId(item_id)}
+        if sucursal_id_guard and not ignore_scope:
+            update_query["sucursal_id"] = sucursal_id_guard
+        result = db["items"].update_one(update_query, {"$set": update_data})
 
         if result.matched_count == 0:
-            return create_response(404, "Item no encontrado.")
+            return create_response(404, "Item no encontrado en esta sucursal.")
 
         item = db["items"].find_one({"_id": ObjectId(item_id)})
         item['id'] = str(item.pop('_id'))
@@ -224,18 +247,27 @@ def delete_item_handler(event, context):
             return create_response(403, "No se encontró un tenantId asociado.")
 
         item_id = event['pathParameters']['id']
+        query_params = event.get('queryStringParameters') or {}
+        sucursal_id_guard = query_params.get('sucursalId') or query_params.get('sucursal_id')
+        grupo = claims.get('cognito:groups') or ''
+        ignore_scope = (query_params.get('ignoreScope') == '1') and ('ADMIN' in grupo or 'SUPER_ADMIN' in grupo)
+
         db = get_tenant_db(tenant_id)
-        
-        # 1. Verificar stock antes de borrar
-        item = db["items"].find_one({"_id": ObjectId(item_id)})
+
+        # 1. Verificar stock antes de borrar (scoped)
+        find_query = {"_id": ObjectId(item_id)}
+        if sucursal_id_guard and not ignore_scope:
+            find_query["sucursal_id"] = sucursal_id_guard
+
+        item = db["items"].find_one(find_query)
         if not item:
-            return create_response(404, "Item no encontrado.")
-            
+            return create_response(404, "Item no encontrado en esta sucursal.")
+
         if item.get('tipo') == 'PRODUCTO' and item.get('stock', 0) > 0:
             return create_response(400, f"No se puede eliminar un producto con stock activo ({item['stock']}). Por favor ajuste el stock a 0 primero.")
 
-        # 2. Proceder con el borrado
-        result = db["items"].delete_one({"_id": ObjectId(item_id)})
+        # 2. Proceder con el borrado (sólo el doc scoped)
+        result = db["items"].delete_one(find_query)
 
         if result.deleted_count == 0:
             return create_response(404, "Item no encontrado.")
@@ -255,32 +287,63 @@ def update_stock_handler(event, context):
         item_id = event['pathParameters']['id']
         body = json.loads(event.get('body', '{}'))
 
-        cantidad = int(body.get('cantidad', 0))
+        try:
+            cantidad = int(body.get('cantidad', 0))
+        except (TypeError, ValueError):
+            return create_response(400, "Cantidad inválida.")
+        if cantidad == 0:
+            return create_response(400, "La cantidad de ajuste no puede ser 0.")
 
         sucursal_id = body.get('sucursalId') or body.get('sucursal_id')
-        
+
         db = get_tenant_db(tenant_id)
-        
+
         # Buscar item y validar que maneja inventario y sucursal
         query = {"_id": ObjectId(item_id)}
         if sucursal_id:
             query["sucursal_id"] = sucursal_id
-            
+
         item = db["items"].find_one(query)
         if not item:
             return create_response(404, "Item no encontrado.")
-        
+
         if item.get('tipo') == 'SERVICIO' or not item.get('maneja_inventario'):
             return create_response(400, "Este item no maneja inventario.")
 
+        # Si es decremento, validar que el stock resultante no quede negativo (atómicamente)
+        if cantidad < 0:
+            stock_minimo_requerido = -cantidad
+            update_query = {**query, "stock": {"$gte": stock_minimo_requerido}}
+        else:
+            update_query = query
+
         result = db["items"].find_one_and_update(
-            query,
-            {"$inc": {"stock": cantidad}},
+            update_query,
+            {"$inc": {"stock": cantidad}, "$set": {"updatedAt": datetime.utcnow().isoformat() + "Z"}},
             return_document=True
         )
 
+        if not result:
+            return create_response(400, f"Stock insuficiente. Disponible: {item.get('stock', 0)}, Solicitado: {-cantidad}")
+
+        # Bitácora de movimientos de inventario (auditoría)
+        try:
+            db["inventario_movimientos"].insert_one({
+                "tenant_id": tenant_id,
+                "item_id": item_id,
+                "sucursal_id": sucursal_id,
+                "cantidad": cantidad,
+                "stock_resultante": result.get('stock', 0),
+                "concepto": body.get('concepto') or ("AJUSTE_MANUAL" if cantidad > 0 else "MERMA"),
+                "usuario_id": claims.get('sub'),
+                "usuario_nombre": claims.get('name') or claims.get('email'),
+                "createdAt": datetime.utcnow()
+            })
+        except Exception as bit_err:
+            logger.warning(f"No se pudo registrar bitácora de inventario: {bit_err}")
+
         result['id'] = str(result.pop('_id'))
-        
+
         return create_response(200, "Stock actualizado", {
             "nuevo_stock": result['stock'],
             "ajuste": cantidad

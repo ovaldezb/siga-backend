@@ -260,27 +260,28 @@ def add_vehiculo_handler(event, context):
             "placas": body['placas'],
             "marca": body['marca'],
             "modelo": body['modelo'],
-            "año": body.get('año') or body.get('anio'),
+            "anio": body.get('anio') or body.get('año'),  # snake-case sin tilde, consistente con vehiculos_manager
             "vin": body.get('vin'),
+            "color": body.get('color'),
             "sucursal_id": body['sucursal_id'],
             "tenant_id": tenant_id,
             "createdAt": datetime.utcnow().isoformat()
         }
-        
+
         # Insertar en colección de vehículos
         result = db.vehiculos.insert_one(nuevo_vehiculo)
         nuevo_vehiculo['id'] = str(result.inserted_id)
         if '_id' in nuevo_vehiculo: del nuevo_vehiculo['_id']
         if 'sucursal_id' in nuevo_vehiculo:
             nuevo_vehiculo['sucursalId'] = nuevo_vehiculo.pop('sucursal_id')
-        
+
         # Actualizar resumen en el cliente
         vehiculo_resumen = {
             "id": nuevo_vehiculo['id'],
             "placas": nuevo_vehiculo['placas'],
             "marca": nuevo_vehiculo['marca'],
             "modelo": nuevo_vehiculo['modelo'],
-            "año": nuevo_vehiculo['año']
+            "anio": nuevo_vehiculo['anio']
         }
         db.clientes.update_one(
             {"_id": ObjectId(cliente_id)},
