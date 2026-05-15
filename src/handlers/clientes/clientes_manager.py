@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
-from src.shared.utils.auth_utils import parse_object_id, try_parse_id
+from src.shared.utils.auth_utils import parse_object_id, try_parse_id, resolve_sucursal_scope
 from src.shared.infrastructure.database import get_tenant_db
 from bson import ObjectId
 from pymongo import ReturnDocument
@@ -30,12 +30,20 @@ def list_clientes_handler(event, context):
         page = int(query_params.get('page', 1))
         limit = int(query_params.get('limit', 20))
         skip = (page - 1) * limit
-        
+
         db = get_tenant_db(tenant_id)
-        
+
+        # Enforce scope: admin sin filtro, no-admin restringido a sus sucursales
+        scope_list, scope_err = resolve_sucursal_scope(claims, db, sucursal_id)
+        if scope_err:
+            return create_response(403, scope_err)
+
         filter_query = {}
-        if sucursal_id:
-            filter_query["sucursal_id"] = sucursal_id
+        if scope_list is not None:
+            if len(scope_list) == 1:
+                filter_query["sucursal_id"] = scope_list[0]
+            else:
+                filter_query["sucursal_id"] = {"$in": scope_list}
 
         if search_query:
             import re
@@ -219,6 +227,20 @@ def delete_cliente_handler(event, context):
 
         db = get_tenant_db(tenant_id)
 
+        # 1. Bloquear si tiene saldo pendiente en CxC (no perder el AR contable)
+        saldo_agg = list(db["ventas"].aggregate([
+            {"$match": {"cliente_id": cliente_id, "saldo_pendiente": {"$gt": 0}}},
+            {"$group": {"_id": None, "saldo": {"$sum": "$saldo_pendiente"}, "count": {"$sum": 1}}}
+        ]))
+        if saldo_agg:
+            saldo = float(saldo_agg[0]['saldo'])
+            ventas_con_saldo = int(saldo_agg[0]['count'])
+            return create_response(
+                409,
+                f"No se puede eliminar: el cliente tiene ${saldo:,.2f} pendiente en {ventas_con_saldo} venta(s) a crédito."
+            )
+
+        # 2. Bloquear si tiene vehículos asociados
         vehiculos_count = db.vehiculos.count_documents({"cliente_id": cliente_id})
         if vehiculos_count > 0:
             return create_response(

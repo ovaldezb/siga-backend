@@ -90,18 +90,29 @@ def update_autorizacion_handler(event, context):
             return create_response(400, "Estado inválido")
 
         db = get_tenant_db(tenant_id)
-        
+
         update_data = {
             "estado": nuevo_estado,
             "aprobador": {"id": aprobador_id, "nombre": aprobador_nombre},
             "updatedAt": datetime.utcnow()
         }
 
-        db["autorizaciones"].update_one(
-            {"_id": ObjectId(auth_id), "tenant_id": tenant_id},
-            {"$set": update_data}
+        from pymongo import ReturnDocument
+        result = db["autorizaciones"].find_one_and_update(
+            {"_id": ObjectId(auth_id), "tenant_id": tenant_id, "estado": "PENDIENTE"},
+            {"$set": update_data},
+            return_document=ReturnDocument.AFTER
         )
 
-        return create_response(200, "Autorización actualizada")
+        if not result:
+            return create_response(404, "Autorización no encontrada o ya resuelta.")
+
+        result['id'] = str(result.pop('_id'))
+        if isinstance(result.get('createdAt'), datetime):
+            result['createdAt'] = result['createdAt'].isoformat()
+        if isinstance(result.get('updatedAt'), datetime):
+            result['updatedAt'] = result['updatedAt'].isoformat()
+
+        return create_response(200, "Autorización actualizada", result)
     except Exception as e:
         return handle_exception(e)

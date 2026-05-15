@@ -293,12 +293,28 @@ def create_venta_handler(event, context):
                         }
                     )
                     nueva_venta["caja_movimiento_registrado"] = True
+                    # Persistir el flag en la venta para auditoría (no sólo en la respuesta JSON)
+                    db["ventas"].update_one(
+                        {"_id": result.inserted_id},
+                        {"$set": {"caja_movimiento_registrado": True, "caja_sesion_id": str(sesion["_id"])}}
+                    )
             else:
                 nueva_venta["caja_movimiento_registrado"] = False
+                db["ventas"].update_one(
+                    {"_id": result.inserted_id},
+                    {"$set": {"caja_movimiento_registrado": False}}
+                )
                 logger.info(f"No hay caja abierta en sucursal {sucursal_id}; movimientos no registrados.")
         except Exception as caja_err:
             logger.warning(f"No se pudo registrar movimiento en caja para venta {folio}: {caja_err}")
             nueva_venta["caja_movimiento_registrado"] = False
+            try:
+                db["ventas"].update_one(
+                    {"_id": result.inserted_id},
+                    {"$set": {"caja_movimiento_registrado": False, "caja_error": str(caja_err)}}
+                )
+            except Exception:
+                pass
 
         # Limpiar para respuesta JSON
         if '_id' in nueva_venta:

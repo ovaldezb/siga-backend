@@ -5,9 +5,22 @@ from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.infrastructure.database import get_tenant_db
 from src.shared.utils.auth_utils import try_parse_id
-from src.handlers.admin.folios_manager import get_next_folio_handler
+from src.handlers.admin.folios_manager import _get_next_folio_internal
 
 logger = Logger()
+
+
+def _ensure_folio_index(db) -> None:
+    """Asegura el índice único en (folio) para ordenes_servicio. Idempotente."""
+    try:
+        db["ordenes_servicio"].create_index(
+            [("folio", 1)],
+            unique=True,
+            partialFilterExpression={"folio": {"$exists": True, "$type": "string"}},
+            name="uniq_orden_folio"
+        )
+    except Exception as idx_err:
+        logger.warning(f"No se pudo verificar índice único de folio OS: {idx_err}")
 
 @logger.inject_lambda_context
 def create_orden_handler(event, context):
@@ -29,10 +42,10 @@ def create_orden_handler(event, context):
         if not sucursal_id_os:
             return create_response(400, "El campo 'sucursalId' es obligatorio para crear una orden de servicio.")
 
-        # 1. Validar folio
-        folio = body.get("folio")
-        if not folio:
-            return create_response(400, "El folio es requerido")
+        # 1. Generar folio atómico server-side (ignora cualquier folio del body para evitar
+        #    spoofing y race conditions). Garantizado único por (tipo, sucursal_id).
+        _ensure_folio_index(db)
+        folio = _get_next_folio_internal(tenant_id, "os", sucursal_id_os)
 
         # 2. VEHÍCULO: Existente o Nuevo
         vehiculo_id_recibido = body.get("vehiculo_id", "").strip() if body.get("vehiculo_id") else ""
@@ -102,7 +115,17 @@ def create_orden_handler(event, context):
             "updatedAt": datetime.utcnow()
         }
 
-        orden_result = db["ordenes_servicio"].insert_one(orden_doc)
+        try:
+            orden_result = db["ordenes_servicio"].insert_one(orden_doc)
+        except Exception as ins_err:
+            # Carrera: el índice único rechazó el folio. Pedimos otro y reintentamos UNA vez.
+            if "E11000" in str(ins_err):
+                logger.warning(f"Colisión de folio OS {folio}; reintentando con nuevo folio")
+                folio = _get_next_folio_internal(tenant_id, "os", sucursal_id_os)
+                orden_doc["folio"] = folio
+                orden_result = db["ordenes_servicio"].insert_one(orden_doc)
+            else:
+                raise
         orden_doc["id"] = str(orden_result.inserted_id)
         del orden_doc["_id"]
 

@@ -4,7 +4,7 @@ from datetime import datetime
 from bson import ObjectId
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
-from src.shared.utils.auth_utils import parse_object_id, get_tenant_id, try_parse_id
+from src.shared.utils.auth_utils import parse_object_id, get_tenant_id, try_parse_id, resolve_sucursal_scope, get_claims
 from src.shared.infrastructure.database import get_tenant_db
 from pymongo import ReturnDocument
 
@@ -44,8 +44,16 @@ def list_citas_handler(event, context):
         and_conditions = []
 
         sucursal_id = query_params.get('sucursal_id')
-        if sucursal_id:
-            and_conditions.append({'sucursal_id': sucursal_id})
+
+        # Enforce scope contra las sucursales permitidas del usuario
+        scope_list, scope_err = resolve_sucursal_scope(get_claims(event), db, sucursal_id)
+        if scope_err:
+            return create_response(403, scope_err)
+        if scope_list is not None:
+            if len(scope_list) == 1:
+                and_conditions.append({'sucursal_id': scope_list[0]})
+            else:
+                and_conditions.append({'sucursal_id': {'$in': scope_list}})
         if search_query:
             regex = re.compile(re.escape(search_query), re.IGNORECASE)
             and_conditions.append({'$or': [
@@ -131,7 +139,11 @@ def create_cita_handler(event, context):
         nueva['id'] = cita_id
         del nueva['_id']
 
-        # NUEVO: Crear Orden de Servicio automáticamente
+        # NUEVO: Crear Orden de Servicio automáticamente — sólo si la cita
+        # no nace cancelada (no tendría sentido abrir OS para una cita cancelada).
+        if estado == 'cancelada':
+            return create_response(201, "Cita creada (sin OS por estado=cancelada)", nueva)
+
         try:
             # 1. Obtener siguiente folio de OS scoped por sucursal (consistente con ventas/folios_manager)
             from src.handlers.admin.folios_manager import _get_next_folio_internal
@@ -140,15 +152,21 @@ def create_cita_handler(event, context):
                 raise ValueError("La cita no tiene sucursal_id, no se puede crear folio de OS")
             folio = _get_next_folio_internal(tenant_id, "os", sucursal_id_cita)
 
-            # 2. Crear snapshot del cliente
+            # 2. Crear snapshot del cliente (incluye apellido_materno para PDF Orden y Cotización)
             cliente_id = body.get('clienteId')
-            cliente_doc = db.clientes.find_one({"_id": ObjectId(cliente_id)}) if cliente_id else None
+            cliente_doc = None
+            if cliente_id:
+                try:
+                    cliente_doc = db.clientes.find_one({"_id": ObjectId(cliente_id)})
+                except Exception:
+                    cliente_doc = None
             cliente_snapshot = {}
             if cliente_doc:
                 cliente_snapshot = {
                     "id": str(cliente_doc["_id"]),
                     "nombre": cliente_doc.get("nombre"),
                     "apellido_paterno": cliente_doc.get("apellido_paterno"),
+                    "apellido_materno": cliente_doc.get("apellido_materno"),
                     "telefono": cliente_doc.get("telefono"),
                     "email": cliente_doc.get("email")
                 }
@@ -192,7 +210,7 @@ def create_cita_handler(event, context):
 
         except Exception as os_err:
             # No bloqueamos la creación de la cita si falla la OS automática, pero lo logueamos
-            print(f"Error creando OS automática para cita {cita_id}: {os_err}")
+            logger.warning(f"Error creando OS automática para cita {cita_id}: {os_err}")
 
         return create_response(201, "Cita y Orden de Servicio creadas exitosamente", nueva)
     except Exception as e:
@@ -253,6 +271,25 @@ def update_cita_handler(event, context):
         if not result:
             return create_response(404, "Cita no encontrada.")
 
+        # Si la cita se canceló, cancelar la OS ligada si todavía está en RECEPCIÓN
+        # (no tocar OS que ya avanzaron a COTIZADO/APROBADO/etc — esas representan trabajo real)
+        if update_doc.get('estado') == 'cancelada' and result.get('orden_id'):
+            try:
+                db.ordenes_servicio.update_one(
+                    {"_id": ObjectId(result['orden_id']), "estado": "RECEPCION"},
+                    {"$set": {
+                        "estado": "CANCELADO",
+                        "motivo_cancelacion": "Cita cancelada",
+                        "updatedAt": datetime.utcnow()
+                    }, "$push": {"bitacora_estados": {
+                        "estado": "CANCELADO",
+                        "fecha": datetime.utcnow().isoformat() + "Z",
+                        "usuario_id": "system:cita_cancelada"
+                    }}}
+                )
+            except Exception as os_err:
+                logger.warning(f"No se pudo cancelar OS ligada {result.get('orden_id')}: {os_err}")
+
         return create_response(200, "Cita actualizada", _serialize(result))
     except Exception as e:
         return handle_exception(e)
@@ -270,6 +307,24 @@ def delete_cita_handler(event, context):
             return create_response(400, err)
 
         db = get_tenant_db(tenant_id)
+
+        # Bloquear borrado si la OS ligada ya avanzó (datos contables/operativos asociados)
+        cita = db.citas.find_one({"_id": object_id})
+        if cita and cita.get('orden_id'):
+            try:
+                os_doc = db.ordenes_servicio.find_one({"_id": ObjectId(cita['orden_id'])})
+            except Exception:
+                os_doc = None
+            if os_doc and os_doc.get('estado') not in ('RECEPCION', 'CANCELADO'):
+                return create_response(409,
+                    f"No se puede eliminar la cita: la OS {os_doc.get('folio')} ya está en estado {os_doc.get('estado')}. Cancele la cita en su lugar.")
+            # OS aún en RECEPCION o ya CANCELADA — limpiar referencia o eliminar la OS huérfana en RECEPCION
+            if os_doc and os_doc.get('estado') == 'RECEPCION':
+                try:
+                    db.ordenes_servicio.delete_one({"_id": os_doc['_id']})
+                except Exception as os_err:
+                    logger.warning(f"No se pudo eliminar OS ligada en RECEPCION {cita.get('orden_id')}: {os_err}")
+
         result = db.citas.delete_one({"_id": object_id})
 
         if result.deleted_count == 0:

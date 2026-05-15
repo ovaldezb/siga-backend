@@ -3,7 +3,7 @@ from datetime import datetime
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.infrastructure.database import get_tenant_db
-from src.shared.utils.auth_utils import try_parse_id
+from src.shared.utils.auth_utils import try_parse_id, resolve_sucursal_scope, is_admin
 from bson import ObjectId
 
 logger = Logger()
@@ -12,7 +12,7 @@ def list_items_handler(event, context):
     try:
         claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
         tenant_id = claims.get('custom:tenant_id')
-        
+
         query_params = event.get('queryStringParameters') or {}
         tipo = query_params.get('tipo')
         search = query_params.get('search')
@@ -22,12 +22,20 @@ def list_items_handler(event, context):
         skip = (page - 1) * limit
 
         db = get_tenant_db(tenant_id)
-        
+
+        # Resolver scope de sucursal: no-admin se filtra automáticamente a sus sucursales
+        scope_list, scope_err = resolve_sucursal_scope(claims, db, sucursal_id)
+        if scope_err:
+            return create_response(403, scope_err)
+
         # Filtros
         query = {}
         and_conditions = []
-        if sucursal_id:
-            and_conditions.append({'sucursal_id': sucursal_id})
+        if scope_list is not None:
+            if len(scope_list) == 1:
+                and_conditions.append({'sucursal_id': scope_list[0]})
+            else:
+                and_conditions.append({'sucursal_id': {'$in': scope_list}})
             
         if tipo:
             query['tipo'] = tipo
@@ -73,11 +81,18 @@ def create_item_handler(event, context):
             return create_response(400, "Nombre, No. Parte y Precio Venta son obligatorios.")
         
         db = get_tenant_db(tenant_id)
-        
-        # 2. Validar duplicados
-        existing_part = db["items"].find_one({"no_parte": no_parte})
+
+        sucursal_nueva = body.get('sucursalId') or body.get('sucursal_id')
+
+        # 2. Validar duplicados scoped por sucursal — el modelo multi-sucursal permite
+        #    el mismo SKU en sucursales distintas (stock por sucursal). Sólo bloquear
+        #    si ya existe en esta misma sucursal.
+        dup_query = {"no_parte": no_parte}
+        if sucursal_nueva:
+            dup_query["sucursal_id"] = sucursal_nueva
+        existing_part = db["items"].find_one(dup_query)
         if existing_part:
-            return create_response(400, f"El número de parte '{no_parte}' ya existe en el inventario.")
+            return create_response(400, f"El número de parte '{no_parte}' ya existe en esta sucursal.")
 
         # 3. Asegurar índices (Texto para búsqueda) - Con try para no bloquear
         try:
@@ -160,11 +175,16 @@ def get_item_handler(event, context):
 
         db = get_tenant_db(tenant_id)
         query = {"_id": ObjectId(item_id)}
-        # SUPER_ADMIN/ADMIN pueden leer entre sucursales si pasan ?ignoreScope=1
-        grupo = claims.get('cognito:groups') or ''
-        ignore_scope = (query_params.get('ignoreScope') == '1') and ('ADMIN' in grupo or 'SUPER_ADMIN' in grupo)
-        if sucursal_id and not ignore_scope:
-            query["sucursal_id"] = sucursal_id
+
+        # SUPER_ADMIN/ADMIN con ?ignoreScope=1 bypass scope (cross-sucursal lookup)
+        ignore_scope = (query_params.get('ignoreScope') == '1') and is_admin(claims)
+        if not ignore_scope:
+            scope_list, scope_err = resolve_sucursal_scope(claims, db, sucursal_id)
+            if scope_err:
+                return create_response(403, scope_err)
+            if scope_list is not None:
+                # Filtrar por una o varias sucursales permitidas
+                query["sucursal_id"] = scope_list[0] if len(scope_list) == 1 else {"$in": scope_list}
 
         item = db["items"].find_one(query)
 
@@ -196,8 +216,21 @@ def update_item_handler(event, context):
             body.get('sucursalId') or body.get('sucursal_id')
             or query_params.get('sucursalId') or query_params.get('sucursal_id')
         )
-        grupo = claims.get('cognito:groups') or ''
-        ignore_scope = (query_params.get('ignoreScope') == '1') and ('ADMIN' in grupo or 'SUPER_ADMIN' in grupo)
+        ignore_scope = (query_params.get('ignoreScope') == '1') and is_admin(claims)
+
+        db = get_tenant_db(tenant_id)
+
+        # Enforce scope contra las sucursales permitidas del usuario, salvo bypass de admin
+        if not ignore_scope:
+            scope_list, scope_err = resolve_sucursal_scope(claims, db, sucursal_id_guard)
+            if scope_err:
+                return create_response(403, scope_err)
+            if scope_list is not None and len(scope_list) == 1:
+                # No-admin con sucursal específica: usar como guard
+                sucursal_id_guard = scope_list[0]
+            elif scope_list is not None and len(scope_list) > 1 and not sucursal_id_guard:
+                # No-admin sin sucursal explícita pero con múltiples permitidas: no permitir update ciego
+                return create_response(400, "Especifique 'sucursal_id' para actualizar el item.")
 
         allowed = {
             "nombre", "no_parte", "tipo", "precio_venta",
@@ -207,7 +240,7 @@ def update_item_handler(event, context):
             "clave_sat", "unidad_sat", "maneja_inventario", "activo", "icon",
             "sucursal_id"
         }
-        
+
         # Mapear IDs
         if 'sucursalId' in body:
             body['sucursal_id'] = body.pop('sucursalId')
@@ -221,7 +254,6 @@ def update_item_handler(event, context):
 
         update_data['updatedAt'] = datetime.utcnow().isoformat() + "Z"
 
-        db = get_tenant_db(tenant_id)
         update_query = {"_id": ObjectId(item_id)}
         if sucursal_id_guard and not ignore_scope:
             update_query["sucursal_id"] = sucursal_id_guard
@@ -249,10 +281,19 @@ def delete_item_handler(event, context):
         item_id = event['pathParameters']['id']
         query_params = event.get('queryStringParameters') or {}
         sucursal_id_guard = query_params.get('sucursalId') or query_params.get('sucursal_id')
-        grupo = claims.get('cognito:groups') or ''
-        ignore_scope = (query_params.get('ignoreScope') == '1') and ('ADMIN' in grupo or 'SUPER_ADMIN' in grupo)
+        ignore_scope = (query_params.get('ignoreScope') == '1') and is_admin(claims)
 
         db = get_tenant_db(tenant_id)
+
+        # Enforce scope contra las sucursales permitidas del usuario
+        if not ignore_scope:
+            scope_list, scope_err = resolve_sucursal_scope(claims, db, sucursal_id_guard)
+            if scope_err:
+                return create_response(403, scope_err)
+            if scope_list is not None and len(scope_list) == 1:
+                sucursal_id_guard = scope_list[0]
+            elif scope_list is not None and len(scope_list) > 1 and not sucursal_id_guard:
+                return create_response(400, "Especifique 'sucursal_id' para eliminar el item.")
 
         # 1. Verificar stock antes de borrar (scoped)
         find_query = {"_id": ObjectId(item_id)}
