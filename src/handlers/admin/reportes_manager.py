@@ -143,13 +143,25 @@ def get_kpis_handler(event, context):
         ]))
         
         # Utility from OS
+        # Las cortesías (no_cobrar) no generan ingreso: su precioVenta cuenta como 0,
+        # de modo que su costo (precioCompra) reste correctamente a la utilidad del taller.
         res_util_os = list(db["ordenes_servicio"].aggregate([
             {"$match": {**filter_base, "estado": "ENTREGADO"}},
             {"$unwind": {"path": "$puntosArreglar", "preserveNullAndEmptyArrays": True}},
             {"$unwind": {"path": "$puntosArreglar.items", "preserveNullAndEmptyArrays": True}},
             {"$group": {
                 "_id": None,
-                "utilidad": {"$sum": {"$multiply": [{"$subtract": ["$puntosArreglar.items.precioVenta", {"$ifNull": ["$puntosArreglar.items.precioCompra", 0]}]}, "$puntosArreglar.items.piezas"]}}
+                "utilidad": {"$sum": {"$multiply": [
+                    {"$subtract": [
+                        {"$cond": [
+                            {"$eq": [{"$ifNull": ["$puntosArreglar.items.no_cobrar", False]}, True]},
+                            0,
+                            {"$ifNull": ["$puntosArreglar.items.precioVenta", 0]}
+                        ]},
+                        {"$ifNull": ["$puntosArreglar.items.precioCompra", 0]}
+                    ]},
+                    {"$ifNull": ["$puntosArreglar.items.piezas", 0]}
+                ]}}
             }}
         ]))
         
