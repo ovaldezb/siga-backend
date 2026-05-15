@@ -7,6 +7,27 @@ from bson import ObjectId
 
 logger = Logger()
 
+# Set de tenants donde ya garantizamos los índices durante la vida de este container.
+# Evita pegarle a Mongo en cada apertura de caja (create_index es idempotente pero
+# llamarlo en cada invocación es overhead innecesario).
+_ensured_indexes_tenants = set()
+
+
+def _ensure_caja_indexes(db, tenant_id):
+    if tenant_id in _ensured_indexes_tenants:
+        return
+    try:
+        db.caja_sesiones.create_index(
+            [("sucursal_id", 1), ("estado", 1)],
+            unique=True,
+            partialFilterExpression={"estado": "ABIERTA"},
+            name="uniq_caja_abierta_por_sucursal"
+        )
+        _ensured_indexes_tenants.add(tenant_id)
+    except Exception as idx_err:
+        logger.warning(f"No se pudo verificar índice único de caja: {idx_err}")
+
+
 def get_active_caja_handler(event, context):
     try:
         claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
@@ -54,17 +75,9 @@ def abrir_caja_handler(event, context):
 
         db = get_tenant_db(tenant_id)
 
-        # Índice único parcial: previene que dos terminales abran caja simultáneamente
-        # para la misma sucursal. Idempotente — crea sólo si no existe.
-        try:
-            db.caja_sesiones.create_index(
-                [("sucursal_id", 1), ("estado", 1)],
-                unique=True,
-                partialFilterExpression={"estado": "ABIERTA"},
-                name="uniq_caja_abierta_por_sucursal"
-            )
-        except Exception as idx_err:
-            logger.warning(f"No se pudo verificar índice único de caja: {idx_err}")
+        # Índice único parcial: previene que dos terminales abran caja simultáneamente.
+        # Se cachea por tenant para no llamarlo en cada apertura.
+        _ensure_caja_indexes(db, tenant_id)
 
         nueva_sesion = {
             "sucursal_id": sucursal_id,

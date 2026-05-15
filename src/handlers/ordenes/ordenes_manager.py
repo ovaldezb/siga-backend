@@ -10,6 +10,26 @@ from src.handlers.admin.folios_manager import _get_next_folio_internal
 logger = Logger()
 
 
+def _calcular_total_orden(puntos_arreglar) -> float:
+    """Suma server-side de puntosArreglar.items.(piezas * precioVenta) excluyendo no_cobrar.
+
+    El cliente no puede mandar `total` manipulado: siempre se recalcula aquí para mantener
+    consistente lo que se reporta vs la venta POS.
+    """
+    total = 0.0
+    for punto in puntos_arreglar or []:
+        for item in (punto.get("items") or []):
+            if item.get("no_cobrar"):
+                continue
+            try:
+                piezas = float(item.get("piezas") or 0)
+                precio = float(item.get("precioVenta") or 0)
+                total += piezas * precio
+            except (TypeError, ValueError):
+                continue
+    return round(total, 2)
+
+
 def _ensure_folio_index(db) -> None:
     """Asegura el índice único en (folio) para ordenes_servicio. Idempotente."""
     try:
@@ -109,7 +129,7 @@ def create_orden_handler(event, context):
             "aplica_costo_revision": body.get("aplica_costo_revision", False),
             "costo_revision": body.get("costo_revision"),
             "anticipo": body.get("anticipo", 0),
-            "total": body.get("total", 0),
+            "total": _calcular_total_orden(body.get("puntosArreglar", [])),
             "fechaEstimadaEntrega": body.get("fechaEstimadaEntrega"),
             "createdAt": datetime.utcnow(),
             "updatedAt": datetime.utcnow()
@@ -362,17 +382,19 @@ def update_orden_handler(event, context):
             return create_response(404, "Orden no encontrada")
             
         update_data = {}
-        # Lista extendida de campos permitidos para actualización
+        # Campos que el cliente puede pisar vía $set. 'total' se calcula server-side
+        # (ver más abajo) y 'bitacora_estados' nunca se acepta para $set para no perder
+        # el histórico — se maneja con $push.
         campos_permitidos = [
-            'estado', 'motivo_cancelacion', 'puntosArreglar', 'total', 
+            'estado', 'motivo_cancelacion', 'puntosArreglar',
             'mecanico_id', 'mecanico_nombre', 'falla_reportada', 'diagnostico',
             'kilometraje', 'nivel_tanque', 'testigos_encendidos', 'inventario',
             'proximo_cambio_bujias', 'proximo_cambio_aceite', 'anticipo',
-            'cliente_snapshot', 'vehiculo_snapshot', 'bitacora_estados',
+            'cliente_snapshot', 'vehiculo_snapshot',
             'aplica_costo_revision', 'costo_revision', 'fechaEstimadaEntrega',
-            'cita_id','sucursal_id'
+            'cita_id', 'sucursal_id'
         ]
-        
+
         # Mapear sucursalId a sucursal_id
         if 'sucursalId' in body:
             body['sucursal_id'] = body.pop('sucursalId')
@@ -380,27 +402,30 @@ def update_orden_handler(event, context):
         for campo in campos_permitidos:
             if campo in body:
                 update_data[campo] = body[campo]
-        
-        # 2. Si el estado cambió, agregar a la bitácora automáticamente si no viene en el body
+
+        # Recalcular total server-side desde puntosArreglar (excluyendo no_cobrar)
+        # para evitar que el frontend mande totales manipulados que desincronicen
+        # reportes vs venta real.
+        puntos_para_total = update_data.get('puntosArreglar', orden_actual.get('puntosArreglar', []))
+        update_data['total'] = _calcular_total_orden(puntos_para_total)
+
+        # 2. Si el estado cambió, agregar a la bitácora automáticamente con $push.
         nuevo_estado = body.get('estado')
+        bitacora_push = None
         if nuevo_estado and nuevo_estado != orden_actual.get('estado'):
             responsable = claims.get('email') or claims.get('name') or claims.get('sub') or 'system'
-            nuevo_registro = {
+            bitacora_push = {
                 "estado": nuevo_estado,
                 "fecha": datetime.utcnow().isoformat() + "Z",
                 "usuario_id": responsable
             }
-            
-            # Si el frontend no mandó la bitácora, la manejamos con $push
-            if 'bitacora_estados' not in update_data:
-                db["ordenes_servicio"].update_one(
-                    {"_id": ObjectId(orden_id)}, 
-                    {"$push": {"bitacora_estados": nuevo_registro}}
-                )
-        
+
         update_data['updatedAt'] = datetime.utcnow()
-        
-        db["ordenes_servicio"].update_one({"_id": ObjectId(orden_id)}, {"$set": update_data})
+
+        update_doc = {"$set": update_data}
+        if bitacora_push:
+            update_doc["$push"] = {"bitacora_estados": bitacora_push}
+        db["ordenes_servicio"].update_one({"_id": ObjectId(orden_id)}, update_doc)
         
         # Recuperar actualizada
         orden = db["ordenes_servicio"].find_one({"_id": ObjectId(orden_id)})

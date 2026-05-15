@@ -57,22 +57,66 @@ def get_kpis_handler(event, context):
         ventas_hoy = (res_ventas_hoy[0]['total'] if res_ventas_hoy else 0) + \
                      (res_os_hoy[0]['total'] if res_os_hoy else 0)
 
-        # 2. MEJORES CLIENTES (Consolidado)
-        # Nota: En un sistema real usaríamos una colección de clientes, 
-        # pero aquí promediamos desde ventas y OS por simplicidad del reporte actual
-        top_clientes = list(db["ventas"].aggregate([
+        # 2. MEJORES CLIENTES (Consolidado: ventas POS + OS ENTREGADO sin venta)
+        # Algunos talleres no convierten cada OS en una venta POS (flujo legacy o
+        # ENTREGADO directo). Si se agrega sólo desde `ventas`, el ranking queda
+        # incompleto. Unimos también desde `ordenes_servicio` con estado ENTREGADO,
+        # y consolidamos por cliente_id en Python.
+        ventas_por_cliente = list(db["ventas"].aggregate([
             {"$match": filter_base},
             {"$group": {
                 "_id": "$cliente_id",
                 "total_gastado": {"$sum": "$total"},
                 "visitas": {"$sum": 1},
-                "nombre_cliente": {"$first": "$cliente_nombre"} # Si se guarda en venta
-            }},
-            {"$sort": {"total_gastado": -1}},
-            {"$limit": 5}
+                "nombre_cliente": {"$first": "$cliente_nombre"}
+            }}
         ]))
 
+        os_por_cliente = list(db["ordenes_servicio"].aggregate([
+            {"$match": {**filter_base, "estado": "ENTREGADO"}},
+            {"$group": {
+                "_id": "$cliente_snapshot.id",
+                "total_gastado": {"$sum": {"$ifNull": ["$total", 0]}},
+                "visitas": {"$sum": 1},
+                "nombre_cliente": {"$first": {
+                    "$concat": [
+                        {"$ifNull": ["$cliente_snapshot.nombre", ""]},
+                        " ",
+                        {"$ifNull": ["$cliente_snapshot.apellido_paterno", ""]}
+                    ]
+                }}
+            }}
+        ]))
+
+        consolidado = {}
+        for row in ventas_por_cliente + os_por_cliente:
+            cid = row.get("_id")
+            if not cid:
+                continue
+            entry = consolidado.setdefault(cid, {
+                "_id": cid,
+                "total_gastado": 0,
+                "visitas": 0,
+                "nombre_cliente": None,
+            })
+            entry["total_gastado"] += row.get("total_gastado") or 0
+            entry["visitas"] += row.get("visitas") or 0
+            if not entry["nombre_cliente"]:
+                nombre = (row.get("nombre_cliente") or "").strip()
+                if nombre:
+                    entry["nombre_cliente"] = nombre
+
+        top_clientes = sorted(
+            consolidado.values(),
+            key=lambda x: x["total_gastado"],
+            reverse=True,
+        )[:5]
+
         # 3. RENDIMIENTO MECÁNICOS (Solo OS)
+        # ticket_promedio se calcula solo sobre OS ENTREGADAS. Promediar sobre OS en
+        # COTIZADO / EN_PROCESO / CANCELADO distorsiona la métrica (incluye totales
+        # parciales o ceros). Las cuentas de "completadas" y "en_proceso" siguen
+        # contando todos los estados relevantes para la barra de rendimiento.
         mecanicos_stats = list(db["ordenes_servicio"].aggregate([
             {"$match": filter_base},
             {"$group": {
@@ -80,8 +124,19 @@ def get_kpis_handler(event, context):
                 "nombre": {"$first": "$mecanico_nombre"},
                 "completadas": {"$sum": {"$cond": [{"$eq": ["$estado", "ENTREGADO"]}, 1, 0]}},
                 "en_proceso": {"$sum": {"$cond": [{"$eq": ["$estado", "EN_PROCESO"]}, 1, 0]}},
-                "ticket_promedio": {"$avg": "$total"}
+                "_total_entregado_sum": {"$sum": {"$cond": [{"$eq": ["$estado", "ENTREGADO"]}, {"$ifNull": ["$total", 0]}, 0]}},
+                "_entregadas_count": {"$sum": {"$cond": [{"$eq": ["$estado", "ENTREGADO"]}, 1, 0]}}
             }},
+            {"$addFields": {
+                "ticket_promedio": {
+                    "$cond": [
+                        {"$gt": ["$_entregadas_count", 0]},
+                        {"$divide": ["$_total_entregado_sum", "$_entregadas_count"]},
+                        0
+                    ]
+                }
+            }},
+            {"$project": {"_total_entregado_sum": 0, "_entregadas_count": 0}},
             {"$sort": {"completadas": -1}}
         ]))
 

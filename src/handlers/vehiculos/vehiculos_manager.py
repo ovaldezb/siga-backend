@@ -4,7 +4,7 @@ from datetime import datetime
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.infrastructure.database import get_tenant_db
-from src.shared.utils.auth_utils import try_parse_id
+from src.shared.utils.auth_utils import try_parse_id, parse_object_id
 
 logger = Logger()
 
@@ -287,14 +287,66 @@ def delete_vehiculo_handler(event, context):
                 f"No se puede eliminar: el vehículo tiene {ordenes_count} orden(es) de servicio asociadas."
             )
 
+        # Snapshot del cliente para sincronizar vehiculos_resumen tras el delete.
+        vehiculo_doc = db["vehiculos"].find_one({"_id": ObjectId(vehiculo_id)}, {"cliente_id": 1})
+
         result = db["vehiculos"].delete_one({"_id": ObjectId(vehiculo_id)})
         if result.deleted_count == 0:
             return create_response(404, "Vehículo no encontrado.")
+
+        # Mantener consistente el array vehiculos_resumen del cliente
+        if vehiculo_doc and vehiculo_doc.get("cliente_id"):
+            try:
+                _sync_vehiculos_resumen_pull(db, vehiculo_doc["cliente_id"], vehiculo_id)
+            except Exception as sync_err:
+                logger.warning(f"No se pudo sincronizar vehiculos_resumen al borrar {vehiculo_id}: {sync_err}")
 
         return create_response(200, "Vehículo eliminado")
 
     except Exception as e:
         return handle_exception(e)
+
+
+def _sync_vehiculos_resumen_pull(db, cliente_id, vehiculo_id):
+    """Quita la entry de vehiculos_resumen que coincida con vehiculo_id."""
+    cliente_oid, err = parse_object_id(cliente_id)
+    if err:
+        return
+    db["clientes"].update_one(
+        {"_id": cliente_oid},
+        {"$pull": {"vehiculos_resumen": {"id": vehiculo_id}}}
+    )
+
+
+def _sync_vehiculos_resumen_update(db, cliente_id, vehiculo_id, vehiculo_doc):
+    """Refresca la entry de vehiculos_resumen del cliente con los campos visibles del vehículo."""
+    cliente_oid, err = parse_object_id(cliente_id)
+    if err:
+        return
+
+    nueva_entry = {
+        "id": vehiculo_id,
+        "placas": vehiculo_doc.get("placas"),
+        "marca": vehiculo_doc.get("marca"),
+        "modelo": vehiculo_doc.get("modelo"),
+        "anio": vehiculo_doc.get("anio"),
+    }
+
+    # Si ya existe la entry, refrescarla; si no, hacer push (legacy con resumen vacío)
+    res = db["clientes"].update_one(
+        {"_id": cliente_oid, "vehiculos_resumen.id": vehiculo_id},
+        {"$set": {
+            "vehiculos_resumen.$.placas": nueva_entry["placas"],
+            "vehiculos_resumen.$.marca": nueva_entry["marca"],
+            "vehiculos_resumen.$.modelo": nueva_entry["modelo"],
+            "vehiculos_resumen.$.anio": nueva_entry["anio"],
+        }}
+    )
+    if res.matched_count == 0:
+        db["clientes"].update_one(
+            {"_id": cliente_oid},
+            {"$push": {"vehiculos_resumen": nueva_entry}}
+        )
 
 
 @logger.inject_lambda_context
@@ -315,8 +367,10 @@ def update_vehiculo_handler(event, context):
         if 'año' in body:
             body['anio'] = body.pop('año')
 
-        # Limpiar datos para el update (evitar cambiar IDs o tenant)
-        update_data = {k: v for k, v in body.items() if k not in ['id', '_id', 'tenant_id', 'createdAt', 'cliente_nombre']}
+        # Limpiar datos para el update (evitar cambiar IDs, tenant o reasignar dueño).
+        # cliente_id se bloquea: cambiar el dueño de un vehículo requiere un endpoint
+        # dedicado con auditoría (no se puede colar por el PUT genérico).
+        update_data = {k: v for k, v in body.items() if k not in ['id', '_id', 'tenant_id', 'cliente_id', 'createdAt', 'cliente_nombre']}
 
         # Mapear sucursalId (camelCase FE) a sucursal_id (snake_case DB)
         if 'sucursalId' in update_data:
@@ -334,6 +388,18 @@ def update_vehiculo_handler(event, context):
 
         # Obtener el objeto actualizado para devolverlo completo
         updated_vehiculo = db["vehiculos"].find_one({"_id": ObjectId(vehiculo_id)})
+
+        # Sincronizar vehiculos_resumen del cliente si los campos visibles cambiaron
+        if updated_vehiculo and updated_vehiculo.get("cliente_id"):
+            campos_visibles = {"placas", "marca", "modelo", "anio"}
+            if any(c in update_data for c in campos_visibles):
+                try:
+                    _sync_vehiculos_resumen_update(
+                        db, updated_vehiculo["cliente_id"], vehiculo_id, updated_vehiculo
+                    )
+                except Exception as sync_err:
+                    logger.warning(f"No se pudo sincronizar vehiculos_resumen al actualizar {vehiculo_id}: {sync_err}")
+
         updated_vehiculo['id'] = str(updated_vehiculo.pop('_id'))
         if 'sucursal_id' in updated_vehiculo:
             updated_vehiculo['sucursalId'] = updated_vehiculo.pop('sucursal_id')
