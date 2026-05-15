@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timedelta
+from datetime import datetime
 from bson import ObjectId
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
@@ -86,10 +86,15 @@ def get_kpis_handler(event, context):
         ]))
 
         # 4. TENDENCIAS (History - 6 meses)
+        # Restamos meses calendario exactos. Antes se usaba timedelta(days=i*30),
+        # que con meses de 28/31 días duplicaba o se saltaba meses en el reporte.
         history = []
+        now = datetime.utcnow()
         for i in range(5, -1, -1):
-            date = datetime.now() - timedelta(days=i*30)
-            month_year = date.strftime("%Y-%m")
+            month_index = now.year * 12 + (now.month - 1) - i
+            year = month_index // 12
+            month = month_index % 12 + 1
+            month_year = f"{year:04d}-{month:02d}"
             history.append({"mes": month_year, "total": 0, "count": 0})
 
         # Helper to convert createdAt to date if it's a string
