@@ -19,7 +19,7 @@ def _calcular_total_orden(puntos_arreglar) -> float:
     total = 0.0
     for punto in puntos_arreglar or []:
         for item in (punto.get("items") or []):
-            if item.get("no_cobrar"):
+            if item.get("no_cobrar") or item.get("rechazado"):
                 continue
             try:
                 piezas = float(item.get("piezas") or 0)
