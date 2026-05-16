@@ -93,7 +93,7 @@ def create_venta_handler(event, context):
         # 3. FOLIO SECUENCIAL (MongoDB atómico, no UUID)
         folio = _get_next_folio_internal(tenant_id, "venta", sucursal_id)
 
-        # 3.5 VALIDAR STOCK ATÓMICAMENTE ANTES DE PROCESAR
+        # 3.5 VALIDAR STOCK ATÓMICAMENTE ANTES DE PROCESAR + SNAPSHOT COSTO PROMEDIO POR LÍNEA
         for item in items:
             producto = item.get('producto', {})
             item_id = producto.get('id')
@@ -104,6 +104,10 @@ def create_venta_handler(event, context):
                      return create_response(404, f"Producto no encontrado: {producto.get('nombre')}")
                  if p.get('stock', 0) < cantidad:
                       return create_response(400, f"Stock insuficiente para {producto.get('nombre')}. Disponible: {p.get('stock', 0)}")
+                 # Snapshot del costo promedio actual: clave para reportes de margen.
+                 # Se almacena en la línea misma para que el reporte sea reproducible
+                 # aunque el costo del item cambie después.
+                 item['costo_unitario_snapshot'] = float(p.get('costo_promedio', p.get('precio_compra', 0)) or 0)
 
         # 3.6 VALIDAR CRÉDITO SI APLICA (acepta crédito como método único o dentro de pagos[])
         metodo_pago = body.get('metodo_pago', 'EFECTIVO').upper()

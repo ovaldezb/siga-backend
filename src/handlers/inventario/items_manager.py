@@ -115,6 +115,7 @@ def create_item_handler(event, context):
 
         # 5. Preparar item
         tipo = body.get('tipo', 'PRODUCTO')
+        costo_compra_inicial = to_float(body.get('precio_compra', 0))
         nuevo_item = {
             "tipo": tipo,
             "nombre": body['nombre'],
@@ -123,7 +124,9 @@ def create_item_handler(event, context):
             "precio_taller": to_float(body.get('precio_taller', 0)),
             "precio_cliente": to_float(body.get('precio_cliente', 0)),
             "precio_distribuidor": to_float(body.get('precio_distribuidor', 0)),
-            "precio_compra": to_float(body.get('precio_compra', 0)),
+            "precio_compra": costo_compra_inicial,
+            # costo_promedio: arranca = precio_compra inicial; lo recalcula compras_manager
+            "costo_promedio": to_float(body.get('costo_promedio', costo_compra_inicial)),
             # Flags fiscales: por defecto los precios capturados YA incluyen IVA (convención SIGA)
             "precio_incluye_iva": bool(body.get('precio_incluye_iva', True)),
             "iva_exento": bool(body.get('iva_exento', False)),
@@ -235,7 +238,7 @@ def update_item_handler(event, context):
         allowed = {
             "nombre", "no_parte", "tipo", "precio_venta",
             "precio_taller", "precio_cliente", "precio_distribuidor",
-            "precio_compra", "precio_incluye_iva", "iva_exento",
+            "precio_compra", "costo_promedio", "precio_incluye_iva", "iva_exento",
             "categoria", "marca", "proveedor", "proveedor_id",
             "clave_sat", "unidad_sat", "maneja_inventario", "activo", "icon",
             "sucursal_id"
