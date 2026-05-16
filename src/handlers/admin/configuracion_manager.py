@@ -29,6 +29,13 @@ def get_config_handler(event, context):
                 "marcas": [
                     {"nombre": "General", "activa": True}
                 ],
+                "gastos_fijos_catalogo": [
+                    {"id": "luz",       "nombre": "Luz",       "categoria": "Servicios", "monto_estimado": 0, "activo": True, "icono": "ri-lightbulb-flash-line"},
+                    {"id": "agua",      "nombre": "Agua",      "categoria": "Servicios", "monto_estimado": 0, "activo": True, "icono": "ri-drop-line"},
+                    {"id": "internet",  "nombre": "Internet",  "categoria": "Servicios", "monto_estimado": 0, "activo": True, "icono": "ri-wifi-line"},
+                    {"id": "renta",     "nombre": "Renta",     "categoria": "Inmueble",  "monto_estimado": 0, "activo": True, "icono": "ri-store-2-line"},
+                    {"id": "sueldos",   "nombre": "Sueldos",   "categoria": "Nómina",   "monto_estimado": 0, "activo": True, "icono": "ri-team-line"},
+                ],
                 "tasas": {
                     "iva": 0.16
                 },
@@ -52,6 +59,15 @@ def get_config_handler(event, context):
                 }
             }
             db["configuracion"].insert_one(config)
+
+        # Migración suave: tenants viejos sin gastos_fijos_catalogo lo reciben vacío
+        # (no sembramos defaults para no contaminar configs ya en uso).
+        if 'gastos_fijos_catalogo' not in config:
+            config['gastos_fijos_catalogo'] = []
+            db["configuracion"].update_one(
+                {"tenant_id": tenant_id},
+                {"$set": {"gastos_fijos_catalogo": []}}
+            )
 
         if '_id' in config:
             config['id'] = str(config.pop('_id'))
