@@ -116,9 +116,17 @@ def create_venta_handler(event, context):
                      obj_id = ObjectId(item_id)
                      p = db["items"].find_one({"_id": obj_id})
                      if p:
-                         if p.get('stock', 0) < cantidad:
-                              return create_response(400, f"Stock insuficiente para {producto.get('nombre')}. Disponible: {p.get('stock', 0)}")
-                         # Snapshot del costo para margen contable
+                         # Items con maneja_inventario:False (servicios persistidos, manuales
+                         # promovidos a catálogo desde OS, etc.) no tienen stock controlado —
+                         # se cobran sin validar/descontar inventario. Marcamos no_inventario
+                         # para que el paso 5 tampoco intente descontar.
+                         maneja_inv = p.get('maneja_inventario', True)
+                         if maneja_inv:
+                             if p.get('stock', 0) < cantidad:
+                                  return create_response(400, f"Stock insuficiente para {producto.get('nombre')}. Disponible: {p.get('stock', 0)}")
+                         else:
+                             item['no_inventario'] = True
+                         # Snapshot del costo para margen contable (aplica a ambos casos)
                          item['costo_unitario_snapshot'] = float(p.get('costo_promedio', p.get('precio_compra', 0)) or 0)
                      else:
                          # Si tiene ID pero no existe, lo tratamos como manual para no romper el flujo
@@ -225,9 +233,10 @@ def create_venta_handler(event, context):
             item_id = producto.get('id')
             cantidad = int(item.get('cantidad', 0))
 
-            # Piezas externas o manuales no viven en inventario: no se descuenta nada.
-            is_manual_or_ext = (item.get('es_externo') or producto.get('es_externo') or not item_id or item_id == 'manual' or producto.get('tipo') == 'SERVICIO')
-            
+            # Piezas externas, manuales o items con maneja_inventario:False (marcadas en el
+            # paso 3.5) no viven en stock controlado: no se descuenta nada.
+            is_manual_or_ext = (item.get('es_externo') or producto.get('es_externo') or not item_id or item_id == 'manual' or producto.get('tipo') == 'SERVICIO' or item.get('no_inventario'))
+
             if not is_manual_or_ext:
                 try:
                     # Atómica + scoped por sucursal
