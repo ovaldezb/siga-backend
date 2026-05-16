@@ -6,6 +6,7 @@ from src.shared.utils.auth_utils import try_parse_id
 from src.shared.infrastructure.database import get_tenant_db
 from src.handlers.admin.folios_manager import _get_next_folio_internal
 from bson import ObjectId
+from bson.errors import InvalidId
 
 logger = Logger()
 
@@ -276,26 +277,42 @@ def create_venta_handler(event, context):
                         prov = db["proveedores"].find_one({"_id": ObjectId(p_id)})
                         if not prov: continue
                         
+                        # Costos del proveedor se asumen SIN IVA (convención: el costo capturado
+                        # en la pieza externa es neto; el IVA del proveedor se calcula aquí para
+                        # que la compra cuadre fiscalmente en CxP / IVA acreditable / gastos variables.
                         compra_items = []
-                        total_compra = 0.0
+                        base_compra = 0.0
+                        iva_compra = 0.0
                         for l in lineas:
                             prod = l.get('producto', {})
                             cant = int(l.get('cantidad', 1))
                             costo = float(l.get('costo_proveedor') or l.get('precio_compra') or 0)
-                            sub = round(cant * costo, 2)
-                            total_compra += sub
+                            base_ln = round(cant * costo, 2)
+                            iva_ln = round(base_ln * IVA_RATE, 2)
+                            total_ln = round(base_ln + iva_ln, 2)
+                            base_compra += base_ln
+                            iva_compra += iva_ln
                             compra_items.append({
                                 "item_id": prod.get('id', 'manual'),
                                 "nombre": prod.get('nombre', 'Item Externo'),
                                 "no_parte": prod.get('no_parte', ''),
                                 "cantidad": cant,
                                 "costo_unitario": costo,
-                                "total_linea": sub,
+                                "costo_unitario_neto": costo,
+                                "costo_incluye_iva": False,
+                                "iva_exento": False,
+                                "subtotal_linea": base_ln,
+                                "iva_linea": iva_ln,
+                                "total_linea": total_ln,
                                 "afecta_inventario": False
                             })
-                        
+
+                        subtotal_compra = round(base_compra, 2)
+                        iva_total_compra = round(iva_compra, 2)
+                        total_compra = round(subtotal_compra + iva_total_compra, 2)
+
                         folio_compra = _get_next_folio_internal(tenant_id, "compra", sucursal_id)
-                        
+
                         nueva_compra = {
                             "folio": folio_compra,
                             "proveedor_id": p_id,
@@ -303,8 +320,12 @@ def create_venta_handler(event, context):
                             "sucursal_id": sucursal_id,
                             "fecha_factura": datetime.utcnow().isoformat() + "Z",
                             "items": compra_items,
-                            "total": round(total_compra, 2),
-                            "saldo_pendiente": round(total_compra, 2),
+                            "subtotal": subtotal_compra,
+                            "iva": iva_total_compra,
+                            "descuento": 0.0,
+                            "total": total_compra,
+                            "saldo_pendiente": total_compra,
+                            "abonos": [],
                             "estado": "RECIBIDA",
                             "notas": f"Generada automáticamente desde OS {body.get('folio_orden', 'N/A')} vinculada a Venta {folio}",
                             "orden_id": orden_id,

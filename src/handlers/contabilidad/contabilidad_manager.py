@@ -622,7 +622,7 @@ def get_resumen_mensual_handler(event, context):
         ventas = list(db.ventas.find(q_ventas, {
             'folio': 1, 'cliente_nombre': 1, 'cliente_id': 1,
             'items': 1, 'subtotal': 1, 'iva': 1, 'total': 1, 'descuento': 1,
-            'orden_servicio_id': 1, 'sucursal_id': 1, 'createdAt': 1, 'estado': 1,
+            'orden_id': 1, 'sucursal_id': 1, 'createdAt': 1, 'estado': 1,
         }))
 
         ingresos_brutos = 0.0   # total con IVA
@@ -661,7 +661,7 @@ def get_resumen_mensual_handler(event, context):
                 'folio': v.get('folio'),
                 'cliente': v.get('cliente_nombre'),
                 'cliente_id': v.get('cliente_id'),
-                'orden_servicio_id': v.get('orden_servicio_id'),
+                'orden_id': v.get('orden_id'),
                 'ingreso_neto': round(sub, 2),
                 'iva': round(iva_v, 2),
                 'ingreso_bruto': round(tot, 2),
@@ -670,7 +670,7 @@ def get_resumen_mensual_handler(event, context):
                 'fecha': fecha_iso,
             }
             ventas_detalle.append(row)
-            if v.get('orden_servicio_id'):
+            if v.get('orden_id'):
                 os_detalle.append(row)
 
         # --- Compras del mes: separar gastos variables (sin inventario) e IVA acreditable ---
