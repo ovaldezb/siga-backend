@@ -363,6 +363,99 @@ def get_orden_handler(event, context):
 
 
 @logger.inject_lambda_context
+def list_sugerencias_pendientes_handler(event, context):
+    """GET /ordenes/sugerencias-pendientes?vehiculo_id=X | cliente_id=Y [&exclude_orden_id=Z]
+
+    Devuelve items cotizados que el cliente nunca aceptó (rechazado=true o aprobado=false)
+    de OS pasadas en estado terminal (FINALIZADO/ENTREGADO). Permite que el asesor le diga
+    al cliente "la vez pasada le cotizamos X y no lo aceptó, ¿lo agregamos hoy?".
+    """
+    try:
+        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        tenant_id = claims.get('custom:tenant_id')
+        if not tenant_id:
+            return create_response(403, "No se encontró un tenantId asociado.")
+
+        qp = event.get('queryStringParameters') or {}
+        vehiculo_id = (qp.get('vehiculo_id') or '').strip()
+        cliente_id = (qp.get('cliente_id') or '').strip()
+        exclude_orden_id = (qp.get('exclude_orden_id') or '').strip()
+
+        if not vehiculo_id and not cliente_id:
+            return create_response(400, "Se requiere vehiculo_id o cliente_id.")
+
+        db = get_tenant_db(tenant_id)
+
+        match: dict = {"estado": {"$in": ["FINALIZADO", "ENTREGADO"]}}
+        if vehiculo_id:
+            match["vehiculo_id"] = vehiculo_id
+        if cliente_id:
+            # cliente_snapshot.id es como se persiste en create_orden_handler
+            match["cliente_snapshot.id"] = cliente_id
+        if exclude_orden_id:
+            try:
+                match["_id"] = {"$ne": ObjectId(exclude_orden_id)}
+            except Exception:
+                pass
+
+        pipeline = [
+            {"$match": match},
+            {"$sort": {"createdAt": -1}},
+            {"$limit": 50},  # cota dura: 50 OS terminales más recientes son suficientes
+            {"$project": {
+                "folio": 1,
+                "createdAt": 1,
+                "vehiculo_id": 1,
+                "cliente_snapshot": 1,
+                "puntosArreglar": 1,
+            }},
+            {"$unwind": {"path": "$puntosArreglar", "preserveNullAndEmptyArrays": False}},
+            {"$unwind": {"path": "$puntosArreglar.items", "preserveNullAndEmptyArrays": False}},
+            {"$match": {
+                "$and": [
+                    {"$or": [
+                        {"puntosArreglar.items.rechazado": True},
+                        {"puntosArreglar.items.aprobado": {"$ne": True}},
+                    ]},
+                    {"puntosArreglar.items.entregado": {"$ne": True}},
+                    {"puntosArreglar.items.nombre": {"$exists": True, "$nin": [None, ""]}},
+                ]
+            }},
+            {"$project": {
+                "_id": 0,
+                "folio_origen": "$folio",
+                "fecha_origen": "$createdAt",
+                "orden_id": {"$toString": "$_id"},
+                "vehiculo_id": "$vehiculo_id",
+                "punto_nombre": "$puntosArreglar.nombre",
+                "item": "$puntosArreglar.items",
+            }},
+        ]
+
+        results = list(db["ordenes_servicio"].aggregate(pipeline))
+
+        # Serializar fechas + aplanar item al nivel superior para que el front lo importe fácil
+        sugerencias = []
+        for r in results:
+            fecha = r.get('fecha_origen')
+            if isinstance(fecha, datetime):
+                fecha = fecha.isoformat()
+            item = r.get('item') or {}
+            sugerencias.append({
+                **item,
+                "folio_origen": r.get('folio_origen'),
+                "fecha_origen": fecha,
+                "orden_id": r.get('orden_id'),
+                "vehiculo_id": r.get('vehiculo_id'),
+                "punto_nombre": r.get('punto_nombre'),
+            })
+
+        return create_response(200, "Sugerencias pendientes recuperadas", {"items": sugerencias, "total": len(sugerencias)})
+    except Exception as e:
+        return handle_exception(e)
+
+
+@logger.inject_lambda_context
 def update_orden_handler(event, context):
     try:
         claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
