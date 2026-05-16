@@ -259,6 +259,63 @@ def create_venta_handler(event, context):
             except Exception as os_err:
                 logger.warning(f"Error al cerrar OS {orden_id}: {os_err}")
 
+            # --- BACKOFFICE: CREACIÓN AUTOMÁTICA DE COMPRAS (CxP) ---
+            # Si hay items externos con proveedor, generamos la deuda en el módulo de compras
+            try:
+                items_externos = [it for it in items if it.get('es_externo') and it.get('proveedor_id')]
+                if items_externos:
+                    # Agrupar por proveedor
+                    por_proveedor = {}
+                    for it in items_externos:
+                        p_id = it['proveedor_id']
+                        if p_id not in por_proveedor: por_proveedor[p_id] = []
+                        por_proveedor[p_id].append(it)
+                    
+                    for p_id, lineas in por_proveedor.items():
+                        prov = db["proveedores"].find_one({"_id": ObjectId(p_id)})
+                        if not prov: continue
+                        
+                        compra_items = []
+                        total_compra = 0.0
+                        for l in lineas:
+                            prod = l.get('producto', {})
+                            cant = int(l.get('cantidad', 1))
+                            costo = float(l.get('costo_proveedor') or l.get('precio_compra') or 0)
+                            sub = round(cant * costo, 2)
+                            total_compra += sub
+                            compra_items.append({
+                                "item_id": prod.get('id', 'manual'),
+                                "nombre": prod.get('nombre', 'Item Externo'),
+                                "no_parte": prod.get('no_parte', ''),
+                                "cantidad": cant,
+                                "costo_unitario": costo,
+                                "total_linea": sub,
+                                "afecta_inventario": False
+                            })
+                        
+                        folio_compra = _get_next_folio_internal(tenant_id, "compra", sucursal_id)
+                        
+                        nueva_compra = {
+                            "folio": folio_compra,
+                            "proveedor_id": p_id,
+                            "proveedor_snapshot": {"id": p_id, "nombre": prov.get('nombre'), "rfc": prov.get('rfc')},
+                            "sucursal_id": sucursal_id,
+                            "fecha_factura": datetime.utcnow().isoformat() + "Z",
+                            "items": compra_items,
+                            "total": round(total_compra, 2),
+                            "saldo_pendiente": round(total_compra, 2),
+                            "estado": "RECIBIDA",
+                            "notas": f"Generada automáticamente desde OS {body.get('folio_orden', 'N/A')} vinculada a Venta {folio}",
+                            "orden_id": orden_id,
+                            "venta_id": nueva_venta["id"],
+                            "tenant_id": tenant_id,
+                            "createdAt": datetime.utcnow()
+                        }
+                        db["compras"].insert_one(nueva_compra)
+            except Exception as e_backoffice:
+                logger.error(f"Error en automatización Backoffice CxP: {str(e_backoffice)}")
+            # -------------------------------------------------------
+
         # Adjuntar advertencias al payload para que el front decida si avisar
         if items_sin_stock:
             nueva_venta["warnings"] = [f"Stock no descontado para: {', '.join(items_sin_stock)} (verifique inventario manualmente)"]
