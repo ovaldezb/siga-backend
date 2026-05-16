@@ -93,11 +93,42 @@ def create_venta_handler(event, context):
         # 3. FOLIO SECUENCIAL (MongoDB atómico, no UUID)
         folio = _get_next_folio_internal(tenant_id, "venta", sucursal_id)
 
-        # 3.5 VALIDAR STOCK ATÓMICAMENTE ANTES DE PROCESAR + SNAPSHOT COSTO PROMEDIO POR LÍNEA
+        # 3.5 VALIDAR STOCK ATÓMICAMENTE ANTES DE PROCESAR + SNAPSHOT COSTO POR LÍNEA
+        # Reglas:
+        #  - Items externos (vienen de proveedor, no son inventario propio) NO se validan
+        #    contra `items`, no descuentan stock y su costo_unitario_snapshot proviene de
+        #    `costo_proveedor` (capturado por el asesor en la OS).
+        #  - Items "manual" antiguos siguen tolerándose (no validan stock).
+        #  - Items normales validan stock y toman snapshot del costo promedio del catálogo.
         for item in items:
             producto = item.get('producto', {})
             item_id = producto.get('id')
-            cantidad = int(item.get('cantidad', 0))
+            es_externo = bool(item.get('es_externo') or producto.get('es_externo'))
+            try:
+                cantidad = int(item.get('cantidad', 0))
+            except (TypeError, ValueError):
+                cantidad = 0
+
+            if es_externo:
+                # Snapshot del costo pagado al proveedor (cae al margen como COGS de esta OS).
+                costo_ext = (
+                    item.get('costo_proveedor')
+                    or producto.get('costo_proveedor')
+                    or producto.get('precio_compra')
+                    or 0
+                )
+                try:
+                    item['costo_unitario_snapshot'] = float(costo_ext or 0)
+                except (TypeError, ValueError):
+                    item['costo_unitario_snapshot'] = 0.0
+                # Propagar metadata del proveedor a la línea para reportes contables por OS.
+                if not item.get('proveedor_id'):
+                    item['proveedor_id'] = producto.get('proveedor_id')
+                if not item.get('proveedor_nombre'):
+                    item['proveedor_nombre'] = producto.get('proveedor_nombre')
+                item['es_externo'] = True
+                continue
+
             if item_id and item_id != 'manual' and producto.get('tipo') == 'PRODUCTO':
                  p = db["items"].find_one({"_id": ObjectId(item_id)})
                  if not p:
@@ -199,6 +230,10 @@ def create_venta_handler(event, context):
             producto = item.get('producto', {})
             item_id = producto.get('id')
             cantidad = int(item.get('cantidad', 0))
+
+            # Piezas externas no viven en inventario: no se descuenta nada.
+            if item.get('es_externo') or producto.get('es_externo'):
+                continue
 
             # Descontar stock si es un producto con inventario
             if item_id and item_id != 'manual' and producto.get('tipo') == 'PRODUCTO':

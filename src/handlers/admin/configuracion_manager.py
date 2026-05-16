@@ -27,7 +27,15 @@ def get_config_handler(event, context):
                     {"id": "credito", "nombre": "Crédito", "icono": "ri-hand-coin-line", "activo": True, "requiere_referencia": False}
                 ],
                 "marcas": [
-                    {"nombre": "General", "activa": True}
+                    {"id": "bosch",     "nombre": "Bosch",     "activa": True},
+                    {"id": "brembo",    "nombre": "Brembo",    "activa": True},
+                    {"id": "castrol",   "nombre": "Castrol",   "activa": True},
+                    {"id": "acdelco",   "nombre": "ACDelco",   "activa": True},
+                    {"id": "michelin",  "nombre": "Michelin",  "activa": True},
+                    {"id": "ngk",       "nombre": "NGK",       "activa": True},
+                    {"id": "gonher",    "nombre": "Gonher",    "activa": True},
+                    {"id": "lth",       "nombre": "LTH",       "activa": True},
+                    {"id": "generica",  "nombre": "Genérica",  "activa": True}
                 ],
                 "gastos_fijos_catalogo": [
                     {"id": "luz",       "nombre": "Luz",       "categoria": "Servicios", "monto_estimado": 0, "activo": True, "icono": "ri-lightbulb-flash-line"},

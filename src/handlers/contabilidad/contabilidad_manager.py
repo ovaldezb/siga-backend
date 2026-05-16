@@ -792,6 +792,217 @@ def get_resumen_mensual_handler(event, context):
         return handle_exception(e)
 
 
+def get_resumen_por_os_handler(event, context):
+    """GET /contabilidad/resumen-os?year=&month=&sucursal_id=
+
+    Devuelve una fila por OS facturada en el mes con:
+      - ingresos_netos (subtotal de la venta)
+      - costo_inventario  (líneas de items propios — costo_unitario_snapshot × cantidad)
+      - costo_externo     (líneas con es_externo=True — costo proveedor × cantidad)
+      - costo_regalado    (líneas con no_cobrar/cortesía en la OS original — costo × cantidad)
+                           Se RESTA de la utilidad: el taller pagó la pieza aunque no la cobró.
+      - proveedores       [{proveedor_id, proveedor_nombre, total, items_count}]
+      - utilidad_neta = ingresos_netos − costo_inventario − costo_externo − costo_regalado
+
+    Necesita leer la OS asociada para detectar items con no_cobrar (cortesía), porque en la
+    venta llegan a $0 y su costo se contaría como parte del COGS general — aquí lo aislamos
+    para que el operador vea explícitamente el impacto de los regalos.
+    """
+    try:
+        claims = _get_claims(event)
+        tenant_id = claims.get('custom:tenant_id')
+        if not tenant_id:
+            return create_response(403, "No autorizado")
+
+        qp = event.get('queryStringParameters') or {}
+        year, month = _parse_year_month(qp)
+        sucursal_id = qp.get('sucursal_id') or qp.get('sucursalId')
+        desde, hasta_excl = _month_range(year, month)
+
+        db = get_tenant_db(tenant_id)
+
+        # Sólo ventas que tienen OS asociada (es decir, no ventas de mostrador puro).
+        q_ventas = {
+            "createdAt": {"$gte": desde, "$lt": hasta_excl},
+            "orden_id": {"$nin": [None, ""]},
+            "estado": {"$nin": ["CANCELADA", "ANULADA"]},
+        }
+        if sucursal_id:
+            q_ventas['sucursal_id'] = sucursal_id
+        ventas = list(db.ventas.find(q_ventas, {
+            'folio': 1, 'cliente_nombre': 1, 'cliente_id': 1,
+            'items': 1, 'subtotal': 1, 'iva': 1, 'total': 1, 'descuento': 1,
+            'orden_id': 1, 'sucursal_id': 1, 'createdAt': 1, 'estado': 1,
+            'vehiculo_snapshot': 1,
+        }))
+
+        # Pre-cargar las OS de un golpe para no hacer N+1.
+        orden_ids = []
+        for v in ventas:
+            oid = v.get('orden_id')
+            if oid:
+                try:
+                    orden_ids.append(ObjectId(oid))
+                except (InvalidId, TypeError):
+                    pass
+        ordenes_map = {}
+        if orden_ids:
+            for o in db.ordenes_servicio.find({"_id": {"$in": orden_ids}},
+                                              {'folio': 1, 'puntosArreglar': 1, 'cliente_snapshot': 1,
+                                               'vehiculo_snapshot': 1, 'mecanico_nombre': 1}):
+                ordenes_map[str(o['_id'])] = o
+
+        filas = []
+        tot_ingreso = 0.0
+        tot_costo_inv = 0.0
+        tot_costo_ext = 0.0
+        tot_costo_reg = 0.0
+        proveedores_global = {}
+
+        for v in ventas:
+            ingreso_neto = float(v.get('subtotal') or 0)
+            costo_inv = 0.0
+            costo_ext = 0.0
+            proveedores_os = {}  # proveedor_id -> {nombre, total, items}
+
+            # Costo de la venta: leer items[] tal cual quedaron snapshotted.
+            for it in v.get('items') or []:
+                try:
+                    cant = int(it.get('cantidad') or 0)
+                except (TypeError, ValueError):
+                    cant = 0
+                costo_u = float(it.get('costo_unitario_snapshot') or 0)
+                producto = it.get('producto') or {}
+                es_externo = bool(it.get('es_externo') or producto.get('es_externo'))
+                linea = round(costo_u * cant, 2)
+
+                if es_externo:
+                    costo_ext += linea
+                    prov_id = it.get('proveedor_id') or producto.get('proveedor_id') or 'sin-proveedor'
+                    prov_nombre = (it.get('proveedor_nombre')
+                                   or producto.get('proveedor_nombre')
+                                   or 'Sin proveedor')
+                    bucket = proveedores_os.setdefault(prov_id, {
+                        'proveedor_id': prov_id,
+                        'proveedor_nombre': prov_nombre,
+                        'total': 0.0,
+                        'items_count': 0,
+                    })
+                    bucket['total'] = round(bucket['total'] + linea, 2)
+                    bucket['items_count'] += 1
+                    # Global breakdown
+                    g = proveedores_global.setdefault(prov_id, {
+                        'proveedor_id': prov_id,
+                        'proveedor_nombre': prov_nombre,
+                        'total': 0.0,
+                        'items_count': 0,
+                        'os_count': 0,
+                    })
+                    g['total'] = round(g['total'] + linea, 2)
+                    g['items_count'] += 1
+                else:
+                    costo_inv += linea
+
+            # Regalos: leer la OS original para detectar items con no_cobrar (su costo SÍ
+            # afectó utilidad porque se descontó stock / se pagó al proveedor, pero el
+            # cliente no los pagó).
+            costo_reg = 0.0
+            regalados_detalle = []
+            orden_doc = ordenes_map.get(v.get('orden_id'))
+            if orden_doc:
+                for punto in (orden_doc.get('puntosArreglar') or []):
+                    for it_os in (punto.get('items') or []):
+                        if not it_os.get('no_cobrar'):
+                            continue
+                        try:
+                            cant = float(it_os.get('piezas') or 0)
+                        except (TypeError, ValueError):
+                            cant = 0
+                        # Usa costo_proveedor si es externo, si no precioCompra.
+                        if it_os.get('es_externo'):
+                            costo_u = float(it_os.get('costo_proveedor') or it_os.get('precioCompra') or 0)
+                        else:
+                            costo_u = float(it_os.get('precioCompra') or 0)
+                        linea_reg = round(costo_u * cant, 2)
+                        costo_reg += linea_reg
+                        regalados_detalle.append({
+                            'nombre': it_os.get('nombre'),
+                            'cantidad': cant,
+                            'costo_unitario': round(costo_u, 2),
+                            'total': linea_reg,
+                            'punto': punto.get('nombre'),
+                            'es_externo': bool(it_os.get('es_externo')),
+                        })
+
+            utilidad_neta = round(ingreso_neto - costo_inv - costo_ext - costo_reg, 2)
+            tot_ingreso += ingreso_neto
+            tot_costo_inv += costo_inv
+            tot_costo_ext += costo_ext
+            tot_costo_reg += costo_reg
+            if orden_doc:
+                # contar OS distintas (los proveedores_os los acumulamos a nivel OS)
+                for pid in proveedores_os:
+                    proveedores_global[pid]['os_count'] += 1
+
+            fecha_iso = v.get('createdAt')
+            if isinstance(fecha_iso, datetime):
+                fecha_iso = fecha_iso.isoformat() + "Z"
+
+            vehiculo = v.get('vehiculo_snapshot') or (orden_doc.get('vehiculo_snapshot') if orden_doc else None) or {}
+            cliente_snap = orden_doc.get('cliente_snapshot') if orden_doc else None
+            cliente_nombre = v.get('cliente_nombre') or (
+                f"{cliente_snap.get('nombre','')} {cliente_snap.get('apellido_paterno','')}".strip()
+                if cliente_snap else 'Sin cliente'
+            )
+
+            filas.append({
+                'venta_id': str(v.get('_id')),
+                'venta_folio': v.get('folio'),
+                'orden_id': v.get('orden_id'),
+                'orden_folio': orden_doc.get('folio') if orden_doc else None,
+                'cliente': cliente_nombre,
+                'vehiculo': {
+                    'placas': vehiculo.get('placas'),
+                    'marca': vehiculo.get('marca'),
+                    'modelo': vehiculo.get('modelo'),
+                },
+                'mecanico': orden_doc.get('mecanico_nombre') if orden_doc else None,
+                'fecha': fecha_iso,
+                'ingreso_neto': round(ingreso_neto, 2),
+                'costo_inventario': round(costo_inv, 2),
+                'costo_externo': round(costo_ext, 2),
+                'costo_regalado': round(costo_reg, 2),
+                'utilidad_neta': utilidad_neta,
+                'margen_pct': round((utilidad_neta / ingreso_neto * 100), 2) if ingreso_neto > 0 else 0.0,
+                'proveedores': list(proveedores_os.values()),
+                'regalados': regalados_detalle,
+            })
+
+        filas.sort(key=lambda r: r.get('fecha') or '', reverse=True)
+
+        utilidad_total = round(tot_ingreso - tot_costo_inv - tot_costo_ext - tot_costo_reg, 2)
+
+        return create_response(200, "Resumen por OS", {
+            'year': year,
+            'month': month,
+            'sucursal_id': sucursal_id,
+            'rango': {"desde": desde.isoformat(), "hasta": hasta_excl.isoformat()},
+            'totales': {
+                'ingreso_neto': round(tot_ingreso, 2),
+                'costo_inventario': round(tot_costo_inv, 2),
+                'costo_externo': round(tot_costo_ext, 2),
+                'costo_regalado': round(tot_costo_reg, 2),
+                'utilidad_neta': utilidad_total,
+                'margen_pct': round((utilidad_total / tot_ingreso * 100), 2) if tot_ingreso > 0 else 0.0,
+                'os_count': len(filas),
+            },
+            'proveedores_global': sorted(proveedores_global.values(), key=lambda x: x['total'], reverse=True),
+            'ordenes': filas,
+        })
+    except Exception as e:
+        return handle_exception(e)
+
+
 def get_iva_mensual_handler(event, context):
     """GET /contabilidad/iva-mensual?year=&month=&sucursal_id=
     IVA trasladado (ventas) vs IVA acreditable (compras) del mes."""

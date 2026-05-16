@@ -1188,6 +1188,20 @@ functions:
             type: COGNITO_USER_POOLS
             arn: !GetAtt CognitoUserPool.Arn
 
+  contabilidad_resumen_por_os:
+    handler: src/handlers/contabilidad/contabilidad_manager.get_resumen_por_os_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: contabilidad/resumen-os
+          method: get
+          cors: true
+          authorizer:
+            name: cognitoAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: !GetAtt CognitoUserPool.Arn
+
   contabilidad_gastos_fijos_list:
     handler: src/handlers/contabilidad/contabilidad_manager.list_gastos_fijos_mes_handler
     layers:
