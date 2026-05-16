@@ -366,9 +366,17 @@ def get_orden_handler(event, context):
 def list_sugerencias_pendientes_handler(event, context):
     """GET /ordenes/sugerencias-pendientes?vehiculo_id=X | cliente_id=Y [&exclude_orden_id=Z]
 
-    Devuelve items cotizados que el cliente nunca aceptó (rechazado=true o aprobado=false)
-    de OS pasadas en estado terminal (FINALIZADO/ENTREGADO). Permite que el asesor le diga
-    al cliente "la vez pasada le cotizamos X y no lo aceptó, ¿lo agregamos hoy?".
+    Devuelve items que el cliente rechazó (rechazado=true) en OS pasadas para que el asesor
+    pueda re-ofrecerlos: "la vez pasada le cotizamos balatas y no aceptó, ¿se las agregamos?".
+
+    Único filtro de estado: excluye CANCELADO (cotizaciones que se cancelaron no son señal
+    útil). Incluye RECEPCION/COTIZADO/APROBADO/EN_PROCESO/FINALIZADO/ENTREGADO — los items
+    rechazados pueden quedar en cualquiera de esos estados según el flujo del taller.
+
+    Solo se filtra por `rechazado: true` (señal explícita del asesor). NO se incluye
+    `aprobado: false` porque los items se crean con aprobado=true por default y el botón
+    Rechazar ya setea ambos flags juntos — `aprobado: {$ne: true}` solo agregaría ruido de
+    items nunca tocados en OS abandonadas.
     """
     try:
         claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
@@ -386,7 +394,7 @@ def list_sugerencias_pendientes_handler(event, context):
 
         db = get_tenant_db(tenant_id)
 
-        match: dict = {"estado": {"$in": ["FINALIZADO", "ENTREGADO"]}}
+        match: dict = {"estado": {"$ne": "CANCELADO"}}
         if vehiculo_id:
             match["vehiculo_id"] = vehiculo_id
         if cliente_id:
@@ -398,10 +406,14 @@ def list_sugerencias_pendientes_handler(event, context):
             except Exception:
                 pass
 
+        # Pre-filtramos a OS que al menos tienen algún item rechazado para no traer
+        # documentos completos sin señal. Esto reduce IO antes del $unwind.
+        match["puntosArreglar.items.rechazado"] = True
+
         pipeline = [
             {"$match": match},
             {"$sort": {"createdAt": -1}},
-            {"$limit": 50},  # cota dura: 50 OS terminales más recientes son suficientes
+            {"$limit": 50},
             {"$project": {
                 "folio": 1,
                 "createdAt": 1,
@@ -412,14 +424,8 @@ def list_sugerencias_pendientes_handler(event, context):
             {"$unwind": {"path": "$puntosArreglar", "preserveNullAndEmptyArrays": False}},
             {"$unwind": {"path": "$puntosArreglar.items", "preserveNullAndEmptyArrays": False}},
             {"$match": {
-                "$and": [
-                    {"$or": [
-                        {"puntosArreglar.items.rechazado": True},
-                        {"puntosArreglar.items.aprobado": {"$ne": True}},
-                    ]},
-                    {"puntosArreglar.items.entregado": {"$ne": True}},
-                    {"puntosArreglar.items.nombre": {"$exists": True, "$nin": [None, ""]}},
-                ]
+                "puntosArreglar.items.rechazado": True,
+                "puntosArreglar.items.nombre": {"$exists": True, "$nin": [None, ""]},
             }},
             {"$project": {
                 "_id": 0,
