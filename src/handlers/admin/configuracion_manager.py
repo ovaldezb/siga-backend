@@ -30,6 +30,23 @@ def get_config_handler(event, context):
                 ],
                 "tasas": {
                     "iva": 0.16
+                },
+                "permisos_modulos": {
+                    "Dashboard": ["SUPER_ADMIN", "ADMIN", "ASESOR", "MECANICO", "CAJERO"],
+                    "Taller": ["SUPER_ADMIN"],
+                    "Clientes": ["ADMIN", "ASESOR"],
+                    "Vehículos": ["ADMIN", "ASESOR"],
+                    "Inventario": ["ADMIN", "ASESOR"],
+                    "Órdenes de Servicio": ["ADMIN", "ASESOR", "MECANICO"],
+                    "Punto de Venta": ["ADMIN", "ASESOR", "CAJERO"],
+                    "Citas": ["ADMIN", "ASESOR"],
+                    "Contabilidad": ["ADMIN", "ASESOR"],
+                    "Proveedores": ["ADMIN", "ASESOR"],
+                    "Técnicos": ["ADMIN", "ASESOR"],
+                    "Sucursales": ["ADMIN"],
+                    "Reportes": ["ADMIN", "ASESOR"],
+                    "Usuarios": ["ADMIN"],
+                    "Configuración": ["ADMIN"]
                 }
             }
             db["configuracion"].insert_one(config)
