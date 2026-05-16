@@ -3,6 +3,7 @@ from datetime import datetime
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.infrastructure.database import get_tenant_db
+from src.shared.utils.auth_utils import parse_object_id, is_admin
 from bson import ObjectId
 
 logger = Logger()
@@ -46,7 +47,8 @@ def get_config_handler(event, context):
                     "Sucursales": ["ADMIN"],
                     "Reportes": ["ADMIN", "ASESOR"],
                     "Usuarios": ["ADMIN"],
-                    "Configuración": ["ADMIN"]
+                    "Configuración": ["ADMIN"],
+                    "Taller": ["SUPER_ADMIN"]
                 }
             }
             db["configuracion"].insert_one(config)
@@ -63,6 +65,9 @@ def update_config_handler(event, context):
         claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
         tenant_id = claims.get('custom:tenant_id')
         
+        if not is_admin(claims):
+            return create_response(403, "No tiene permisos para modificar la configuración.")
+            
         body = json.loads(event.get('body', '{}'))
         db = get_tenant_db(tenant_id)
         
