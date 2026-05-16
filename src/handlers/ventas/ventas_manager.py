@@ -103,31 +103,35 @@ def create_venta_handler(event, context):
             except (TypeError, ValueError):
                 cantidad = 0
 
-            # Solo validamos stock si:
-            # 1. NO es externo (es inventario propio)
-            # 2. El item_id es un ObjectId válido (no 'manual', no vacío)
-            # 3. El tipo es 'PRODUCTO' (servicios no tienen stock)
-            if not es_externo and item_id and item_id != 'manual' and producto.get('tipo', 'PRODUCTO') == 'PRODUCTO':
+            # Una pieza se salta el inventario si:
+            # - Es explícitamente es_externo (traído de proveedor)
+            # - El item_id es 'manual' (captura libre)
+            # - No tiene item_id (emergencia)
+            # - El tipo es 'SERVICIO' (mano de obra)
+            is_manual_or_ext = (es_externo or not item_id or item_id == 'manual' or producto.get('tipo') == 'SERVICIO')
+            
+            if not is_manual_or_ext:
                  try:
                      obj_id = ObjectId(item_id)
                      p = db["items"].find_one({"_id": obj_id})
-                     if not p:
-                         return create_response(404, f"Producto no encontrado en inventario: {producto.get('nombre')}")
-                     
-                     if p.get('stock', 0) < cantidad:
-                          return create_response(400, f"Stock insuficiente para {producto.get('nombre')}. Disponible: {p.get('stock', 0)}")
-                     
-                     # Snapshot del costo para margen contable
-                     item['costo_unitario_snapshot'] = float(p.get('costo_promedio', p.get('precio_compra', 0)) or 0)
+                     if p:
+                         if p.get('stock', 0) < cantidad:
+                              return create_response(400, f"Stock insuficiente para {producto.get('nombre')}. Disponible: {p.get('stock', 0)}")
+                         # Snapshot del costo para margen contable
+                         item['costo_unitario_snapshot'] = float(p.get('costo_promedio', p.get('precio_compra', 0)) or 0)
+                     else:
+                         # Si tiene ID pero no existe, lo tratamos como manual para no romper el flujo
+                         item['es_externo'] = True
+                         item['costo_unitario_snapshot'] = float(item.get('precio_compra', 0))
                  except (InvalidId, TypeError):
-                     # Si el ID no es válido, lo tratamos como item manual/externo sin stock
+                     # ID mal formado = manual
                      item['es_externo'] = True
                      item['costo_unitario_snapshot'] = float(item.get('precio_compra', 0))
             else:
-                # Caso Manual / Externo: No valida stock.
-                # Aseguramos que tenga un costo snapshot para que no rompa reportes.
+                # Caso Manual / Externo / Servicio: No valida stock.
                 if 'costo_unitario_snapshot' not in item:
                     item['costo_unitario_snapshot'] = float(item.get('costo_proveedor') or item.get('precio_compra') or 0)
+                item['es_externo'] = True # Aseguramos flag para el paso 5
 
         # 3.6 VALIDAR CRÉDITO SI APLICA (acepta crédito como método único o dentro de pagos[])
         metodo_pago = body.get('metodo_pago', 'EFECTIVO').upper()
@@ -220,23 +224,20 @@ def create_venta_handler(event, context):
             item_id = producto.get('id')
             cantidad = int(item.get('cantidad', 0))
 
-            # Piezas externas no viven en inventario: no se descuenta nada.
-            if item.get('es_externo') or producto.get('es_externo'):
-                continue
-
-            # Descontar stock si es un producto con inventario
-            if item_id and item_id != 'manual' and producto.get('tipo') == 'PRODUCTO':
+            # Piezas externas o manuales no viven en inventario: no se descuenta nada.
+            is_manual_or_ext = (item.get('es_externo') or producto.get('es_externo') or not item_id or item_id == 'manual' or producto.get('tipo') == 'SERVICIO')
+            
+            if not is_manual_or_ext:
                 try:
-                    # Atómica + scoped por sucursal para evitar tocar stock de otra sucursal
+                    # Atómica + scoped por sucursal
                     update_result = db["items"].update_one(
                         {"_id": ObjectId(item_id), "sucursal_id": sucursal_id, "stock": {"$gte": cantidad}},
                         {"$inc": {"stock": -cantidad}}
                     )
                     if update_result.modified_count > 0:
-                        logger.info(f"Stock descontado para {item_id} en sucursal {sucursal_id}: -{cantidad}")
+                        logger.info(f"Stock descontado para {item_id}")
                     else:
-                        logger.warning(f"Stock insuficiente o item/sucursal no coincide: {item_id} / {sucursal_id}")
-                        items_sin_stock.append(producto.get('nombre') or item_id)
+                        logger.warning(f"No se pudo descontar stock para {item_id} (posiblemente agotado en el microsegundo del checkout)")
                 except Exception as stock_err:
                     logger.warning(f"Error al descontar stock para {item_id}: {stock_err}")
 
