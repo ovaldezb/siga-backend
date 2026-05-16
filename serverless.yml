@@ -53,6 +53,7 @@ provider:
 
 plugins:
   - serverless-python-requirements
+  - serverless-plugin-split-stacks
 
 custom:
   pythonRequirements:
@@ -62,6 +63,11 @@ custom:
       description: Python requirements layer
       compatibleRuntimes:
         - python3.11
+  split-stacks:
+    nestedStackTrace: true
+    perFunction: false
+    perType: true
+    perGroupFunction: false
 
 package:
   individually: true
@@ -937,34 +943,6 @@ functions:
     events:
       - http:
           path: caja/movimientos
-          method: post
-          cors: true
-          authorizer:
-            name: cognitoAuthorizer
-            type: COGNITO_USER_POOLS
-            arn: !GetAtt CognitoUserPool.Arn
-
-  registrarMovimientoCaja:
-    handler: src.handlers.ventas.caja_manager.registrar_movimiento_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
-    events:
-      - http:
-          path: caja/movimientos
-          method: post
-          cors: true
-          authorizer:
-            name: cognitoAuthorizer
-            type: COGNITO_USER_POOLS
-            arn: !GetAtt CognitoUserPool.Arn
-
-  cerrarCaja:
-    handler: src.handlers.ventas.caja_manager.cerrar_caja_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
-    events:
-      - http:
-          path: caja/cierre
           method: post
           cors: true
           authorizer:
