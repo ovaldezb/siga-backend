@@ -94,12 +94,6 @@ def create_venta_handler(event, context):
         folio = _get_next_folio_internal(tenant_id, "venta", sucursal_id)
 
         # 3.5 VALIDAR STOCK ATÓMICAMENTE ANTES DE PROCESAR + SNAPSHOT COSTO POR LÍNEA
-        # Reglas:
-        #  - Items externos (vienen de proveedor, no son inventario propio) NO se validan
-        #    contra `items`, no descuentan stock y su costo_unitario_snapshot proviene de
-        #    `costo_proveedor` (capturado por el asesor en la OS).
-        #  - Items "manual" antiguos siguen tolerándose (no validan stock).
-        #  - Items normales validan stock y toman snapshot del costo promedio del catálogo.
         for item in items:
             producto = item.get('producto', {})
             item_id = producto.get('id')
@@ -109,36 +103,31 @@ def create_venta_handler(event, context):
             except (TypeError, ValueError):
                 cantidad = 0
 
-            if es_externo:
-                # Snapshot del costo pagado al proveedor (cae al margen como COGS de esta OS).
-                costo_ext = (
-                    item.get('costo_proveedor')
-                    or producto.get('costo_proveedor')
-                    or producto.get('precio_compra')
-                    or 0
-                )
-                try:
-                    item['costo_unitario_snapshot'] = float(costo_ext or 0)
-                except (TypeError, ValueError):
-                    item['costo_unitario_snapshot'] = 0.0
-                # Propagar metadata del proveedor a la línea para reportes contables por OS.
-                if not item.get('proveedor_id'):
-                    item['proveedor_id'] = producto.get('proveedor_id')
-                if not item.get('proveedor_nombre'):
-                    item['proveedor_nombre'] = producto.get('proveedor_nombre')
-                item['es_externo'] = True
-                continue
-
-            if item_id and item_id != 'manual' and producto.get('tipo') == 'PRODUCTO':
-                 p = db["items"].find_one({"_id": ObjectId(item_id)})
-                 if not p:
-                     return create_response(404, f"Producto no encontrado: {producto.get('nombre')}")
-                 if p.get('stock', 0) < cantidad:
-                      return create_response(400, f"Stock insuficiente para {producto.get('nombre')}. Disponible: {p.get('stock', 0)}")
-                 # Snapshot del costo promedio actual: clave para reportes de margen.
-                 # Se almacena en la línea misma para que el reporte sea reproducible
-                 # aunque el costo del item cambie después.
-                 item['costo_unitario_snapshot'] = float(p.get('costo_promedio', p.get('precio_compra', 0)) or 0)
+            # Solo validamos stock si:
+            # 1. NO es externo (es inventario propio)
+            # 2. El item_id es un ObjectId válido (no 'manual', no vacío)
+            # 3. El tipo es 'PRODUCTO' (servicios no tienen stock)
+            if not es_externo and item_id and item_id != 'manual' and producto.get('tipo', 'PRODUCTO') == 'PRODUCTO':
+                 try:
+                     obj_id = ObjectId(item_id)
+                     p = db["items"].find_one({"_id": obj_id})
+                     if not p:
+                         return create_response(404, f"Producto no encontrado en inventario: {producto.get('nombre')}")
+                     
+                     if p.get('stock', 0) < cantidad:
+                          return create_response(400, f"Stock insuficiente para {producto.get('nombre')}. Disponible: {p.get('stock', 0)}")
+                     
+                     # Snapshot del costo para margen contable
+                     item['costo_unitario_snapshot'] = float(p.get('costo_promedio', p.get('precio_compra', 0)) or 0)
+                 except (InvalidId, TypeError):
+                     # Si el ID no es válido, lo tratamos como item manual/externo sin stock
+                     item['es_externo'] = True
+                     item['costo_unitario_snapshot'] = float(item.get('precio_compra', 0))
+            else:
+                # Caso Manual / Externo: No valida stock.
+                # Aseguramos que tenga un costo snapshot para que no rompa reportes.
+                if 'costo_unitario_snapshot' not in item:
+                    item['costo_unitario_snapshot'] = float(item.get('costo_proveedor') or item.get('precio_compra') or 0)
 
         # 3.6 VALIDAR CRÉDITO SI APLICA (acepta crédito como método único o dentro de pagos[])
         metodo_pago = body.get('metodo_pago', 'EFECTIVO').upper()
