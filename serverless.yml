@@ -70,9 +70,10 @@ custom:
         - python3.11
   splitStacks:
     nestedStackTrace: true
-    perFunction: true
-    perType: true
-    perGroupFunction: false
+    perFunction: false
+    perType: false
+    perGroupFunction: true
+    nestedStackCount: 20
 
 package:
   individually: true
