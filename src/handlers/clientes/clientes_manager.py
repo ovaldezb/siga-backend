@@ -81,6 +81,25 @@ def list_clientes_handler(event, context):
         else:
             for c in clientes:
                 c['num_vehiculos'] = 0
+
+        # Conteo de cotizaciones pendientes (OS en RECEPCION o COTIZADO,
+        # antes de APROBADO). Mismo patrón que num_vehiculos: una sola
+        # agregación por página, lookup por cliente_snapshot.id (así se
+        # persiste en create_orden_handler).
+        if client_ids:
+            cot_counts = list(db["ordenes_servicio"].aggregate([
+                {"$match": {
+                    "cliente_snapshot.id": {"$in": client_ids},
+                    "estado": {"$in": ["RECEPCION", "COTIZADO"]},
+                }},
+                {"$group": {"_id": "$cliente_snapshot.id", "count": {"$sum": 1}}}
+            ]))
+            cot_dict = {item['_id']: item['count'] for item in cot_counts}
+            for c in clientes:
+                c['cotizaciones_pendientes'] = cot_dict.get(c['id'], 0)
+        else:
+            for c in clientes:
+                c['cotizaciones_pendientes'] = 0
             
         return create_response(200, "Clientes obtenidos", {
             "items": clientes,

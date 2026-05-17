@@ -270,7 +270,21 @@ def list_ordenes_handler(event, context):
         vehiculo_id_filter = query_params.get('vehiculo_id')
         if vehiculo_id_filter:
             filter_query['vehiculo_id'] = vehiculo_id_filter
-            
+
+        # Detalle de cliente: filtrar OS por cliente_snapshot.id (como se persiste).
+        cliente_id_filter = query_params.get('cliente_id')
+        if cliente_id_filter:
+            and_conditions.append({'cliente_snapshot.id': cliente_id_filter})
+
+        # `estado` admite CSV (p.ej. "RECEPCION,COTIZADO") para listar cotizaciones pendientes.
+        estado_filter = query_params.get('estado')
+        if estado_filter:
+            estados = [e.strip() for e in estado_filter.split(',') if e.strip()]
+            if len(estados) == 1:
+                and_conditions.append({'estado': estados[0]})
+            elif estados:
+                and_conditions.append({'estado': {'$in': estados}})
+
         search_query = query_params.get('q')
         if search_query:
             import re
@@ -320,11 +334,49 @@ def list_ordenes_handler(event, context):
                 
                 vehiculos_map[v_id_str] = v
 
+        # Pre-resolver qué OS COTIZADAS tienen un ClienteLink activo en collection
+        # `cotizacion_acceso`. Permite al front diferenciar "cotización enviada" vs
+        # "cotización borrador" sin un round-trip extra por orden.
+        cotizadas_ids = [str(o['_id']) for o in ordenes_list if o.get('estado') == 'COTIZADO']
+        link_ids = set()
+        if cotizadas_ids:
+            link_ids = {
+                doc['orden_id'] for doc in db['cotizacion_acceso'].find(
+                    {'orden_id': {'$in': cotizadas_ids}}, {'orden_id': 1, '_id': 0}
+                )
+            }
+
+        # Umbral de "cotización abandonada" para badge de seguimiento.
+        # On-demand (calculado al listar) en vez de scheduled Lambda — el estado se
+        # refleja sin desfase y evitamos infra adicional.
+        abandono_umbral = int(query_params.get('seguimiento_dias', 5))
+        ahora = datetime.utcnow()
+
         ordenes = []
         for o in ordenes_list:
             o['id'] = str(o['_id'])
             del o['_id']
-            
+
+            # Solo etiquetamos enviada/borrador en COTIZADO; para otros estados es ruido.
+            if o.get('estado') == 'COTIZADO':
+                o['cliente_link_enviado'] = o['id'] in link_ids
+                # Días sin movimiento desde el último update — el front decide si lo
+                # destaca como "requiere seguimiento". Usamos updatedAt y caemos a
+                # createdAt para OS antiguas sin updatedAt.
+                ref = o.get('updatedAt') or o.get('createdAt')
+                ref_dt = None
+                if isinstance(ref, datetime):
+                    ref_dt = ref
+                elif isinstance(ref, str):
+                    try:
+                        ref_dt = datetime.fromisoformat(ref.replace('Z', '+00:00')).replace(tzinfo=None)
+                    except ValueError:
+                        ref_dt = None
+                if ref_dt is not None:
+                    delta = (ahora - ref_dt).days
+                    o['dias_sin_movimiento'] = max(0, delta)
+                    o['requiere_seguimiento'] = delta >= abandono_umbral
+
             # Enriquecer con datos frescos del vehículo
             v_id_str = o.get('vehiculo_id')
             if v_id_str in vehiculos_map:
@@ -414,6 +466,11 @@ def get_orden_handler(event, context):
             for ev in orden['evidencia']:
                 if 'createdAt' in ev and isinstance(ev['createdAt'], datetime):
                     ev['createdAt'] = ev['createdAt'].isoformat()
+
+        if orden.get('estado') == 'COTIZADO':
+            orden['cliente_link_enviado'] = db['cotizacion_acceso'].count_documents(
+                {'orden_id': orden['id']}, limit=1
+            ) > 0
 
         return create_response(200, "Orden obtenida", orden)
     except Exception as e:
