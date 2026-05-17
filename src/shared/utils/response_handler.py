@@ -7,6 +7,7 @@ from bson.errors import InvalidId
 
 from datetime import datetime
 from bson import ObjectId
+from src.shared.utils.date_utils import iso_utc
 
 logger = Logger()
 
@@ -58,7 +59,7 @@ class MongoJSONEncoder(json.JSONEncoder):
         if isinstance(obj, ObjectId):
             return str(obj)
         if isinstance(obj, datetime):
-            return obj.isoformat()
+            return iso_utc(obj)
         return super().default(obj)
 
 def create_response(status_code: int, message: str, data: Optional[Any] = None) -> Dict[str, Any]:

@@ -5,6 +5,7 @@ from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.infrastructure.database import get_tenant_db
 from src.shared.utils.auth_utils import try_parse_id, resolve_sucursal_scope, is_admin
 from bson import ObjectId
+from src.shared.utils.date_utils import iso_utc
 
 logger = Logger()
 
@@ -136,7 +137,7 @@ def create_item_handler(event, context):
             "proveedor_id": body.get('proveedor_id') or body.get('proveedorId'),
             "sucursal_id": body.get('sucursalId') or body.get('sucursal_id'),
             "tenant_id": tenant_id,
-            "createdAt": datetime.utcnow().isoformat() + "Z",
+            "createdAt": iso_utc(),
             "activo": body.get('activo', True),
             "icon": body.get('icon', 'ri-archive-line')
         }
@@ -255,7 +256,7 @@ def update_item_handler(event, context):
         if not update_data:
             return create_response(400, "No hay campos válidos para actualizar.")
 
-        update_data['updatedAt'] = datetime.utcnow().isoformat() + "Z"
+        update_data['updatedAt'] = iso_utc()
 
         update_query = {"_id": ObjectId(item_id)}
         if sucursal_id_guard and not ignore_scope:
@@ -363,7 +364,7 @@ def update_stock_handler(event, context):
 
         result = db["items"].find_one_and_update(
             update_query,
-            {"$inc": {"stock": cantidad}, "$set": {"updatedAt": datetime.utcnow().isoformat() + "Z"}},
+            {"$inc": {"stock": cantidad}, "$set": {"updatedAt": iso_utc()}},
             return_document=True
         )
 

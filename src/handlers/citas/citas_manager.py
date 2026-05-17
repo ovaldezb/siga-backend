@@ -12,6 +12,7 @@ from src.shared.utils.os_events import (
     OS_EVENT_ESTADO_CHANGED,
 )
 from pymongo import ReturnDocument
+from src.shared.utils.date_utils import iso_utc
 
 logger = Logger()
 
@@ -133,8 +134,8 @@ def create_cita_handler(event, context):
             "estado": estado,
             "notas": body.get('notas'),
             "orden_id": body.get('orden_id'),
-            "createdAt": datetime.utcnow().isoformat(),
-            "updatedAt": datetime.utcnow().isoformat(),
+            "createdAt": iso_utc(),
+            "updatedAt": iso_utc(),
             "tenant_id": tenant_id,
             "sucursal_id": body.get('sucursal_id')
         }
@@ -187,7 +188,7 @@ def create_cita_handler(event, context):
                 "estado": "RECEPCION",
                 "bitacora_estados": [{
                     "estado": "RECEPCION",
-                    "fecha": datetime.utcnow().isoformat() + "Z",
+                    "fecha": iso_utc(),
                     "usuario_id": responsable
                 }],
                 "cliente_snapshot": cliente_snapshot,
@@ -271,7 +272,7 @@ def update_cita_handler(event, context):
         if 'estado' in update_doc and update_doc['estado'] not in VALID_ESTADOS:
             return create_response(400, f"Estado inválido. Use: {', '.join(sorted(VALID_ESTADOS))}.")
 
-        update_doc['updatedAt'] = datetime.utcnow().isoformat()
+        update_doc['updatedAt'] = iso_utc()
 
         db = get_tenant_db(tenant_id)
         result = db.citas.find_one_and_update(
@@ -295,7 +296,7 @@ def update_cita_handler(event, context):
                         "updatedAt": datetime.utcnow()
                     }, "$push": {"bitacora_estados": {
                         "estado": "CANCELADO",
-                        "fecha": datetime.utcnow().isoformat() + "Z",
+                        "fecha": iso_utc(),
                         "usuario_id": "system:cita_cancelada"
                     }}}
                 )

@@ -7,6 +7,7 @@ from src.shared.infrastructure.database import get_tenant_db
 from src.handlers.admin.folios_manager import _get_next_folio_internal
 from bson import ObjectId
 from bson.errors import InvalidId
+from src.shared.utils.date_utils import iso_utc
 
 logger = Logger()
 
@@ -327,7 +328,7 @@ def create_venta_handler(event, context):
                             "proveedor_id": p_id,
                             "proveedor_snapshot": {"id": p_id, "nombre": prov.get('nombre'), "rfc": prov.get('rfc')},
                             "sucursal_id": sucursal_id,
-                            "fecha_factura": datetime.utcnow().isoformat() + "Z",
+                            "fecha_factura": iso_utc(),
                             "items": compra_items,
                             "subtotal": subtotal_compra,
                             "iva": iva_total_compra,
@@ -378,7 +379,7 @@ def create_venta_handler(event, context):
                         "venta_id": nueva_venta["id"],
                         "venta_folio": folio,
                         "referencia": p.get('referencia', ''),
-                        "fecha": datetime.utcnow().isoformat() + "Z",
+                        "fecha": iso_utc(),
                         "usuario_id": usuario_id,
                         "usuario_nombre": usuario_nombre,
                     })
@@ -394,7 +395,7 @@ def create_venta_handler(event, context):
                         "concepto": f"Venta {folio} ({metodo_pago})",
                         "venta_id": nueva_venta["id"],
                         "venta_folio": folio,
-                        "fecha": datetime.utcnow().isoformat() + "Z",
+                        "fecha": iso_utc(),
                         "usuario_id": usuario_id,
                         "usuario_nombre": usuario_nombre,
                     })
@@ -482,7 +483,7 @@ def registrar_abono_handler(event, context):
             "monto": round(monto, 2),
             "metodo": metodo,
             "referencia": referencia,
-            "fecha": datetime.utcnow().isoformat() + "Z",
+            "fecha": iso_utc(),
             "usuario_id": usuario_id,
             "usuario_nombre": usuario_nombre,
         }
@@ -511,7 +512,7 @@ def registrar_abono_handler(event, context):
                             "tipo": "ENTRADA",
                             "monto": round(monto, 2),
                             "concepto": f"Abono CxC venta {venta.get('folio')}",
-                            "fecha": datetime.utcnow().isoformat() + "Z",
+                            "fecha": iso_utc(),
                             "usuario_id": usuario_id,
                             "usuario_nombre": usuario_nombre,
                         }},
@@ -537,9 +538,9 @@ def registrar_abono_handler(event, context):
         venta_actualizada = db["ventas"].find_one({"_id": ObjectId(venta_id)})
         venta_actualizada['id'] = str(venta_actualizada.pop('_id'))
         if isinstance(venta_actualizada.get('createdAt'), datetime):
-            venta_actualizada['createdAt'] = venta_actualizada['createdAt'].isoformat()
+            venta_actualizada['createdAt'] = iso_utc(venta_actualizada['createdAt'])
         if isinstance(venta_actualizada.get('updatedAt'), datetime):
-            venta_actualizada['updatedAt'] = venta_actualizada['updatedAt'].isoformat()
+            venta_actualizada['updatedAt'] = iso_utc(venta_actualizada['updatedAt'])
 
         return create_response(200, "Abono registrado", venta_actualizada)
     except Exception as e:
@@ -572,9 +573,9 @@ def list_cxc_handler(event, context):
             v["id"] = str(v.pop("_id"))
             total_saldo += float(v.get('saldo_pendiente', 0))
             if isinstance(v.get('createdAt'), datetime):
-                v['createdAt'] = v['createdAt'].isoformat()
+                v['createdAt'] = iso_utc(v['createdAt'])
             if isinstance(v.get('updatedAt'), datetime):
-                v['updatedAt'] = v['updatedAt'].isoformat()
+                v['updatedAt'] = iso_utc(v['updatedAt'])
 
         return create_response(200, "Cuentas por cobrar", {
             "items": ventas,

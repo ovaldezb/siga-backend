@@ -5,6 +5,7 @@ from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.utils.auth_utils import try_parse_id
 from src.shared.infrastructure.database import get_tenant_db
+from src.shared.utils.date_utils import iso_utc
 
 logger = Logger()
 
@@ -317,7 +318,7 @@ def get_customer_history_handler(event, context):
         for o in ordenes:
             o["id"] = str(o.pop("_id"))
             if "createdAt" in o and isinstance(o["createdAt"], datetime):
-                o["createdAt"] = o["createdAt"].isoformat()
+                o["createdAt"] = iso_utc(o["createdAt"])
 
         # 3. Ventas (POS + OS)
         ventas = list(db["ventas"].find({"cliente_id": cliente_id}).sort("createdAt", -1))
@@ -328,7 +329,7 @@ def get_customer_history_handler(event, context):
             v["id"] = str(v.pop("_id"))
             total_gastado += v.get("total", 0)
             if "createdAt" in v and isinstance(v["createdAt"], datetime):
-                v["createdAt"] = v["createdAt"].isoformat()
+                v["createdAt"] = iso_utc(v["createdAt"])
             
             # Analizar qué compra el cliente
             for item in v.get("items", []):

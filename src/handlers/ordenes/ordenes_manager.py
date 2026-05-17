@@ -174,7 +174,7 @@ def create_orden_handler(event, context):
             "estado": estado_inicial,
             "bitacora_estados": [{
                 "estado": estado_inicial,
-                "fecha": datetime.utcnow().isoformat() + "Z",
+                "fecha": iso_utc(),
                 "usuario_id": responsable
             }],
             "cliente_snapshot": body.get("cliente_snapshot"),
@@ -222,17 +222,17 @@ def create_orden_handler(event, context):
         )
 
         # Serializar fechas
-        orden_doc["createdAt"] = orden_doc["createdAt"].isoformat()
-        orden_doc["updatedAt"] = orden_doc["updatedAt"].isoformat()
+        orden_doc["createdAt"] = iso_utc(orden_doc["createdAt"])
+        orden_doc["updatedAt"] = iso_utc(orden_doc["updatedAt"])
 
         vs = orden_doc.get('vehiculo_snapshot')
         if vs and isinstance(vs, dict):
             if 'sucursal_id' in vs:
                 vs['sucursalId'] = vs.pop('sucursal_id')
             if 'createdAt' in vs and isinstance(vs['createdAt'], datetime):
-                vs['createdAt'] = vs['createdAt'].isoformat()
+                vs['createdAt'] = iso_utc(vs['createdAt'])
             if 'updatedAt' in vs and isinstance(vs['updatedAt'], datetime):
-                vs['updatedAt'] = vs['updatedAt'].isoformat()
+                vs['updatedAt'] = iso_utc(vs['updatedAt'])
 
         # 4. Si viene de una cita, actualizar la cita con la referencia a la OS
         cita_id = body.get("cita_id")
@@ -243,7 +243,7 @@ def create_orden_handler(event, context):
                     {"$set": {
                         "orden_id": orden_doc["id"],
                         "estado": "en_proceso",
-                        "updatedAt": datetime.utcnow().isoformat()
+                        "updatedAt": iso_utc()
                     }}
                 )
                 logger.info(f"Cita {cita_id} vinculada a OS {orden_doc['id']}")
@@ -343,9 +343,9 @@ def list_ordenes_handler(event, context):
                 if 'sucursal_id' in v:
                     v['sucursalId'] = v.pop('sucursal_id')
                 if 'createdAt' in v and isinstance(v['createdAt'], datetime):
-                    v['createdAt'] = v['createdAt'].isoformat()
+                    v['createdAt'] = iso_utc(v['createdAt'])
                 if 'updatedAt' in v and isinstance(v['updatedAt'], datetime):
-                    v['updatedAt'] = v['updatedAt'].isoformat()
+                    v['updatedAt'] = iso_utc(v['updatedAt'])
                 
                 vehiculos_map[v_id_str] = v
 
@@ -403,24 +403,24 @@ def list_ordenes_handler(event, context):
                 if 'sucursal_id' in vs:
                     vs['sucursalId'] = vs.pop('sucursal_id')
                 if 'createdAt' in vs and isinstance(vs['createdAt'], datetime):
-                    vs['createdAt'] = vs['createdAt'].isoformat()
+                    vs['createdAt'] = iso_utc(vs['createdAt'])
                 if 'updatedAt' in vs and isinstance(vs['updatedAt'], datetime):
-                    vs['updatedAt'] = vs['updatedAt'].isoformat()
+                    vs['updatedAt'] = iso_utc(vs['updatedAt'])
             
             if 'sucursal_id' in o:
                 o['sucursalId'] = o.pop('sucursal_id')
 
             # Serializar fechas
             if 'createdAt' in o and isinstance(o['createdAt'], datetime):
-                o['createdAt'] = o['createdAt'].isoformat()
+                o['createdAt'] = iso_utc(o['createdAt'])
             if 'updatedAt' in o and isinstance(o['updatedAt'], datetime):
-                o['updatedAt'] = o['updatedAt'].isoformat()
+                o['updatedAt'] = iso_utc(o['updatedAt'])
 
             # Serializar evidencias si existen
             if 'evidencia' in o and isinstance(o['evidencia'], list):
                 for ev in o['evidencia']:
                     if 'createdAt' in ev and isinstance(ev['createdAt'], datetime):
-                        ev['createdAt'] = ev['createdAt'].isoformat()
+                        ev['createdAt'] = iso_utc(ev['createdAt'])
 
             ordenes.append(o)
             
@@ -465,22 +465,22 @@ def get_orden_handler(event, context):
                     if 'sucursal_id' in vehiculo:
                         vehiculo['sucursalId'] = vehiculo.pop('sucursal_id')
                     if 'createdAt' in vehiculo and isinstance(vehiculo['createdAt'], datetime):
-                        vehiculo['createdAt'] = vehiculo['createdAt'].isoformat()
+                        vehiculo['createdAt'] = iso_utc(vehiculo['createdAt'])
                     if 'updatedAt' in vehiculo and isinstance(vehiculo['updatedAt'], datetime):
-                        vehiculo['updatedAt'] = vehiculo['updatedAt'].isoformat()
+                        vehiculo['updatedAt'] = iso_utc(vehiculo['updatedAt'])
                     orden['vehiculo_snapshot'] = vehiculo
             except Exception:
                 pass
 
         for f in ('createdAt', 'updatedAt'):
             if f in orden and isinstance(orden[f], datetime):
-                orden[f] = orden[f].isoformat()
+                orden[f] = iso_utc(orden[f])
 
         # Serializar evidencias si existen
         if 'evidencia' in orden and isinstance(orden['evidencia'], list):
             for ev in orden['evidencia']:
                 if 'createdAt' in ev and isinstance(ev['createdAt'], datetime):
-                    ev['createdAt'] = ev['createdAt'].isoformat()
+                    ev['createdAt'] = iso_utc(ev['createdAt'])
 
         if orden.get('estado') == 'COTIZADO':
             orden['cliente_link_enviado'] = db['cotizacion_acceso'].count_documents(
@@ -575,7 +575,7 @@ def list_sugerencias_pendientes_handler(event, context):
         for r in results:
             fecha = r.get('fecha_origen')
             if isinstance(fecha, datetime):
-                fecha = fecha.isoformat()
+                fecha = iso_utc(fecha)
             item = r.get('item') or {}
             sugerencias.append({
                 **item,
@@ -655,7 +655,7 @@ def update_orden_handler(event, context):
             responsable = claims.get('email') or claims.get('name') or claims.get('sub') or 'system'
             bitacora_push = {
                 "estado": nuevo_estado,
-                "fecha": datetime.utcnow().isoformat() + "Z",
+                "fecha": iso_utc(),
                 "usuario_id": responsable
             }
 
@@ -687,9 +687,9 @@ def update_orden_handler(event, context):
 
         # Serializar fechas para JSON
         if 'createdAt' in orden and isinstance(orden['createdAt'], datetime):
-            orden['createdAt'] = orden['createdAt'].isoformat()
+            orden['createdAt'] = iso_utc(orden['createdAt'])
         if 'updatedAt' in orden and isinstance(orden['updatedAt'], datetime):
-            orden['updatedAt'] = orden['updatedAt'].isoformat()
+            orden['updatedAt'] = iso_utc(orden['updatedAt'])
             
         if 'sucursal_id' in orden:
             orden['sucursalId'] = orden.pop('sucursal_id')
@@ -699,9 +699,9 @@ def update_orden_handler(event, context):
             if 'sucursal_id' in vs:
                 vs['sucursalId'] = vs.pop('sucursal_id')
             if 'createdAt' in vs and isinstance(vs['createdAt'], datetime):
-                vs['createdAt'] = vs['createdAt'].isoformat()
+                vs['createdAt'] = iso_utc(vs['createdAt'])
             if 'updatedAt' in vs and isinstance(vs['updatedAt'], datetime):
-                vs['updatedAt'] = vs['updatedAt'].isoformat()
+                vs['updatedAt'] = iso_utc(vs['updatedAt'])
         
         return create_response(200, "Orden actualizada", orden)
     except Exception as e:

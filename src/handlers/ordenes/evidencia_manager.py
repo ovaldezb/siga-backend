@@ -6,6 +6,7 @@ from aws_lambda_powertools import Logger
 from src.shared.infrastructure.database import get_tenant_db
 from src.shared.utils.response_handler import create_response, handle_exception
 from bson import ObjectId
+from src.shared.utils.date_utils import iso_utc
 
 logger = Logger()
 
@@ -113,7 +114,7 @@ def add_evidencia_handler(event, context):
 
         # Serializar fecha para respuesta JSON
         if isinstance(nueva_evidencia.get('createdAt'), datetime):
-            nueva_evidencia['createdAt'] = nueva_evidencia['createdAt'].isoformat()
+            nueva_evidencia['createdAt'] = iso_utc(nueva_evidencia['createdAt'])
 
         # Generar URL de visualización para respuesta inmediata
         s3 = boto3.client('s3')
@@ -176,7 +177,7 @@ def list_evidencia_handler(event, context):
             
             # Formatear fechas para JSON
             if 'createdAt' in ev and isinstance(ev['createdAt'], datetime):
-                ev['createdAt'] = ev['createdAt'].isoformat()
+                ev['createdAt'] = iso_utc(ev['createdAt'])
                 
         return create_response(200, "Evidencias recuperadas", evidencias)
         

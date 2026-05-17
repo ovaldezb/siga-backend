@@ -7,6 +7,7 @@ from src.shared.infrastructure.database import get_tenant_db
 from bson import ObjectId
 from bson.errors import InvalidId
 from pymongo import ReturnDocument
+from src.shared.utils.date_utils import iso_utc
 
 logger = Logger()
 
@@ -97,7 +98,7 @@ def create_proveedor_handler(event, context):
             "notas": body.get('notas'),
             "marcas": body.get('marcas', []),
             "activo": body.get('activo', True),
-            "createdAt": datetime.utcnow().isoformat(),
+            "createdAt": iso_utc(),
             "tenant_id": tenant_id
         }
 
@@ -153,7 +154,7 @@ def update_proveedor_handler(event, context):
         if not update_doc:
             return create_response(400, "No hay campos válidos para actualizar.")
 
-        update_doc['updatedAt'] = datetime.utcnow().isoformat()
+        update_doc['updatedAt'] = iso_utc()
 
         db = get_tenant_db(tenant_id)
         result = db.proveedores.find_one_and_update(

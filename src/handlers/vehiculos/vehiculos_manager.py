@@ -6,6 +6,7 @@ from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.infrastructure.database import get_tenant_db
 from src.shared.utils.auth_utils import try_parse_id, parse_object_id
 from src.shared.utils.indexes import ensure_indexes
+from src.shared.utils.date_utils import iso_utc
 
 logger = Logger()
 
@@ -234,9 +235,9 @@ def list_vehiculos_handler(event, context):
             elif 'año' in v:
                 v.pop('año')
             if 'createdAt' in v and isinstance(v['createdAt'], datetime):
-                v['createdAt'] = v['createdAt'].isoformat()
+                v['createdAt'] = iso_utc(v['createdAt'])
             if 'updatedAt' in v and isinstance(v['updatedAt'], datetime):
-                v['updatedAt'] = v['updatedAt'].isoformat()
+                v['updatedAt'] = iso_utc(v['updatedAt'])
             vehiculos.append(v)
 
         # Respuesta estructurada para paginación
@@ -326,9 +327,9 @@ def get_vehiculo_handler(event, context):
         elif 'año' in vehiculo:
             vehiculo.pop('año')
         if 'createdAt' in vehiculo and isinstance(vehiculo['createdAt'], datetime):
-            vehiculo['createdAt'] = vehiculo['createdAt'].isoformat()
+            vehiculo['createdAt'] = iso_utc(vehiculo['createdAt'])
         if 'updatedAt' in vehiculo and isinstance(vehiculo['updatedAt'], datetime):
-            vehiculo['updatedAt'] = vehiculo['updatedAt'].isoformat()
+            vehiculo['updatedAt'] = iso_utc(vehiculo['updatedAt'])
 
         return create_response(200, "Vehículo obtenido", vehiculo)
 
@@ -384,7 +385,7 @@ def create_vehiculo_handler(event, context):
         del nuevo_vehiculo['_id']
         if 'sucursal_id' in nuevo_vehiculo:
             nuevo_vehiculo['sucursalId'] = nuevo_vehiculo.pop('sucursal_id')
-        nuevo_vehiculo['createdAt'] = nuevo_vehiculo['createdAt'].isoformat()
+        nuevo_vehiculo['createdAt'] = iso_utc(nuevo_vehiculo['createdAt'])
 
         return create_response(201, "Vehículo creado exitosamente", nuevo_vehiculo)
 
@@ -528,9 +529,9 @@ def update_vehiculo_handler(event, context):
         if 'sucursal_id' in updated_vehiculo:
             updated_vehiculo['sucursalId'] = updated_vehiculo.pop('sucursal_id')
         if 'createdAt' in updated_vehiculo and isinstance(updated_vehiculo['createdAt'], datetime):
-            updated_vehiculo['createdAt'] = updated_vehiculo['createdAt'].isoformat()
+            updated_vehiculo['createdAt'] = iso_utc(updated_vehiculo['createdAt'])
         if 'updatedAt' in updated_vehiculo and isinstance(updated_vehiculo['updatedAt'], datetime):
-            updated_vehiculo['updatedAt'] = updated_vehiculo['updatedAt'].isoformat()
+            updated_vehiculo['updatedAt'] = iso_utc(updated_vehiculo['updatedAt'])
 
         return create_response(200, "Vehículo actualizado exitosamente", updated_vehiculo)
 

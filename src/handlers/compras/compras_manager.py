@@ -11,6 +11,7 @@ from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.utils.auth_utils import is_admin
 from src.shared.infrastructure.database import get_tenant_db
 from src.handlers.admin.folios_manager import _get_next_folio_internal
+from src.shared.utils.date_utils import iso_utc
 
 logger = Logger()
 
@@ -66,7 +67,7 @@ def create_compra_handler(event, context):
         sucursal_id = body.get('sucursal_id') or body.get('sucursalId')
         items = body.get('items', []) or []
         referencia = (body.get('referencia') or '').strip()
-        fecha_factura = body.get('fecha_factura') or datetime.utcnow().isoformat() + 'Z'
+        fecha_factura = body.get('fecha_factura') or iso_utc()
         notas = body.get('notas', '')
 
         if not proveedor_id:
@@ -235,9 +236,9 @@ def create_compra_handler(event, context):
                     "$set": {
                         "costo_promedio": nuevo_costo,
                         "precio_compra": linea['costo_unitario'],
-                        "ultima_compra_fecha": datetime.utcnow().isoformat() + "Z",
+                        "ultima_compra_fecha": iso_utc(),
                         "ultima_compra_folio": folio,
-                        "updatedAt": datetime.utcnow().isoformat() + "Z",
+                        "updatedAt": iso_utc(),
                     }
                 }
             )
@@ -289,7 +290,7 @@ def create_compra_handler(event, context):
                                         "concepto": f"Pago compra {folio} ({proveedor_snapshot.get('nombre')})",
                                         "compra_id": nueva_compra['id'],
                                         "compra_folio": folio,
-                                        "fecha": datetime.utcnow().isoformat() + "Z",
+                                        "fecha": iso_utc(),
                                         "usuario_id": usuario_id,
                                         "usuario_nombre": usuario_nombre,
                                     }},
@@ -305,7 +306,7 @@ def create_compra_handler(event, context):
         if '_id' in nueva_compra:
             del nueva_compra['_id']
         if isinstance(nueva_compra.get('createdAt'), datetime):
-            nueva_compra['createdAt'] = nueva_compra['createdAt'].isoformat() + "Z"
+            nueva_compra['createdAt'] = iso_utc(nueva_compra['createdAt'])
 
         return create_response(201, "Compra registrada", nueva_compra)
     except Exception as e:
@@ -346,7 +347,7 @@ def list_compras_handler(event, context):
         for c in compras:
             c['id'] = str(c.pop('_id'))
             if isinstance(c.get('createdAt'), datetime):
-                c['createdAt'] = c['createdAt'].isoformat() + "Z"
+                c['createdAt'] = iso_utc(c['createdAt'])
 
         return create_response(200, "Compras obtenidas", {
             "items": compras,
@@ -374,7 +375,7 @@ def get_compra_handler(event, context):
             return create_response(404, "Compra no encontrada.")
         compra['id'] = str(compra.pop('_id'))
         if isinstance(compra.get('createdAt'), datetime):
-            compra['createdAt'] = compra['createdAt'].isoformat() + "Z"
+            compra['createdAt'] = iso_utc(compra['createdAt'])
         return create_response(200, "Detalle de compra", compra)
     except Exception as e:
         return handle_exception(e)
@@ -452,7 +453,7 @@ def cancel_compra_handler(event, context):
             {"_id": ObjectId(compra_id)},
             {"$set": {
                 "estado": "CANCELADA",
-                "fecha_cancelacion": datetime.utcnow().isoformat() + "Z",
+                "fecha_cancelacion": iso_utc(),
                 "cancelado_por": claims.get('name') or claims.get('email'),
                 "saldo_pendiente": 0,
             }}
@@ -505,7 +506,7 @@ def registrar_pago_proveedor_handler(event, context):
             "monto": round(monto, 2),
             "metodo": metodo,
             "referencia": referencia,
-            "fecha": datetime.utcnow().isoformat() + "Z",
+            "fecha": iso_utc(),
             "usuario_id": usuario_id,
             "usuario_nombre": usuario_nombre,
         }
@@ -534,7 +535,7 @@ def registrar_pago_proveedor_handler(event, context):
                             "monto": round(monto, 2),
                             "concepto": f"Pago CxP compra {compra.get('folio')}",
                             "compra_id": compra_id,
-                            "fecha": datetime.utcnow().isoformat() + "Z",
+                            "fecha": iso_utc(),
                             "usuario_id": usuario_id,
                             "usuario_nombre": usuario_nombre,
                         }},
@@ -545,7 +546,7 @@ def registrar_pago_proveedor_handler(event, context):
         compra_actualizada = db.compras.find_one({"_id": ObjectId(compra_id)})
         compra_actualizada['id'] = str(compra_actualizada.pop('_id'))
         if isinstance(compra_actualizada.get('createdAt'), datetime):
-            compra_actualizada['createdAt'] = compra_actualizada['createdAt'].isoformat() + "Z"
+            compra_actualizada['createdAt'] = iso_utc(compra_actualizada['createdAt'])
 
         return create_response(200, "Pago registrado", compra_actualizada)
     except Exception as e:
@@ -575,7 +576,7 @@ def list_cxp_handler(event, context):
             c['id'] = str(c.pop('_id'))
             total_saldo += float(c.get('saldo_pendiente', 0))
             if isinstance(c.get('createdAt'), datetime):
-                c['createdAt'] = c['createdAt'].isoformat() + "Z"
+                c['createdAt'] = iso_utc(c['createdAt'])
 
         return create_response(200, "Cuentas por pagar", {
             "items": compras,

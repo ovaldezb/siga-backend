@@ -4,6 +4,7 @@ from datetime import datetime
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.infrastructure.database import get_tenant_db
+from src.shared.utils.date_utils import iso_utc
 
 logger = Logger()
 
@@ -21,9 +22,9 @@ def list_sucursales_handler(event, context):
         for s in sucursales:
             s['id'] = str(s.pop('_id'))
             if 'createdAt' in s and isinstance(s['createdAt'], datetime):
-                s['createdAt'] = s['createdAt'].isoformat()
+                s['createdAt'] = iso_utc(s['createdAt'])
             if 'updatedAt' in s and isinstance(s['updatedAt'], datetime):
-                s['updatedAt'] = s['updatedAt'].isoformat()
+                s['updatedAt'] = iso_utc(s['updatedAt'])
 
         return create_response(200, "Sucursales obtenidas", sucursales)
     except Exception as e:
@@ -63,8 +64,8 @@ def create_sucursal_handler(event, context):
 
         nueva_sucursal['id'] = sid
         del nueva_sucursal['_id']
-        nueva_sucursal['createdAt'] = nueva_sucursal['createdAt'].isoformat()
-        nueva_sucursal['updatedAt'] = nueva_sucursal['updatedAt'].isoformat()
+        nueva_sucursal['createdAt'] = iso_utc(nueva_sucursal['createdAt'])
+        nueva_sucursal['updatedAt'] = iso_utc(nueva_sucursal['updatedAt'])
 
         return create_response(201, "Sucursal creada", nueva_sucursal)
     except Exception as e:
@@ -96,9 +97,9 @@ def update_sucursal_handler(event, context):
         updated_sucursal = db["sucursales"].find_one({"_id": ObjectId(sucursal_id)})
         updated_sucursal['id'] = str(updated_sucursal.pop('_id'))
         if 'createdAt' in updated_sucursal and isinstance(updated_sucursal['createdAt'], datetime):
-            updated_sucursal['createdAt'] = updated_sucursal['createdAt'].isoformat()
+            updated_sucursal['createdAt'] = iso_utc(updated_sucursal['createdAt'])
         if 'updatedAt' in updated_sucursal and isinstance(updated_sucursal['updatedAt'], datetime):
-            updated_sucursal['updatedAt'] = updated_sucursal['updatedAt'].isoformat()
+            updated_sucursal['updatedAt'] = iso_utc(updated_sucursal['updatedAt'])
 
         return create_response(200, "Sucursal actualizada", updated_sucursal)
     except Exception as e:

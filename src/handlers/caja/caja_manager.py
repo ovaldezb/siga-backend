@@ -4,6 +4,7 @@ from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.infrastructure.database import get_tenant_db
 from bson import ObjectId
+from src.shared.utils.date_utils import iso_utc
 
 logger = Logger()
 
@@ -83,7 +84,7 @@ def abrir_caja_handler(event, context):
             "sucursal_id": sucursal_id,
             "usuario_apertura_id": usuario_id,
             "usuario_apertura_nombre": usuario_nombre,
-            "fecha_apertura": datetime.utcnow().isoformat() + "Z",
+            "fecha_apertura": iso_utc(),
             "monto_inicial": monto_inicial,
             "total_ventas": 0,
             "total_entradas": 0,
@@ -139,7 +140,7 @@ def registrar_movimiento_handler(event, context):
             "tipo": tipo,
             "monto": monto,
             "concepto": concepto,
-            "fecha": datetime.utcnow().isoformat() + "Z",
+            "fecha": iso_utc(),
             "usuario_id": usuario_id,
             "usuario_nombre": usuario_nombre
         }
@@ -207,7 +208,7 @@ def cerrar_caja_handler(event, context):
 
         cierre = {
             "estado": "CERRADA",
-            "fecha_cierre": datetime.utcnow().isoformat() + "Z",
+            "fecha_cierre": iso_utc(),
             "usuario_cierre_id": usuario_id,
             "usuario_cierre_nombre": usuario_nombre,
             "monto_final": monto_final,

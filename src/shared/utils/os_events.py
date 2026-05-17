@@ -18,6 +18,7 @@ Tipos de evento:
 from datetime import datetime
 from typing import Optional
 from aws_lambda_powertools import Logger
+from src.shared.utils.date_utils import iso_utc
 
 logger = Logger()
 
@@ -107,7 +108,7 @@ def list_os_events(db, orden_id: str, limit: int = 200) -> list[dict]:
     for ev in cursor:
         ev["id"] = str(ev.pop("_id"))
         if isinstance(ev.get("ts"), datetime):
-            ev["ts"] = ev["ts"].isoformat() + "Z"
+            ev["ts"] = iso_utc(ev["ts"])
         out.append(ev)
     return out
 

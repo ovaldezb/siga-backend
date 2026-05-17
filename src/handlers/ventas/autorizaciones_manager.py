@@ -4,6 +4,7 @@ from datetime import datetime
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.infrastructure.database import get_tenant_db
+from src.shared.utils.date_utils import iso_utc
 
 logger = Logger()
 
@@ -38,7 +39,7 @@ def create_autorizacion_handler(event, context):
         result = db["autorizaciones"].insert_one(doc)
         doc["id"] = str(result.inserted_id)
         del doc["_id"]
-        doc["createdAt"] = doc["createdAt"].isoformat()
+        doc["createdAt"] = iso_utc(doc["createdAt"])
 
         return create_response(201, "Autorización solicitada", doc)
     except Exception as e:
@@ -65,9 +66,9 @@ def list_autorizaciones_handler(event, context):
         for doc in cursor:
             doc['id'] = str(doc.pop('_id'))
             if 'createdAt' in doc and isinstance(doc['createdAt'], datetime):
-                doc['createdAt'] = doc['createdAt'].isoformat()
+                doc['createdAt'] = iso_utc(doc['createdAt'])
             if 'updatedAt' in doc and isinstance(doc['updatedAt'], datetime):
-                doc['updatedAt'] = doc['updatedAt'].isoformat()
+                doc['updatedAt'] = iso_utc(doc['updatedAt'])
             items.append(doc)
 
         return create_response(200, "Autorizaciones", {"items": items})
@@ -109,9 +110,9 @@ def update_autorizacion_handler(event, context):
 
         result['id'] = str(result.pop('_id'))
         if isinstance(result.get('createdAt'), datetime):
-            result['createdAt'] = result['createdAt'].isoformat()
+            result['createdAt'] = iso_utc(result['createdAt'])
         if isinstance(result.get('updatedAt'), datetime):
-            result['updatedAt'] = result['updatedAt'].isoformat()
+            result['updatedAt'] = iso_utc(result['updatedAt'])
 
         return create_response(200, "Autorización actualizada", result)
     except Exception as e:

@@ -40,6 +40,9 @@ def ensure_indexes(db, tenant_id: str) -> None:
             [("orden_id", 1)], unique=True, name="uniq_cotizacion_orden"
         )
 
+        # clientes: filtrar por flotilla en la vista flota (item #7 audit 2026-05-17).
+        db.clientes.create_index([("flotilla_id", 1)], name="clientes_flotilla")
+
         _ensured.add(tenant_id)
     except Exception as e:
         logger.warning(f"No se pudo asegurar índices de tenant {tenant_id}: {e}")

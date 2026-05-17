@@ -8,13 +8,15 @@ from src.shared.infrastructure.database import get_tenant_db
 from src.shared.utils.indexes import ensure_indexes
 from bson import ObjectId
 from pymongo import ReturnDocument
+from src.shared.utils.date_utils import iso_utc
 
 logger = Logger()
 
 ALLOWED_UPDATE_FIELDS = {
     "nombre", "apellido_paterno", "apellido_materno", "telefono", "email",
     "rfc", "razon_social", "regimen_fiscal", "codigo_postal", "tipo_persona",
-    "limite_credito", "dias_credito", "nivel_precio", "sucursal_id"
+    "limite_credito", "dias_credito", "nivel_precio", "sucursal_id",
+    "flotilla_id",
 }
 
 def list_clientes_handler(event, context):
@@ -151,7 +153,8 @@ def create_cliente_handler(event, context):
             "nivel_precio": int(body.get('nivel_precio', 1)),
             "vehiculos_resumen": [],
             "sucursal_id": body['sucursal_id'],
-            "createdAt": datetime.utcnow().isoformat(),
+            "flotilla_id": body.get('flotilla_id') or None,
+            "createdAt": iso_utc(),
             "tenant_id": tenant_id
         }
         
@@ -213,7 +216,7 @@ def update_cliente_handler(event, context):
         if not update_doc:
             return create_response(400, "No hay campos válidos para actualizar.")
 
-        update_doc['updatedAt'] = datetime.utcnow().isoformat()
+        update_doc['updatedAt'] = iso_utc()
 
         db = get_tenant_db(tenant_id)
         result = db.clientes.find_one_and_update(
@@ -308,7 +311,7 @@ def add_vehiculo_handler(event, context):
             "color": body.get('color'),
             "sucursal_id": body['sucursal_id'],
             "tenant_id": tenant_id,
-            "createdAt": datetime.utcnow().isoformat()
+            "createdAt": iso_utc()
         }
 
         # Insertar en colección de vehículos

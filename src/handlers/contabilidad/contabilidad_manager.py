@@ -11,6 +11,7 @@ from bson.errors import InvalidId
 from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.utils.auth_utils import is_admin
 from src.shared.infrastructure.database import get_tenant_db
+from src.shared.utils.date_utils import iso_utc
 
 logger = Logger()
 
@@ -307,14 +308,14 @@ def get_margen_ventas_handler(event, context):
                 'costo': round(costo_total, 2),
                 'margen': round(margen, 2),
                 'margen_pct': round(margen_pct, 2),
-                'fecha': v.get('createdAt').isoformat() + "Z" if isinstance(v.get('createdAt'), datetime) else v.get('createdAt'),
+                'fecha': iso_utc(v.get('createdAt')) if isinstance(v.get('createdAt'), datetime) else v.get('createdAt'),
             })
 
         margen_total = ingresos - costos
         margen_pct_total = (margen_total / ingresos * 100) if ingresos > 0 else 0
 
         return create_response(200, "Margen de ventas", {
-            "rango": {"desde": desde.isoformat(), "hasta": hasta.isoformat()},
+            "rango": {"desde": iso_utc(desde), "hasta": iso_utc(hasta)},
             "ingresos_netos": round(ingresos, 2),
             "costo_ventas": round(costos, 2),
             "margen_bruto": round(margen_total, 2),
@@ -394,7 +395,7 @@ def list_gastos_fijos_mes_handler(event, context):
             for k in ('createdAt', 'updatedAt', 'fecha_pago'):
                 v = d.get(k)
                 if isinstance(v, datetime):
-                    d[k] = v.isoformat() + "Z"
+                    d[k] = iso_utc(v)
             estimado = float(d.get('monto_estimado') or 0)
             real = float(d.get('monto_real') or 0)
             total_estimado += estimado
@@ -559,7 +560,7 @@ def upsert_gasto_fijo_mes_handler(event, context):
         doc['id'] = str(doc.pop('_id'))
         for k in ('createdAt', 'updatedAt'):
             if isinstance(doc.get(k), datetime):
-                doc[k] = doc[k].isoformat() + "Z"
+                doc[k] = iso_utc(doc[k])
         return create_response(200, "Gasto guardado", doc)
     except Exception as e:
         return handle_exception(e)
@@ -655,7 +656,7 @@ def get_resumen_mensual_handler(event, context):
             margen = sub - costo_v
             fecha_iso = v.get('createdAt')
             if isinstance(fecha_iso, datetime):
-                fecha_iso = fecha_iso.isoformat() + "Z"
+                fecha_iso = iso_utc(fecha_iso)
             row = {
                 'venta_id': str(v.get('_id')),
                 'folio': v.get('folio'),
@@ -702,7 +703,7 @@ def get_resumen_mensual_handler(event, context):
                     gastos_variables += base_ln
                     fecha_iso = c.get('createdAt')
                     if isinstance(fecha_iso, datetime):
-                        fecha_iso = fecha_iso.isoformat() + "Z"
+                        fecha_iso = iso_utc(fecha_iso)
                     gastos_variables_detalle.append({
                         'compra_id': str(c.get('_id')),
                         'folio': c.get('folio'),
@@ -755,7 +756,7 @@ def get_resumen_mensual_handler(event, context):
             "year": year,
             "month": month,
             "sucursal_id": sucursal_id,
-            "rango": {"desde": desde.isoformat(), "hasta": hasta_excl.isoformat()},
+            "rango": {"desde": iso_utc(desde), "hasta": iso_utc(hasta_excl)},
             "ingresos": {
                 "brutos": round(ingresos_brutos, 2),
                 "netos": round(ingresos_netos, 2),
@@ -946,7 +947,7 @@ def get_resumen_por_os_handler(event, context):
 
             fecha_iso = v.get('createdAt')
             if isinstance(fecha_iso, datetime):
-                fecha_iso = fecha_iso.isoformat() + "Z"
+                fecha_iso = iso_utc(fecha_iso)
 
             vehiculo = v.get('vehiculo_snapshot') or (orden_doc.get('vehiculo_snapshot') if orden_doc else None) or {}
             cliente_snap = orden_doc.get('cliente_snapshot') if orden_doc else None
@@ -986,7 +987,7 @@ def get_resumen_por_os_handler(event, context):
             'year': year,
             'month': month,
             'sucursal_id': sucursal_id,
-            'rango': {"desde": desde.isoformat(), "hasta": hasta_excl.isoformat()},
+            'rango': {"desde": iso_utc(desde), "hasta": iso_utc(hasta_excl)},
             'totales': {
                 'ingreso_neto': round(tot_ingreso, 2),
                 'costo_inventario': round(tot_costo_inv, 2),

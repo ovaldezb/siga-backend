@@ -4,6 +4,7 @@ from datetime import datetime
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.infrastructure.database import get_tenant_db
+from src.shared.utils.date_utils import iso_utc
 
 logger = Logger()
 
@@ -89,8 +90,8 @@ def create_traspaso_handler(event, context):
         result = db["traspasos"].insert_one(doc)
         doc["id"] = str(result.inserted_id)
         del doc["_id"]
-        doc["createdAt"] = doc["createdAt"].isoformat()
-        doc["updatedAt"] = doc["updatedAt"].isoformat()
+        doc["createdAt"] = iso_utc(doc["createdAt"])
+        doc["updatedAt"] = iso_utc(doc["updatedAt"])
 
         return create_response(201, "Traspaso creado y en tránsito", doc)
     except Exception as e:
@@ -127,9 +128,9 @@ def list_traspasos_handler(event, context):
         for doc in cursor:
             doc['id'] = str(doc.pop('_id'))
             if 'createdAt' in doc and isinstance(doc['createdAt'], datetime):
-                doc['createdAt'] = doc['createdAt'].isoformat()
+                doc['createdAt'] = iso_utc(doc['createdAt'])
             if 'updatedAt' in doc and isinstance(doc['updatedAt'], datetime):
-                doc['updatedAt'] = doc['updatedAt'].isoformat()
+                doc['updatedAt'] = iso_utc(doc['updatedAt'])
             traspasos.append(doc)
 
         return create_response(200, "Traspasos", {"items": traspasos})
@@ -199,7 +200,7 @@ def receive_traspaso_handler(event, context):
                     clone = {k: v for k, v in origen_doc.items() if k != '_id'}
                     clone["sucursal_id"] = destino_id
                     clone["stock"] = cant_recibida
-                    clone["createdAt"] = datetime.utcnow().isoformat() + "Z"
+                    clone["createdAt"] = iso_utc()
                     clone["clonado_de"] = str(origen_doc['_id'])
                     try:
                         db["items"].insert_one(clone)

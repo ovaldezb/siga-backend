@@ -6,6 +6,7 @@ from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.utils.auth_utils import parse_object_id
 from src.shared.infrastructure.database import get_tenant_db
+from src.shared.utils.date_utils import iso_utc
 
 logger = Logger()
 client = boto3.client('cognito-idp')
@@ -32,7 +33,7 @@ def format_user(cognito_user: Dict[str, Any], grupo: str = 'ASESOR') -> Dict[str
     # Manejo robusto de la fecha
     raw_date = cognito_user.get('UserCreateDate', '')
     if hasattr(raw_date, 'isoformat'):
-        created_at = raw_date.isoformat()
+        created_at = iso_utc(raw_date)
     else:
         created_at = str(raw_date)
 
@@ -71,7 +72,7 @@ def get_sucursales_map(tenant_db):
         s['id'] = sid
         for k, v in s.items():
             if isinstance(v, datetime):
-                s[k] = v.isoformat()
+                s[k] = iso_utc(v)
         sucursales_map[sid] = s
     return sucursales_map
 
