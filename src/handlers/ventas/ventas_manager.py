@@ -3,7 +3,7 @@ from datetime import datetime
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.utils.auth_utils import try_parse_id
-from src.shared.infrastructure.database import get_tenant_db
+from src.shared.infrastructure.database import get_tenant_db, MongoDBConnection
 from src.handlers.admin.folios_manager import _get_next_folio_internal
 from bson import ObjectId
 from bson.errors import InvalidId
@@ -12,6 +12,13 @@ from src.shared.utils.date_utils import iso_utc
 logger = Logger()
 
 IVA_RATE = 0.16  # Tasa de IVA en México
+
+
+class StockInsuficienteError(Exception):
+    """Señaliza dentro de la transacción que un item perdió stock por carrera con otra venta."""
+    def __init__(self, mensaje: str):
+        super().__init__(mensaje)
+        self.mensaje = mensaje
 
 
 def create_venta_handler(event, context):
@@ -223,219 +230,210 @@ def create_venta_handler(event, context):
             "createdAt": datetime.utcnow(),
         }
 
-        # 4. Insertar Venta
-        result = db["ventas"].insert_one(nueva_venta)
-        nueva_venta["id"] = str(result.inserted_id)
+        # 3.9 PRE-CÁLCULO DE BACKOFFICE CxP — antes de la transacción para no llamar a
+        #     _get_next_folio_internal (operación atómica con su propio writeConcern) ni
+        #     leer de proveedores dentro de la sesión transaccional.
+        items_externos = [it for it in items if it.get('es_externo') and it.get('proveedor_id')] if orden_id else []
+        por_proveedor: dict[str, list] = {}
+        for it in items_externos:
+            por_proveedor.setdefault(it['proveedor_id'], []).append(it)
 
-        # 5. PROCESAR LOGICA DE NEGOCIO — Descontar stock (filtrado por sucursal)
-        items_sin_stock = []
-        for item in items:
-            producto = item.get('producto', {})
-            item_id = producto.get('id')
-            cantidad = int(item.get('cantidad', 0))
-
-            # Piezas externas, manuales o items con maneja_inventario:False (marcadas en el
-            # paso 3.5) no viven en stock controlado: no se descuenta nada.
-            is_manual_or_ext = (item.get('es_externo') or producto.get('es_externo') or not item_id or item_id == 'manual' or producto.get('tipo') == 'SERVICIO' or item.get('no_inventario'))
-
-            if not is_manual_or_ext:
-                try:
-                    # Atómica + scoped por sucursal
-                    update_result = db["items"].update_one(
-                        {"_id": ObjectId(item_id), "sucursal_id": sucursal_id, "stock": {"$gte": cantidad}},
-                        {"$inc": {"stock": -cantidad}}
-                    )
-                    if update_result.modified_count > 0:
-                        logger.info(f"Stock descontado para {item_id}")
-                    else:
-                        logger.warning(f"No se pudo descontar stock para {item_id} (posiblemente agotado en el microsegundo del checkout)")
-                except Exception as stock_err:
-                    logger.warning(f"Error al descontar stock para {item_id}: {stock_err}")
-
-        # 6. CERRAR ORDEN DE SERVICIO (Integración) — pagada sólo si NO hay crédito pendiente
-        if orden_id:
+        compras_a_insertar = []
+        for p_id, lineas in por_proveedor.items():
             try:
-                os_update = {
-                    "estado": "ENTREGADO" if monto_credito == 0 else "FINALIZADO",
-                    "pagada": monto_credito == 0,
-                    "venta_id": nueva_venta["id"],
-                    "venta_folio": folio,
-                    "saldo_pendiente": round(monto_credito, 2),
-                    "updatedAt": datetime.utcnow()
-                }
-                db["ordenes_servicio"].update_one(
-                    {"_id": ObjectId(orden_id)},
-                    {"$set": os_update}
-                )
-                logger.info(f"OS {orden_id} {'PAGADA' if monto_credito == 0 else f'con saldo ${monto_credito:.2f}'}.")
-            except Exception as os_err:
-                logger.warning(f"Error al cerrar OS {orden_id}: {os_err}")
+                prov = db["proveedores"].find_one({"_id": ObjectId(p_id)})
+            except (InvalidId, TypeError):
+                prov = None
+            if not prov:
+                continue
 
-            # --- BACKOFFICE: CREACIÓN AUTOMÁTICA DE COMPRAS (CxP) ---
-            # Si hay items externos con proveedor, generamos la deuda en el módulo de compras
+            compra_items = []
+            base_compra = 0.0
+            iva_compra = 0.0
+            for l in lineas:
+                prod = l.get('producto', {})
+                cant = int(l.get('cantidad', 1))
+                costo = float(l.get('costo_proveedor') or l.get('precio_compra') or 0)
+                base_ln = round(cant * costo, 2)
+                iva_ln = round(base_ln * IVA_RATE, 2)
+                total_ln = round(base_ln + iva_ln, 2)
+                base_compra += base_ln
+                iva_compra += iva_ln
+                compra_items.append({
+                    "item_id": prod.get('id', 'manual'),
+                    "nombre": prod.get('nombre', 'Item Externo'),
+                    "no_parte": prod.get('no_parte', ''),
+                    "cantidad": cant,
+                    "costo_unitario": costo,
+                    "costo_unitario_neto": costo,
+                    "costo_incluye_iva": False,
+                    "iva_exento": False,
+                    "subtotal_linea": base_ln,
+                    "iva_linea": iva_ln,
+                    "total_linea": total_ln,
+                    "afecta_inventario": False
+                })
+
+            subtotal_compra = round(base_compra, 2)
+            iva_total_compra = round(iva_compra, 2)
+            total_compra = round(subtotal_compra + iva_total_compra, 2)
+
+            compras_a_insertar.append({
+                "folio": _get_next_folio_internal(tenant_id, "compra", sucursal_id),
+                "proveedor_id": p_id,
+                "proveedor_snapshot": {"id": p_id, "nombre": prov.get('nombre'), "rfc": prov.get('rfc')},
+                "sucursal_id": sucursal_id,
+                "fecha_factura": iso_utc(),
+                "items": compra_items,
+                "subtotal": subtotal_compra,
+                "iva": iva_total_compra,
+                "descuento": 0.0,
+                "total": total_compra,
+                "saldo_pendiente": total_compra,
+                "abonos": [],
+                "estado": "RECIBIDA",
+                "notas": f"Generada automáticamente desde OS {body.get('folio_orden', 'N/A')} vinculada a Venta {folio}",
+                "orden_id": orden_id,
+                "tenant_id": tenant_id,
+                "createdAt": datetime.utcnow(),
+            })
+
+        # 3.95 PRE-LECTURA DE CAJA ABIERTA — leemos antes para no hacer find dentro de la transacción.
+        sesion_caja = db.caja_sesiones.find_one({"sucursal_id": sucursal_id, "estado": "ABIERTA"})
+
+        # 4-7. TRANSACCIÓN ATÓMICA: venta + stock + OS + CxP + caja.
+        #      Si alguna falla, abortamos todo. Esto previene inconsistencias del tipo
+        #      "venta cobrada pero stock sin descontar" o "venta sin reflejo en caja".
+        client = MongoDBConnection.get_client()
+        result_id = None
+        with client.start_session() as session:
             try:
-                items_externos = [it for it in items if it.get('es_externo') and it.get('proveedor_id')]
-                if items_externos:
-                    # Agrupar por proveedor
-                    por_proveedor = {}
-                    for it in items_externos:
-                        p_id = it['proveedor_id']
-                        if p_id not in por_proveedor: por_proveedor[p_id] = []
-                        por_proveedor[p_id].append(it)
-                    
-                    for p_id, lineas in por_proveedor.items():
-                        prov = db["proveedores"].find_one({"_id": ObjectId(p_id)})
-                        if not prov: continue
-                        
-                        # Costos del proveedor se asumen SIN IVA (convención: el costo capturado
-                        # en la pieza externa es neto; el IVA del proveedor se calcula aquí para
-                        # que la compra cuadre fiscalmente en CxP / IVA acreditable / gastos variables.
-                        compra_items = []
-                        base_compra = 0.0
-                        iva_compra = 0.0
-                        for l in lineas:
-                            prod = l.get('producto', {})
-                            cant = int(l.get('cantidad', 1))
-                            costo = float(l.get('costo_proveedor') or l.get('precio_compra') or 0)
-                            base_ln = round(cant * costo, 2)
-                            iva_ln = round(base_ln * IVA_RATE, 2)
-                            total_ln = round(base_ln + iva_ln, 2)
-                            base_compra += base_ln
-                            iva_compra += iva_ln
-                            compra_items.append({
-                                "item_id": prod.get('id', 'manual'),
-                                "nombre": prod.get('nombre', 'Item Externo'),
-                                "no_parte": prod.get('no_parte', ''),
-                                "cantidad": cant,
-                                "costo_unitario": costo,
-                                "costo_unitario_neto": costo,
-                                "costo_incluye_iva": False,
-                                "iva_exento": False,
-                                "subtotal_linea": base_ln,
-                                "iva_linea": iva_ln,
-                                "total_linea": total_ln,
-                                "afecta_inventario": False
-                            })
+                with session.start_transaction():
+                    # 4. Insertar Venta
+                    insert_result = db["ventas"].insert_one(nueva_venta, session=session)
+                    result_id = insert_result.inserted_id
+                    nueva_venta["id"] = str(result_id)
 
-                        subtotal_compra = round(base_compra, 2)
-                        iva_total_compra = round(iva_compra, 2)
-                        total_compra = round(subtotal_compra + iva_total_compra, 2)
+                    # 5. Descontar stock (atómico + scoped por sucursal). Si la condición
+                    #    {"stock": {"$gte": cantidad}} no se cumple ⇒ otro flow se llevó el stock
+                    #    entre validación y descuento. Abortamos toda la venta.
+                    for item in items:
+                        producto = item.get('producto', {})
+                        item_id = producto.get('id')
+                        cantidad = int(item.get('cantidad', 0))
+                        is_manual_or_ext = (item.get('es_externo') or producto.get('es_externo')
+                                            or not item_id or item_id == 'manual'
+                                            or producto.get('tipo') == 'SERVICIO'
+                                            or item.get('no_inventario'))
+                        if is_manual_or_ext:
+                            continue
+                        update_result = db["items"].update_one(
+                            {"_id": ObjectId(item_id), "sucursal_id": sucursal_id, "stock": {"$gte": cantidad}},
+                            {"$inc": {"stock": -cantidad}},
+                            session=session,
+                        )
+                        if update_result.modified_count == 0:
+                            raise StockInsuficienteError(
+                                f"Stock insuficiente para {producto.get('nombre', 'item')} "
+                                f"(carrera con otra venta). Venta abortada."
+                            )
 
-                        folio_compra = _get_next_folio_internal(tenant_id, "compra", sucursal_id)
-
-                        nueva_compra = {
-                            "folio": folio_compra,
-                            "proveedor_id": p_id,
-                            "proveedor_snapshot": {"id": p_id, "nombre": prov.get('nombre'), "rfc": prov.get('rfc')},
-                            "sucursal_id": sucursal_id,
-                            "fecha_factura": iso_utc(),
-                            "items": compra_items,
-                            "subtotal": subtotal_compra,
-                            "iva": iva_total_compra,
-                            "descuento": 0.0,
-                            "total": total_compra,
-                            "saldo_pendiente": total_compra,
-                            "abonos": [],
-                            "estado": "RECIBIDA",
-                            "notas": f"Generada automáticamente desde OS {body.get('folio_orden', 'N/A')} vinculada a Venta {folio}",
-                            "orden_id": orden_id,
+                    # 6. Cerrar OS + insertar compras CxP precalculadas
+                    if orden_id:
+                        os_update = {
+                            "estado": "ENTREGADO" if monto_credito == 0 else "FINALIZADO",
+                            "pagada": monto_credito == 0,
                             "venta_id": nueva_venta["id"],
-                            "tenant_id": tenant_id,
-                            "createdAt": datetime.utcnow()
+                            "venta_folio": folio,
+                            "saldo_pendiente": round(monto_credito, 2),
+                            "updatedAt": datetime.utcnow(),
                         }
-                        db["compras"].insert_one(nueva_compra)
-            except Exception as e_backoffice:
-                logger.error(f"Error en automatización Backoffice CxP: {str(e_backoffice)}")
-            # -------------------------------------------------------
+                        db["ordenes_servicio"].update_one(
+                            {"_id": ObjectId(orden_id)},
+                            {"$set": os_update},
+                            session=session,
+                        )
+                        for compra_doc in compras_a_insertar:
+                            compra_doc["venta_id"] = nueva_venta["id"]
+                            db["compras"].insert_one(compra_doc, session=session)
 
-        # Adjuntar advertencias al payload para que el front decida si avisar
-        if items_sin_stock:
-            nueva_venta["warnings"] = [f"Stock no descontado para: {', '.join(items_sin_stock)} (verifique inventario manualmente)"]
+                    # 7. Caja: registrar pagos contado en sesión abierta
+                    if sesion_caja:
+                        pagos_caja = []
+                        total_contado = 0.0
+                        for p in pagos_body:
+                            metodo_p = str(p.get('metodo', '')).upper()
+                            if metodo_p == 'CREDITO':
+                                continue
+                            try:
+                                monto_p = float(p.get('monto', 0))
+                            except (TypeError, ValueError):
+                                continue
+                            if monto_p <= 0:
+                                continue
+                            pagos_caja.append({
+                                "id": str(ObjectId()),
+                                "tipo": "VENTA",
+                                "monto": round(monto_p, 2),
+                                "metodo": metodo_p,
+                                "concepto": f"Venta {folio} ({metodo_p})",
+                                "venta_id": nueva_venta["id"],
+                                "venta_folio": folio,
+                                "referencia": p.get('referencia', ''),
+                                "fecha": iso_utc(),
+                                "usuario_id": usuario_id,
+                                "usuario_nombre": usuario_nombre,
+                            })
+                            total_contado += monto_p
+                        if not pagos_caja and metodo_pago != 'CREDITO' and total_calculado - monto_credito > 0:
+                            monto_p = round(total_calculado - monto_credito, 2)
+                            pagos_caja.append({
+                                "id": str(ObjectId()),
+                                "tipo": "VENTA",
+                                "monto": monto_p,
+                                "metodo": metodo_pago,
+                                "concepto": f"Venta {folio} ({metodo_pago})",
+                                "venta_id": nueva_venta["id"],
+                                "venta_folio": folio,
+                                "fecha": iso_utc(),
+                                "usuario_id": usuario_id,
+                                "usuario_nombre": usuario_nombre,
+                            })
+                            total_contado = monto_p
 
-        # 7. REGISTRO ATÓMICO EN CAJA: cualquier método "contado" (no crédito) que entre
-        #    debe quedar reflejado en caja_sesiones de la sucursal. Antes esto vivía en
-        #    el cliente y se perdía si la red cortaba entre POST /ventas y POST /caja/movimientos.
-        try:
-            sesion = db.caja_sesiones.find_one({"sucursal_id": sucursal_id, "estado": "ABIERTA"})
-            if sesion:
-                pagos_caja = []
-                total_contado = 0.0
-                for p in pagos_body:
-                    metodo_p = str(p.get('metodo', '')).upper()
-                    if metodo_p == 'CREDITO':
-                        continue  # crédito no entra a caja, queda como AR
-                    try:
-                        monto_p = float(p.get('monto', 0))
-                    except (TypeError, ValueError):
-                        continue
-                    if monto_p <= 0:
-                        continue
-                    pagos_caja.append({
-                        "id": str(ObjectId()),
-                        "tipo": "VENTA",
-                        "monto": round(monto_p, 2),
-                        "metodo": metodo_p,
-                        "concepto": f"Venta {folio} ({metodo_p})",
-                        "venta_id": nueva_venta["id"],
-                        "venta_folio": folio,
-                        "referencia": p.get('referencia', ''),
-                        "fecha": iso_utc(),
-                        "usuario_id": usuario_id,
-                        "usuario_nombre": usuario_nombre,
-                    })
-                    total_contado += monto_p
-                # Fallback si no había pagos[] pero sí metodo_pago top-level y no era crédito
-                if not pagos_caja and metodo_pago != 'CREDITO' and total_calculado - monto_credito > 0:
-                    monto_p = round(total_calculado - monto_credito, 2)
-                    pagos_caja.append({
-                        "id": str(ObjectId()),
-                        "tipo": "VENTA",
-                        "monto": monto_p,
-                        "metodo": metodo_pago,
-                        "concepto": f"Venta {folio} ({metodo_pago})",
-                        "venta_id": nueva_venta["id"],
-                        "venta_folio": folio,
-                        "fecha": iso_utc(),
-                        "usuario_id": usuario_id,
-                        "usuario_nombre": usuario_nombre,
-                    })
-                    total_contado = monto_p
-
-                if pagos_caja:
-                    db.caja_sesiones.update_one(
-                        {"_id": sesion["_id"]},
-                        {
-                            "$push": {"movimientos": {"$each": pagos_caja}},
-                            "$inc": {"total_ventas": round(total_contado, 2)}
-                        }
-                    )
-                    nueva_venta["caja_movimiento_registrado"] = True
-                    # Persistir el flag en la venta para auditoría (no sólo en la respuesta JSON)
-                    db["ventas"].update_one(
-                        {"_id": result.inserted_id},
-                        {"$set": {"caja_movimiento_registrado": True, "caja_sesion_id": str(sesion["_id"])}}
-                    )
-            else:
-                nueva_venta["caja_movimiento_registrado"] = False
-                db["ventas"].update_one(
-                    {"_id": result.inserted_id},
-                    {"$set": {"caja_movimiento_registrado": False}}
-                )
-                logger.info(f"No hay caja abierta en sucursal {sucursal_id}; movimientos no registrados.")
-        except Exception as caja_err:
-            logger.warning(f"No se pudo registrar movimiento en caja para venta {folio}: {caja_err}")
-            nueva_venta["caja_movimiento_registrado"] = False
-            try:
-                db["ventas"].update_one(
-                    {"_id": result.inserted_id},
-                    {"$set": {"caja_movimiento_registrado": False, "caja_error": str(caja_err)}}
-                )
-            except Exception:
-                pass
+                        if pagos_caja:
+                            db.caja_sesiones.update_one(
+                                {"_id": sesion_caja["_id"]},
+                                {
+                                    "$push": {"movimientos": {"$each": pagos_caja}},
+                                    "$inc": {"total_ventas": round(total_contado, 2)},
+                                },
+                                session=session,
+                            )
+                            db["ventas"].update_one(
+                                {"_id": result_id},
+                                {"$set": {
+                                    "caja_movimiento_registrado": True,
+                                    "caja_sesion_id": str(sesion_caja["_id"]),
+                                }},
+                                session=session,
+                            )
+                            nueva_venta["caja_movimiento_registrado"] = True
+                            nueva_venta["caja_sesion_id"] = str(sesion_caja["_id"])
+                    else:
+                        db["ventas"].update_one(
+                            {"_id": result_id},
+                            {"$set": {"caja_movimiento_registrado": False}},
+                            session=session,
+                        )
+                        nueva_venta["caja_movimiento_registrado"] = False
+                        logger.info(f"No hay caja abierta en sucursal {sucursal_id}; movimientos no registrados.")
+            except StockInsuficienteError as stock_err:
+                logger.warning(f"Venta abortada por carrera de stock: {stock_err.mensaje}")
+                return create_response(409, stock_err.mensaje)
 
         # Limpiar para respuesta JSON
-        if '_id' in nueva_venta:
-            del nueva_venta['_id']
+        nueva_venta.pop('_id', None)
 
         return create_response(201, "Venta procesada con éxito", nueva_venta)
 
@@ -495,45 +493,55 @@ def registrar_abono_handler(event, context):
                 "updatedAt": datetime.utcnow()
             }
         }
-        db["ventas"].update_one({"_id": ObjectId(venta_id)}, update_doc)
 
-        # Si el abono es EFECTIVO y hay caja abierta para la sucursal, registrar movimiento
+        # Pre-lectura de caja abierta (fuera de la transacción).
+        sesion_caja = None
         if metodo == 'EFECTIVO':
-            sesion = db.caja_sesiones.find_one({
+            sesion_caja = db.caja_sesiones.find_one({
                 "sucursal_id": venta.get('sucursal_id'),
-                "estado": "ABIERTA"
+                "estado": "ABIERTA",
             })
-            if sesion:
-                db.caja_sesiones.update_one(
-                    {"_id": sesion["_id"]},
-                    {
-                        "$push": {"movimientos": {
-                            "id": str(ObjectId()),
-                            "tipo": "ENTRADA",
-                            "monto": round(monto, 2),
-                            "concepto": f"Abono CxC venta {venta.get('folio')}",
-                            "fecha": iso_utc(),
-                            "usuario_id": usuario_id,
-                            "usuario_nombre": usuario_nombre,
-                        }},
-                        "$inc": {"total_entradas": round(monto, 2)}
-                    }
-                )
 
-        # Si saldó la OS asociada, marcarla pagada
-        if nuevo_saldo == 0 and venta.get('orden_id'):
-            try:
-                db["ordenes_servicio"].update_one(
-                    {"_id": ObjectId(venta['orden_id'])},
-                    {"$set": {
-                        "estado": "ENTREGADO",
-                        "pagada": True,
-                        "saldo_pendiente": 0,
-                        "updatedAt": datetime.utcnow()
-                    }}
-                )
-            except Exception as os_err:
-                logger.warning(f"No se pudo cerrar OS {venta.get('orden_id')}: {os_err}")
+        # Transacción atómica: abono + caja (si aplica) + cierre de OS (si saldó).
+        client = MongoDBConnection.get_client()
+        with client.start_session() as session:
+            with session.start_transaction():
+                db["ventas"].update_one({"_id": ObjectId(venta_id)}, update_doc, session=session)
+
+                if sesion_caja:
+                    db.caja_sesiones.update_one(
+                        {"_id": sesion_caja["_id"]},
+                        {
+                            "$push": {"movimientos": {
+                                "id": str(ObjectId()),
+                                "tipo": "ENTRADA",
+                                "monto": round(monto, 2),
+                                "concepto": f"Abono CxC venta {venta.get('folio')}",
+                                "fecha": iso_utc(),
+                                "usuario_id": usuario_id,
+                                "usuario_nombre": usuario_nombre,
+                            }},
+                            "$inc": {"total_entradas": round(monto, 2)}
+                        },
+                        session=session,
+                    )
+
+                if nuevo_saldo == 0 and venta.get('orden_id'):
+                    try:
+                        orden_oid = ObjectId(venta['orden_id'])
+                    except (InvalidId, TypeError):
+                        orden_oid = None
+                    if orden_oid:
+                        db["ordenes_servicio"].update_one(
+                            {"_id": orden_oid},
+                            {"$set": {
+                                "estado": "ENTREGADO",
+                                "pagada": True,
+                                "saldo_pendiente": 0,
+                                "updatedAt": datetime.utcnow(),
+                            }},
+                            session=session,
+                        )
 
         venta_actualizada = db["ventas"].find_one({"_id": ObjectId(venta_id)})
         venta_actualizada['id'] = str(venta_actualizada.pop('_id'))
