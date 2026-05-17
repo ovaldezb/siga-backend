@@ -68,7 +68,7 @@ custom:
       description: Python requirements layer
       compatibleRuntimes:
         - python3.11
-  split-stacks:
+  splitStacks:
     nestedStackTrace: true
     perFunction: true
     perType: true
