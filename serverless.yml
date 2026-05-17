@@ -8,6 +8,7 @@ provider:
   region: ${opt:region, 'us-east-1'}
   memorySize: 256
   timeout: 30
+  versionFunctions: false
   iam:
     role:
       statements:
@@ -1490,7 +1491,6 @@ resources:
               AllowedOrigins: ['*']
               MaxAge: 3000
 
-
     # Cognito User Pool
     CognitoUserPool:
       Type: AWS::Cognito::UserPool
@@ -1516,7 +1516,6 @@ resources:
             AttributeDataType: String
             Mutable: true
             Required: false
-
 
     # Cognito User Pool Client
     CognitoUserPoolClient:
