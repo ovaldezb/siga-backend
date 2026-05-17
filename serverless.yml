@@ -50,6 +50,8 @@ provider:
     COGNITO_CLIENT_ID: !Ref CognitoUserPoolClient
     S3_MEDIA_BUCKET: ${self:service}-${self:provider.stage}-media
     S3_EVIDENCIA_BUCKET: ${self:service}-${self:provider.stage}-evidencia
+    CLIENT_LINK_SECRET: ${env:CLIENT_LINK_SECRET, ''}
+    CLIENT_LINK_BASE_URL: ${env:CLIENT_LINK_BASE_URL, ''}
 
 plugins:
   - serverless-python-requirements
@@ -571,6 +573,89 @@ functions:
             name: cognitoAuthorizer
             type: COGNITO_USER_POOLS
             arn: !GetAtt CognitoUserPool.Arn
+
+  # --- Enlace público al cliente para aprobar/rechazar items de cotización ---
+  cliente_link_create:
+    handler: src/handlers/ordenes/cliente_link_manager.create_cliente_link_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: ordenes/{id}/cliente-link
+          method: post
+          cors: true
+          authorizer:
+            name: cognitoAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: !GetAtt CognitoUserPool.Arn
+
+  cliente_link_get:
+    handler: src/handlers/ordenes/cliente_link_manager.get_cliente_link_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: ordenes/{id}/cliente-link
+          method: get
+          cors: true
+          authorizer:
+            name: cognitoAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: !GetAtt CognitoUserPool.Arn
+
+  cliente_link_revoke:
+    handler: src/handlers/ordenes/cliente_link_manager.revoke_cliente_link_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: ordenes/{id}/cliente-link
+          method: delete
+          cors: true
+          authorizer:
+            name: cognitoAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: !GetAtt CognitoUserPool.Arn
+
+  public_cotizacion_challenge:
+    handler: src/handlers/ordenes/cliente_link_manager.public_get_challenge_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: public/cotizacion/challenge
+          method: get
+          cors: true
+
+  public_cotizacion_verify:
+    handler: src/handlers/ordenes/cliente_link_manager.public_verify_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: public/cotizacion/verify
+          method: post
+          cors: true
+
+  public_cotizacion_get:
+    handler: src/handlers/ordenes/cliente_link_manager.public_get_cotizacion_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: public/cotizacion
+          method: get
+          cors: true
+
+  public_cotizacion_decidir:
+    handler: src/handlers/ordenes/cliente_link_manager.public_decidir_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: public/cotizacion/decidir
+          method: post
+          cors: true
 
   list_vehiculos:
     handler: src/handlers/vehiculos/vehiculos_manager.list_vehiculos_handler

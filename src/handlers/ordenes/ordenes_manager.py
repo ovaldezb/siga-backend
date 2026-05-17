@@ -5,6 +5,7 @@ from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.infrastructure.database import get_tenant_db
 from src.shared.utils.auth_utils import try_parse_id
+from src.shared.utils.date_utils import iso_utc
 from src.handlers.admin.folios_manager import _get_next_folio_internal
 
 logger = Logger()
@@ -19,7 +20,7 @@ def _calcular_total_orden(puntos_arreglar) -> float:
     total = 0.0
     for punto in puntos_arreglar or []:
         for item in (punto.get("items") or []):
-            if item.get("no_cobrar") or item.get("rechazado"):
+            if item.get("no_cobrar") or item.get("rechazado") or item.get("decision") == "rechazado":
                 continue
             try:
                 piezas = float(item.get("piezas") or 0)
@@ -28,6 +29,63 @@ def _calcular_total_orden(puntos_arreglar) -> float:
             except (TypeError, ValueError):
                 continue
     return round(total, 2)
+
+
+def _derive_decision(item: dict) -> str:
+    """Deriva 'aprobado'|'rechazado'|'pendiente' desde los flags legacy si no hay `decision`."""
+    d = item.get('decision')
+    if d in ('aprobado', 'rechazado', 'pendiente'):
+        return d
+    if item.get('rechazado'):
+        return 'rechazado'
+    if item.get('aprobado') is True:
+        return 'aprobado'
+    return 'pendiente'
+
+
+def _stamp_manual_decisions(puntos_nuevos, puntos_anteriores, claims) -> list:
+    """Cuando el asesor cambia aprobado/rechazado de un item, estampa metadata `manual`.
+
+    Si la decisión no cambió respecto al estado previo, preserva la metadata existente
+    (puede ser de origen `client_link`). El frontend interno no necesita mandar los
+    campos de auditoría; los completamos aquí.
+    """
+    if not isinstance(puntos_nuevos, list):
+        return puntos_nuevos
+
+    responsable = claims.get('email') or claims.get('name') or claims.get('sub') or 'system'
+    now = iso_utc()
+
+    def _key(it):
+        return (it.get('nombre', ''), it.get('noParte', ''))
+
+    old_map = {}
+    for p in (puntos_anteriores or []):
+        pn = p.get('nombre', '')
+        for it in (p.get('items') or []):
+            old_map[(pn, _key(it))] = it
+
+    for p in puntos_nuevos:
+        pn = p.get('nombre', '')
+        for it in (p.get('items') or []):
+            old_it = old_map.get((pn, _key(it)))
+            new_dec = _derive_decision(it)
+            old_dec = _derive_decision(old_it) if old_it else None
+
+            if old_dec != new_dec:
+                it['decision'] = new_dec
+                it['decision_source'] = 'manual'
+                it['decided_by'] = responsable
+                it['decided_at'] = now
+                it['aprobado'] = (new_dec == 'aprobado')
+                it['rechazado'] = (new_dec == 'rechazado')
+            elif old_it:
+                # Sin cambio: conservar metadata previa (incluida la de client_link)
+                for fld in ('decision', 'decision_source', 'decided_by', 'decided_at', 'decided_meta'):
+                    if fld in old_it and fld not in it:
+                        it[fld] = old_it[fld]
+
+    return puntos_nuevos
 
 
 def _ensure_folio_index(db) -> None:
@@ -501,6 +559,16 @@ def update_orden_handler(event, context):
         for campo in campos_permitidos:
             if campo in body:
                 update_data[campo] = body[campo]
+
+        # Estampar trazabilidad manual en items que cambiaron decisión.
+        # Esto deja constancia de quién (asesor) aceptó/rechazó cuando NO viene del
+        # link público del cliente. Si no se tocó puntosArreglar, no hacer nada.
+        if 'puntosArreglar' in update_data:
+            update_data['puntosArreglar'] = _stamp_manual_decisions(
+                update_data['puntosArreglar'],
+                orden_actual.get('puntosArreglar', []),
+                claims,
+            )
 
         # Recalcular total server-side desde puntosArreglar (excluyendo no_cobrar)
         # para evitar que el frontend mande totales manipulados que desincronicen
