@@ -1,5 +1,6 @@
 import json
 from bson import ObjectId
+from bson.errors import InvalidId
 from datetime import datetime
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
@@ -422,7 +423,7 @@ def list_ordenes_handler(event, context):
                 query_ids.append(vid)
                 try:
                     query_ids.append(ObjectId(vid))
-                except:
+                except (InvalidId, TypeError):
                     pass
             vehiculos_data = db["vehiculos"].find({"_id": {"$in": query_ids}})
             for v in vehiculos_data:

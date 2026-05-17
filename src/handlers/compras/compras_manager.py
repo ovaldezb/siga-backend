@@ -342,6 +342,7 @@ def list_compras_handler(event, context):
             ]
 
         db = get_tenant_db(tenant_id)
+        ensure_indexes(db, tenant_id)
         total = db.compras.count_documents(query)
         compras = list(db.compras.find(query).sort("createdAt", -1).skip(skip).limit(limit))
         for c in compras:

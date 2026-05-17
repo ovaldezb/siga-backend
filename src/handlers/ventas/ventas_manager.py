@@ -4,6 +4,7 @@ from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.utils.auth_utils import try_parse_id
 from src.shared.infrastructure.database import get_tenant_db, MongoDBConnection
+from src.shared.utils.indexes import ensure_indexes
 from src.handlers.admin.folios_manager import _get_next_folio_internal
 from bson import ObjectId
 from bson.errors import InvalidId
@@ -574,6 +575,7 @@ def list_cxc_handler(event, context):
             query["cliente_id"] = cliente_id
 
         db = get_tenant_db(tenant_id)
+        ensure_indexes(db, tenant_id)
         ventas = list(db["ventas"].find(query).sort("createdAt", -1).limit(200))
 
         total_saldo = 0.0
@@ -606,7 +608,8 @@ def list_ventas_handler(event, context):
         cliente_id = query_params.get('cliente_id')
 
         db = get_tenant_db(tenant_id)
-        
+        ensure_indexes(db, tenant_id)
+
         query = {"tenant_id": tenant_id}
         if sucursal_id:
             query["sucursal_id"] = sucursal_id

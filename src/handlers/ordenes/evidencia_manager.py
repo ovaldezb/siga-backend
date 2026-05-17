@@ -126,7 +126,7 @@ def add_evidencia_handler(event, context):
                 ExpiresIn=3600
             )
             nueva_evidencia['url'] = view_url
-        except:
+        except Exception:
             nueva_evidencia['url'] = None
 
         logger.info(f"Evidencia registrada exitosamente en orden {orden_id}")

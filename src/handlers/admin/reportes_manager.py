@@ -5,6 +5,7 @@ from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.utils.auth_utils import try_parse_id
 from src.shared.infrastructure.database import get_tenant_db
+from src.shared.utils.indexes import ensure_indexes
 from src.shared.utils.date_utils import iso_utc
 
 logger = Logger()
@@ -21,7 +22,8 @@ def get_kpis_handler(event, context):
         sucursal_id = query_params.get('sucursal_id')
         
         db = get_tenant_db(tenant_id)
-        
+        ensure_indexes(db, tenant_id)
+
         # Filtro base
         filter_base = {"tenant_id": tenant_id}
         if sucursal_id:
