@@ -535,6 +535,20 @@ functions:
             type: COGNITO_USER_POOLS
             arn: !GetAtt CognitoUserPool.Arn
 
+  ordenes_list_events:
+    handler: src/handlers/ordenes/ordenes_manager.list_orden_events_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: ordenes/{id}/events
+          method: get
+          cors: true
+          authorizer:
+            name: cognitoAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: !GetAtt CognitoUserPool.Arn
+
   ordenes_get_upload_url:
     handler: src/handlers/ordenes/evidencia_manager.get_upload_url_handler
     layers:

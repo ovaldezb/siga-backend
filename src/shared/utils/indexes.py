@@ -1,0 +1,50 @@
+"""Índices Mongo críticos por performance (item #17).
+
+Concentra `create_index` de todas las collections con lookups/filtros frecuentes.
+Cada handler de lectura llama a `ensure_indexes(db, tenant_id)` — la primera
+invocación por container Lambda crea los índices (idempotente), las siguientes
+hacen no-op gracias al cache en `_ensured`.
+
+Existe un script de backfill (`scripts/ensure_indexes.py`) que recorre todos
+los tenants existentes en Atlas sin esperar a que cada Lambda se calenté: útil
+después de un deploy o tras agregar índices nuevos a este archivo.
+"""
+from aws_lambda_powertools import Logger
+
+logger = Logger()
+
+# Por tenant, marca si ya garantizamos índices durante la vida del container.
+# `create_index` es idempotente pero pegarle a Mongo en cada invocación es overhead.
+_ensured: set[str] = set()
+
+
+def ensure_indexes(db, tenant_id: str) -> None:
+    """Idempotente. Llamar desde handlers de lectura — se ejecuta una vez por container."""
+    if tenant_id in _ensured:
+        return
+    try:
+        # vehiculos: lookup por dueño (lista de cliente, ficha de cliente, badge).
+        db.vehiculos.create_index([("cliente_id", 1)], name="vehiculos_cliente")
+
+        # ordenes_servicio: filtros y agregaciones más frecuentes.
+        db.ordenes_servicio.create_index(
+            [("cliente_snapshot.id", 1), ("estado", 1)],
+            name="os_cliente_estado"
+        )
+        db.ordenes_servicio.create_index([("estado", 1)], name="os_estado")
+        db.ordenes_servicio.create_index([("vehiculo_id", 1)], name="os_vehiculo")
+        db.ordenes_servicio.create_index([("sucursal_id", 1)], name="os_sucursal")
+
+        # cotizacion_acceso: una entrada por OS; se consulta y upsert por orden_id.
+        db.cotizacion_acceso.create_index(
+            [("orden_id", 1)], unique=True, name="uniq_cotizacion_orden"
+        )
+
+        _ensured.add(tenant_id)
+    except Exception as e:
+        logger.warning(f"No se pudo asegurar índices de tenant {tenant_id}: {e}")
+
+
+def reset_cache() -> None:
+    """Para tests. En producción no se llama."""
+    _ensured.clear()

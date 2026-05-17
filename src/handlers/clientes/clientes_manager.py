@@ -5,6 +5,7 @@ from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.utils.auth_utils import parse_object_id, try_parse_id, resolve_sucursal_scope
 from src.shared.infrastructure.database import get_tenant_db
+from src.shared.utils.indexes import ensure_indexes
 from bson import ObjectId
 from pymongo import ReturnDocument
 
@@ -32,6 +33,7 @@ def list_clientes_handler(event, context):
         skip = (page - 1) * limit
 
         db = get_tenant_db(tenant_id)
+        ensure_indexes(db, tenant_id)
 
         # Enforce scope: admin sin filtro, no-admin restringido a sus sucursales
         scope_list, scope_err = resolve_sucursal_scope(claims, db, sucursal_id)

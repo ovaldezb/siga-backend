@@ -37,6 +37,7 @@ from src.shared.infrastructure.database import get_tenant_db
 from src.shared.utils.auth_utils import get_claims
 from src.shared.utils.date_utils import iso_utc
 from src.shared.utils.response_handler import create_response, handle_exception
+from src.shared.utils.indexes import ensure_indexes
 
 logger = Logger()
 
@@ -235,6 +236,7 @@ def create_cliente_link_handler(event, context):
 
         orden_id = event['pathParameters']['id']
         db = get_tenant_db(tenant_id)
+        ensure_indexes(db, tenant_id)
 
         orden, placa, telefono = _get_orden_y_datos(db, orden_id)
         if not orden:

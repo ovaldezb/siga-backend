@@ -5,12 +5,21 @@ from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.infrastructure.database import get_tenant_db
 from src.shared.utils.auth_utils import try_parse_id, parse_object_id
+from src.shared.utils.indexes import ensure_indexes
 
 logger = Logger()
 
 @logger.inject_lambda_context
 def list_vehiculos_handler(event, context):
-    """GET /vehiculos?cliente_id=xxx&page=1&limit=25 — Lista vehículos con paginación."""
+    """GET /vehiculos?cliente_id=xxx&page=1&limit=25 — Lista vehículos con paginación.
+
+    Plan de mantenimiento (item #9): cuando se pasa `mantenimiento=pronto|vencido`,
+    se calculan en pipeline `mantenimiento_status`, `dias_desde_ultima_visita` y
+    `km_para_aceite` para cada vehículo y se filtra por el estado pedido. Los
+    umbrales son configurables vía query params (`km_umbral`, `dias_pronto`,
+    `dias_vencido`). El estado siempre se devuelve si existe, aunque no se filtre,
+    para que el front pueda pintar badges en la lista normal.
+    """
     try:
         claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
         tenant_id = claims.get('custom:tenant_id')
@@ -22,13 +31,31 @@ def list_vehiculos_handler(event, context):
         cliente_id = query_params.get('cliente_id', '').strip()
         search = query_params.get('search', '').strip()
         sucursal_id = query_params.get('sucursalId')
-        
+
+        # Plan de mantenimiento (item #9)
+        mantenimiento_filter = (query_params.get('mantenimiento') or '').strip().lower()
+        if mantenimiento_filter not in ('', 'pronto', 'vencido'):
+            mantenimiento_filter = ''
+        try:
+            km_umbral = int(query_params.get('km_umbral', 500))
+        except (TypeError, ValueError):
+            km_umbral = 500
+        try:
+            dias_pronto = int(query_params.get('dias_pronto', 180))
+        except (TypeError, ValueError):
+            dias_pronto = 180
+        try:
+            dias_vencido = int(query_params.get('dias_vencido', 365))
+        except (TypeError, ValueError):
+            dias_vencido = 365
+
         # Paginación
         page = int(query_params.get('page', 1))
         limit = int(query_params.get('limit', 25))
         skip = (page - 1) * limit
 
         db = get_tenant_db(tenant_id)
+        ensure_indexes(db, tenant_id)
 
         # Filtro base
         filtro = {}
@@ -37,7 +64,7 @@ def list_vehiculos_handler(event, context):
 
         if cliente_id:
             filtro["cliente_id"] = cliente_id
-            
+
         if search:
             regex = {"$regex": search, "$options": "i"}
             search_filters = [
@@ -52,16 +79,10 @@ def list_vehiculos_handler(event, context):
                     filtro["$or"] = search_filters
             else:
                 filtro["$or"] = search_filters
-        
-        # Total de registros para el filtro dado
-        total = db["vehiculos"].count_documents(filtro)
-        
-        # Pipeline de agregación para incluir info del cliente
-        pipeline = [
-            {"$match": filtro},
-            {"$sort": {"createdAt": -1}},
-            {"$skip": skip},
-            {"$limit": limit},
+
+        # Stages comunes (lookup cliente + cálculo de mantenimiento). Usados tanto
+        # para count como para la página: así el total cuadra con el filtro post-pipeline.
+        mantenimiento_stages = [
             {
                 "$lookup": {
                     "from": "clientes",
@@ -70,9 +91,23 @@ def list_vehiculos_handler(event, context):
                         {"$match": {"$expr": {"$or": [
                             {"$eq": ["$_id", "$$cid"]},
                             {"$eq": ["$_id", {"$toObjectId": "$$cid"}]}
-                        ]}}}
+                        ]}}},
+                        {"$project": {"nombre": 1, "apellido_paterno": 1, "apellido_materno": 1, "telefono": 1}}
                     ],
                     "as": "cliente_info"
+                }
+            },
+            {
+                "$lookup": {
+                    "from": "ordenes_servicio",
+                    "let": {"vid": {"$toString": "$_id"}},
+                    "pipeline": [
+                        {"$match": {"$expr": {"$eq": ["$vehiculo_id", "$$vid"]}}},
+                        {"$sort": {"createdAt": -1}},
+                        {"$limit": 1},
+                        {"$project": {"_id": 0, "createdAt": 1}}
+                    ],
+                    "as": "ultima_os"
                 }
             },
             {
@@ -91,12 +126,101 @@ def list_vehiculos_handler(event, context):
                             },
                             "else": "Cliente Desconocido"
                         }
+                    },
+                    "cliente_telefono": {"$arrayElemAt": ["$cliente_info.telefono", 0]},
+                    "ultima_visita_at": {"$arrayElemAt": ["$ultima_os.createdAt", 0]}
+                }
+            },
+            {
+                "$addFields": {
+                    "km_para_aceite": {
+                        "$cond": {
+                            "if": {"$and": [
+                                {"$gt": [{"$ifNull": ["$proximo_cambio_aceite", 0]}, 0]},
+                                {"$gt": [{"$ifNull": ["$kilometraje", 0]}, 0]}
+                            ]},
+                            "then": {"$subtract": ["$proximo_cambio_aceite", "$kilometraje"]},
+                            "else": None
+                        }
+                    },
+                    "dias_desde_ultima_visita": {
+                        "$cond": {
+                            "if": {"$ifNull": ["$ultima_visita_at", False]},
+                            "then": {"$dateDiff": {
+                                "startDate": "$ultima_visita_at",
+                                "endDate": "$$NOW",
+                                "unit": "day"
+                            }},
+                            "else": None
+                        }
                     }
                 }
             },
-            {"$project": {"cliente_info": 0}}
+            {
+                "$addFields": {
+                    "mantenimiento_status": {
+                        "$switch": {
+                            "branches": [
+                                {"case": {"$or": [
+                                    {"$and": [
+                                        {"$ne": ["$km_para_aceite", None]},
+                                        {"$lte": ["$km_para_aceite", 0]}
+                                    ]},
+                                    {"$and": [
+                                        {"$ne": ["$dias_desde_ultima_visita", None]},
+                                        {"$gte": ["$dias_desde_ultima_visita", dias_vencido]}
+                                    ]}
+                                ]}, "then": "vencido"},
+                                {"case": {"$or": [
+                                    {"$and": [
+                                        {"$ne": ["$km_para_aceite", None]},
+                                        {"$lte": ["$km_para_aceite", km_umbral]}
+                                    ]},
+                                    {"$and": [
+                                        {"$ne": ["$dias_desde_ultima_visita", None]},
+                                        {"$gte": ["$dias_desde_ultima_visita", dias_pronto]}
+                                    ]}
+                                ]}, "then": "pronto"}
+                            ],
+                            "default": None
+                        }
+                    }
+                }
+            },
+            {"$project": {"cliente_info": 0, "ultima_os": 0, "ultima_visita_at": 0}}
         ]
-        
+
+        # Filtro post-cálculo (solo si se pidió mantenimiento). Único path que
+        # cambia el total: si lo aplicamos, contar requiere también recorrer pipeline.
+        match_mantenimiento = []
+        if mantenimiento_filter:
+            match_mantenimiento = [{"$match": {"mantenimiento_status": mantenimiento_filter}}]
+
+        # Total de registros para el filtro dado
+        if mantenimiento_filter:
+            count_pipeline = [{"$match": filtro}] + mantenimiento_stages + match_mantenimiento + [{"$count": "total"}]
+            count_res = list(db["vehiculos"].aggregate(count_pipeline))
+            total = count_res[0]['total'] if count_res else 0
+        else:
+            total = db["vehiculos"].count_documents(filtro)
+
+        # Cuando no hay filtro de mantenimiento, recortamos la página ANTES del
+        # lookup para no resolver cliente_info + última OS sobre la flota completa.
+        # Con filtro, los stages tienen que correr primero porque el match depende
+        # del campo calculado.
+        if mantenimiento_filter:
+            pipeline = (
+                [{"$match": filtro}]
+                + mantenimiento_stages
+                + match_mantenimiento
+                + [{"$sort": {"createdAt": -1}}, {"$skip": skip}, {"$limit": limit}]
+            )
+        else:
+            pipeline = (
+                [{"$match": filtro}, {"$sort": {"createdAt": -1}}, {"$skip": skip}, {"$limit": limit}]
+                + mantenimiento_stages
+            )
+
         cursor = db["vehiculos"].aggregate(pipeline)
 
         vehiculos = []

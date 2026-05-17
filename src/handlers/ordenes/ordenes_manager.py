@@ -6,6 +6,13 @@ from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.infrastructure.database import get_tenant_db
 from src.shared.utils.auth_utils import try_parse_id
 from src.shared.utils.date_utils import iso_utc
+from src.shared.utils.os_events import (
+    append_os_event,
+    list_os_events,
+    OS_EVENT_CREATED,
+    OS_EVENT_ESTADO_CHANGED,
+)
+from src.shared.utils.indexes import ensure_indexes
 from src.handlers.admin.folios_manager import _get_next_folio_internal
 
 logger = Logger()
@@ -207,6 +214,13 @@ def create_orden_handler(event, context):
         orden_doc["id"] = str(orden_result.inserted_id)
         del orden_doc["_id"]
 
+        # Audit log append-only (item #16) — dual-write con bitacora_estados.
+        append_os_event(
+            db, tenant_id, orden_doc["id"], OS_EVENT_CREATED,
+            payload={"folio": folio, "estado": estado_inicial},
+            claims=claims, event=event,
+        )
+
         # Serializar fechas
         orden_doc["createdAt"] = orden_doc["createdAt"].isoformat()
         orden_doc["updatedAt"] = orden_doc["updatedAt"].isoformat()
@@ -299,7 +313,8 @@ def list_ordenes_handler(event, context):
             filter_query['$and'] = and_conditions
 
         db = get_tenant_db(tenant_id)
-        
+        ensure_indexes(db, tenant_id)
+
         total = db["ordenes_servicio"].count_documents(filter_query)
         ordenes_cursor = db["ordenes_servicio"].find(filter_query).sort("createdAt", -1).skip(skip).limit(limit)
         
@@ -650,6 +665,20 @@ def update_orden_handler(event, context):
         if bitacora_push:
             update_doc["$push"] = {"bitacora_estados": bitacora_push}
         db["ordenes_servicio"].update_one({"_id": ObjectId(orden_id)}, update_doc)
+
+        # Audit log append-only (item #16) — espejea el push a bitacora_estados.
+        if bitacora_push:
+            payload = {
+                "from": orden_actual.get("estado"),
+                "to": nuevo_estado,
+            }
+            motivo = update_data.get("motivo_cancelacion")
+            if motivo:
+                payload["motivo"] = motivo
+            append_os_event(
+                db, tenant_id, orden_id, OS_EVENT_ESTADO_CHANGED,
+                payload=payload, claims=claims, event=event,
+            )
         
         # Recuperar actualizada
         orden = db["ordenes_servicio"].find_one({"_id": ObjectId(orden_id)})
@@ -675,5 +704,37 @@ def update_orden_handler(event, context):
                 vs['updatedAt'] = vs['updatedAt'].isoformat()
         
         return create_response(200, "Orden actualizada", orden)
+    except Exception as e:
+        return handle_exception(e)
+
+
+@logger.inject_lambda_context
+def list_orden_events_handler(event, context):
+    """GET /ordenes/{id}/events — bitácora append-only de auditoría (item #16).
+
+    Devuelve eventos en orden cronológico para alimentar una vista "ver historial
+    completo" más rica que el array `bitacora_estados` (incluye actor, ip,
+    user_agent). La colección `os_events` es append-only — los handlers nunca
+    hacen update/delete; este endpoint solo lee.
+    """
+    try:
+        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        tenant_id = claims.get('custom:tenant_id')
+        if not tenant_id:
+            return create_response(403, "No se encontró un tenantId asociado.")
+
+        orden_id = event['pathParameters']['id']
+        db = get_tenant_db(tenant_id)
+
+        # Validar que la OS exista en el tenant — evita filtrar eventos cruzados.
+        try:
+            existe = db['ordenes_servicio'].find_one({"_id": ObjectId(orden_id)}, {"_id": 1})
+        except Exception:
+            existe = None
+        if not existe:
+            return create_response(404, "Orden no encontrada")
+
+        events = list_os_events(db, orden_id)
+        return create_response(200, "Eventos de la orden", events)
     except Exception as e:
         return handle_exception(e)

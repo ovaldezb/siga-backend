@@ -6,6 +6,11 @@ from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.utils.auth_utils import parse_object_id, get_tenant_id, try_parse_id, resolve_sucursal_scope, get_claims
 from src.shared.infrastructure.database import get_tenant_db
+from src.shared.utils.os_events import (
+    append_os_event,
+    OS_EVENT_CREATED,
+    OS_EVENT_ESTADO_CHANGED,
+)
 from pymongo import ReturnDocument
 
 logger = Logger()
@@ -203,10 +208,17 @@ def create_cita_handler(event, context):
 
             os_result = db.ordenes_servicio.insert_one(os_doc)
             orden_id = str(os_result.inserted_id)
-            
+
             # Actualizar la cita con el orden_id
             db.citas.update_one({"_id": ObjectId(cita_id)}, {"$set": {"orden_id": orden_id}})
             nueva['orden_id'] = orden_id
+
+            # Audit log (item #16) — OS creada vía flujo cita.
+            append_os_event(
+                db, tenant_id, orden_id, OS_EVENT_CREATED,
+                payload={"folio": folio, "estado": "RECEPCION", "cita_id": cita_id},
+                claims=get_claims(event), event=event,
+            )
 
         except Exception as os_err:
             # No bloqueamos la creación de la cita si falla la OS automática, pero lo logueamos
@@ -275,7 +287,7 @@ def update_cita_handler(event, context):
         # (no tocar OS que ya avanzaron a COTIZADO/APROBADO/etc — esas representan trabajo real)
         if update_doc.get('estado') == 'cancelada' and result.get('orden_id'):
             try:
-                db.ordenes_servicio.update_one(
+                upd = db.ordenes_servicio.update_one(
                     {"_id": ObjectId(result['orden_id']), "estado": "RECEPCION"},
                     {"$set": {
                         "estado": "CANCELADO",
@@ -287,6 +299,13 @@ def update_cita_handler(event, context):
                         "usuario_id": "system:cita_cancelada"
                     }}}
                 )
+                # Audit log (item #16) — solo si efectivamente cambió el estado.
+                if upd.modified_count > 0:
+                    append_os_event(
+                        db, tenant_id, result['orden_id'], OS_EVENT_ESTADO_CHANGED,
+                        payload={"from": "RECEPCION", "to": "CANCELADO", "motivo": "Cita cancelada"},
+                        claims={"email": "system:cita_cancelada"}, event=event,
+                    )
             except Exception as os_err:
                 logger.warning(f"No se pudo cancelar OS ligada {result.get('orden_id')}: {os_err}")
 
