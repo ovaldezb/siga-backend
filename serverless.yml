@@ -70,7 +70,7 @@ custom:
         - python3.11
   split-stacks:
     nestedStackTrace: true
-    perFunction: false
+    perFunction: true
     perType: true
     perGroupFunction: false
 
