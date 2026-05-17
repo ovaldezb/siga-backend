@@ -89,6 +89,46 @@ def list_citas_handler(event, context):
         )
         citas = [_serialize(c) for c in citas]
 
+        # ENRIQUECIMIENTO REACTIVO DE METADATOS DE CLIENTE (ÓRDENES, COTIZACIONES, VEHÍCULOS)
+        cliente_ids = list({c['clienteId'] for c in citas if c.get('clienteId')})
+        veh_counts = {}
+        pending_os_counts = {}
+        pending_cot_counts = {}
+
+        if cliente_ids:
+            # Conteo de vehículos por cliente
+            counts_agg = list(db["vehiculos"].aggregate([
+                {"$match": {"cliente_id": {"$in": cliente_ids}}},
+                {"$group": {"_id": "$cliente_id", "count": {"$sum": 1}}}
+            ]))
+            veh_counts = {item['_id']: item['count'] for item in counts_agg}
+            
+            # Conteo de Órdenes de Servicio activas en taller (APROBADO, EN_PROCESO)
+            os_agg = list(db["ordenes_servicio"].aggregate([
+                {"$match": {
+                    "cliente_snapshot.id": {"$in": cliente_ids},
+                    "estado": {"$in": ["APROBADO", "EN_PROCESO"]}
+                }},
+                {"$group": {"_id": "$cliente_snapshot.id", "count": {"$sum": 1}}}
+            ]))
+            pending_os_counts = {item['_id']: item['count'] for item in os_agg}
+            
+            # Conteo de Cotizaciones pendientes por aprobar (RECEPCION, COTIZADO)
+            cot_agg = list(db["ordenes_servicio"].aggregate([
+                {"$match": {
+                    "cliente_snapshot.id": {"$in": cliente_ids},
+                    "estado": {"$in": ["RECEPCION", "COTIZADO"]}
+                }},
+                {"$group": {"_id": "$cliente_snapshot.id", "count": {"$sum": 1}}}
+            ]))
+            pending_cot_counts = {item['_id']: item['count'] for item in cot_agg}
+
+        for c in citas:
+            cid = c.get('clienteId')
+            c['num_vehiculos'] = veh_counts.get(cid, 1) if cid else 1
+            c['os_pendientes'] = pending_os_counts.get(cid, 0) if cid else 0
+            c['cotizaciones_pendientes'] = pending_cot_counts.get(cid, 0) if cid else 0
+
         return create_response(200, "Citas obtenidas", {
             "items": citas,
             "total": total,
@@ -120,10 +160,133 @@ def create_cita_handler(event, context):
 
         db = get_tenant_db(tenant_id)
 
+        # CONSOLIDACIÓN ROBUSTA DE CLIENTE Y VEHÍCULO
+        cliente_id = body.get('clienteId')
+        cliente_nombre = body.get('clienteNombre')
+        vehiculo_id = body.get('vehiculoId')
+        vehiculo_desc = body.get('vehiculoDesc')
+
+        # 1. Verificar/Crear Cliente en Colección de Clientes
+        if cliente_id:
+            try:
+                cli_doc = db.clientes.find_one({"_id": ObjectId(cliente_id)})
+                if not cli_doc:
+                    cliente_id = None
+            except Exception:
+                cliente_id = None
+
+        if cliente_nombre and not cliente_id:
+            import re
+            nombre_clean = cliente_nombre.strip()
+            regex = re.compile(f"^{re.escape(nombre_clean)}$", re.IGNORECASE)
+            cliente_existente = db.clientes.find_one({"nombre": regex})
+            if cliente_existente:
+                cliente_id = str(cliente_existente["_id"])
+                body['clienteId'] = cliente_id
+                body['clienteNombre'] = f"{cliente_existente.get('nombre')} {cliente_existente.get('apellido_paterno', '')}".strip()
+            else:
+                partes = nombre_clean.split(" ", 1)
+                nombre = partes[0]
+                apellido_paterno = partes[1] if len(partes) > 1 else "S/A"
+                sucursal_id_c = body.get('sucursal_id')
+                if not sucursal_id_c:
+                    suc_doc = db.sucursales.find_one({})
+                    sucursal_id_c = str(suc_doc["_id"]) if suc_doc else "default"
+
+                nuevo_cliente = {
+                    "nombre": nombre,
+                    "apellido_paterno": apellido_paterno,
+                    "apellido_materno": "",
+                    "telefono": body.get("clienteTelefono", "") or "0000000000",
+                    "email": body.get("clienteEmail", "") or "",
+                    "rfc": "XAXX010101000",
+                    "razon_social": "",
+                    "regimen_fiscal": "612",
+                    "codigo_postal": "",
+                    "tipo_persona": "FISICA",
+                    "limite_credito": 0.0,
+                    "dias_credito": 0,
+                    "nivel_precio": 1,
+                    "vehiculos_resumen": [],
+                    "sucursal_id": sucursal_id_c,
+                    "flotilla_id": None,
+                    "createdAt": iso_utc(),
+                    "tenant_id": tenant_id
+                }
+                res_cli = db.clientes.insert_one(nuevo_cliente)
+                cliente_id = str(res_cli.inserted_id)
+                body['clienteId'] = cliente_id
+                body['clienteNombre'] = f"{nombre} {apellido_paterno}".strip()
+
+        # 2. Verificar/Crear Vehículo en Colección de Vehículos
+        if vehiculo_id:
+            try:
+                veh_doc = db.vehiculos.find_one({"_id": ObjectId(vehiculo_id)})
+                if not veh_doc:
+                    vehiculo_id = None
+            except Exception:
+                vehiculo_id = None
+
+        if not vehiculo_id and vehiculo_desc and cliente_id:
+            import re
+            placas = "S/P"
+            marca = "Genérico"
+            modelo = "Vehículo"
+            
+            match_placas = re.search(r'\((.*?)\)', vehiculo_desc)
+            if match_placas:
+                placas = match_placas.group(1).strip()
+                desc_sin_placas = vehiculo_desc.replace(f"({placas})", "").strip()
+            else:
+                desc_sin_placas = vehiculo_desc.strip()
+                
+            partes_v = desc_sin_placas.split(" ", 1)
+            if partes_v:
+                marca = partes_v[0]
+                if len(partes_v) > 1:
+                    modelo = partes_v[1]
+            
+            veh_existente = db.vehiculos.find_one({"placas": placas}) if placas != "S/P" else None
+            if veh_existente:
+                vehiculo_id = str(veh_existente["_id"])
+                body['vehiculoId'] = vehiculo_id
+                body['vehiculoDesc'] = f"{veh_existente.get('marca')} {veh_existente.get('modelo')} ({veh_existente.get('placas')})".strip()
+            else:
+                sucursal_id_v = body.get('sucursal_id')
+                if not sucursal_id_v:
+                    suc_doc = db.sucursales.find_one({})
+                    sucursal_id_v = str(suc_doc["_id"]) if suc_doc else "default"
+                    
+                nuevo_vehiculo = {
+                    "marca": marca,
+                    "modelo": modelo,
+                    "placas": placas,
+                    "cliente_id": cliente_id,
+                    "sucursal_id": sucursal_id_v,
+                    "tenant_id": tenant_id,
+                    "createdAt": datetime.utcnow()
+                }
+                res_veh = db.vehiculos.insert_one(nuevo_vehiculo)
+                vehiculo_id = str(res_veh.inserted_id)
+                body['vehiculoId'] = vehiculo_id
+                body['vehiculoDesc'] = f"{marca} {modelo} ({placas})".strip()
+                
+                vehiculo_resumen = {
+                    "id": vehiculo_id,
+                    "placas": placas,
+                    "marca": marca,
+                    "modelo": modelo,
+                    "anio": ""
+                }
+                db.clientes.update_one(
+                    {"_id": ObjectId(cliente_id)},
+                    {"$push": {"vehiculos_resumen": vehiculo_resumen}}
+                )
+
         nueva = {
-            "clienteId": body.get('clienteId'),
+            "clienteId": cliente_id,
             "clienteNombre": body.get('clienteNombre'),
-            "vehiculoId": body.get('vehiculoId'),
+            "vehiculoId": vehiculo_id,
             "vehiculoDesc": body.get('vehiculoDesc'),
             "tecnicoId": body.get('tecnicoId'),
             "tecnicoNombre": body.get('tecnicoNombre'),

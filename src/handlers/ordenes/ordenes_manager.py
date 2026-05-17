@@ -132,36 +132,127 @@ def create_orden_handler(event, context):
         _ensure_folio_index(db)
         folio = _get_next_folio_internal(tenant_id, "os", sucursal_id_os)
 
+        # 1.5 CONSOLIDACIÓN ROBUSTA DE CLIENTE EN LA TABLA DE CLIENTES
+        cliente_snapshot = body.get("cliente_snapshot", {})
+        cliente_id = cliente_snapshot.get("id") if cliente_snapshot else None
+
+        if cliente_id:
+            try:
+                cli_doc = db.clientes.find_one({"_id": ObjectId(cliente_id)})
+                if not cli_doc:
+                    cliente_id = None
+            except Exception:
+                cliente_id = None
+
+        if cliente_snapshot and not cliente_id:
+            import re
+            nombre = cliente_snapshot.get("nombre", "").strip()
+            apellido_paterno = cliente_snapshot.get("apellido_paterno", "").strip()
+            if not apellido_paterno:
+                partes = nombre.split(" ", 1)
+                nombre = partes[0]
+                apellido_paterno = partes[1] if len(partes) > 1 else "S/A"
+
+            telefono = cliente_snapshot.get("telefono", "") or "0000000000"
+            email = cliente_snapshot.get("email", "")
+
+            cliente_existente = db.clientes.find_one({
+                "$or": [
+                    {"nombre": nombre, "apellido_paterno": apellido_paterno},
+                    {"telefono": telefono}
+                ]
+            }) if telefono != "0000000000" else None
+
+            if cliente_existente:
+                cliente_id = str(cliente_existente["_id"])
+                cliente_snapshot["id"] = cliente_id
+                cliente_snapshot["nombre"] = cliente_existente.get("nombre")
+                cliente_snapshot["apellido_paterno"] = cliente_existente.get("apellido_paterno", "")
+                cliente_snapshot["telefono"] = cliente_existente.get("telefono", "")
+            else:
+                nuevo_cliente = {
+                    "nombre": nombre,
+                    "apellido_paterno": apellido_paterno,
+                    "apellido_materno": cliente_snapshot.get("apellido_materno", ""),
+                    "telefono": telefono,
+                    "email": email,
+                    "rfc": cliente_snapshot.get("rfc", "XAXX010101000"),
+                    "razon_social": cliente_snapshot.get("razon_social", ""),
+                    "regimen_fiscal": cliente_snapshot.get("regimen_fiscal", "612"),
+                    "codigo_postal": cliente_snapshot.get("codigo_postal", ""),
+                    "tipo_persona": cliente_snapshot.get("tipo_persona", "FISICA"),
+                    "limite_credito": float(cliente_snapshot.get("limite_credito", 0.0)),
+                    "dias_credito": int(cliente_snapshot.get("dias_credito", 0)),
+                    "nivel_precio": int(cliente_snapshot.get("nivel_precio", 1)),
+                    "vehiculos_resumen": [],
+                    "sucursal_id": sucursal_id_os,
+                    "flotilla_id": cliente_snapshot.get("flotilla_id"),
+                    "createdAt": iso_utc(),
+                    "tenant_id": tenant_id
+                }
+                res_cli = db.clientes.insert_one(nuevo_cliente)
+                cliente_id = str(res_cli.inserted_id)
+                cliente_snapshot["id"] = cliente_id
+                # Asegurar de actualizar de vuelta en el body
+                body["cliente_snapshot"] = cliente_snapshot
+
         # 2. VEHÍCULO: Existente o Nuevo
         vehiculo_id_recibido = body.get("vehiculo_id", "").strip() if body.get("vehiculo_id") else ""
         vehiculo_data = body.get("vehiculo_snapshot", {})
 
         if vehiculo_id_recibido:
-            # Vehículo ya existe en BD: solo usar el ID
+            try:
+                veh_doc = db.vehiculos.find_one({"_id": ObjectId(vehiculo_id_recibido)})
+                if not veh_doc:
+                    vehiculo_id_recibido = ""
+            except Exception:
+                vehiculo_id_recibido = ""
+
+        if vehiculo_id_recibido:
             vehiculo_id = vehiculo_id_recibido
             logger.info(f"Vehículo existente reutilizado: {vehiculo_id}")
         else:
-            # Vehículo nuevo: validar datos y crear registro
             if not vehiculo_data:
                 return create_response(400, "Los datos del vehículo son requeridos")
 
-            vehiculo_doc = {
-                "cliente_id": body.get("cliente_snapshot", {}).get("id"),
-                "tenant_id": tenant_id,
-                "sucursal_id": sucursal_id_os, # Vinculado a la sucursal de la OS
-                "placas": vehiculo_data.get("placas", ""),
-                "marca": vehiculo_data.get("marca", ""),
-                "modelo": vehiculo_data.get("modelo", ""),
-                "anio": vehiculo_data.get("anio"),
-                "vin": vehiculo_data.get("vin", ""),
-                "color": vehiculo_data.get("color", ""),
-                "createdAt": datetime.utcnow(),
-            }
+            placas = vehiculo_data.get("placas", "").strip()
+            veh_existente = db.vehiculos.find_one({"placas": placas}) if placas and placas != "S/P" else None
 
-            vehiculo_result = db["vehiculos"].insert_one(vehiculo_doc)
-            vehiculo_id = vehiculo_result.inserted_id
-            vehiculo_es_nuevo = True
-            logger.info(f"Vehículo nuevo creado: {vehiculo_id}")
+            if veh_existente:
+                vehiculo_id = str(veh_existente["_id"])
+                logger.info(f"Vehículo encontrado por placas: {vehiculo_id}")
+            else:
+                vehiculo_doc = {
+                    "cliente_id": cliente_id,
+                    "tenant_id": tenant_id,
+                    "sucursal_id": sucursal_id_os,
+                    "placas": placas,
+                    "marca": vehiculo_data.get("marca", ""),
+                    "modelo": vehiculo_data.get("modelo", ""),
+                    "anio": vehiculo_data.get("anio"),
+                    "vin": vehiculo_data.get("vin", ""),
+                    "color": vehiculo_data.get("color", ""),
+                    "createdAt": datetime.utcnow(),
+                }
+
+                vehiculo_result = db["vehiculos"].insert_one(vehiculo_doc)
+                vehiculo_id = str(vehiculo_result.inserted_id)
+                vehiculo_es_nuevo = True
+                logger.info(f"Vehículo nuevo creado: {vehiculo_id}")
+
+            # Sincronizar en resumen del cliente
+            if cliente_id:
+                vehiculo_resumen = {
+                    "id": str(vehiculo_id),
+                    "placas": placas,
+                    "marca": vehiculo_data.get("marca", ""),
+                    "modelo": vehiculo_data.get("modelo", ""),
+                    "anio": vehiculo_data.get("anio", "")
+                }
+                db.clientes.update_one(
+                    {"_id": ObjectId(cliente_id), "vehiculos_resumen.id": {"$ne": str(vehiculo_id)}},
+                    {"$push": {"vehiculos_resumen": vehiculo_resumen}}
+                )
 
         # 3. Crear la OS con vehiculo_id y bitácora inicial
         estado_inicial = body.get("estado", "RECEPCION")

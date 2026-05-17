@@ -303,7 +303,12 @@ def get_customer_history_handler(event, context):
         db = get_tenant_db(tenant_id)
 
         # 1. Citas
-        citas = list(db["citas"].find({"cliente_id": cliente_id}).sort("fecha", -1))
+        citas = list(db["citas"].find({
+            "$or": [
+                {"clienteId": cliente_id},
+                {"cliente_id": cliente_id}
+            ]
+        }).sort("fecha", -1))
         for c in citas: 
             c["id"] = str(c.pop("_id"))
 
