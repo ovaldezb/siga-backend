@@ -56,6 +56,11 @@ provider:
     # ANTES DE PRODUCCIÓN: setear CLIENT_LINK_SECRET en repo secrets y rotar este default.
     CLIENT_LINK_SECRET: ${env:CLIENT_LINK_SECRET, 'mock-dev-secret-NOT-FOR-PROD-rotate-via-gh-secret-2026'}
     CLIENT_LINK_BASE_URL: ${env:CLIENT_LINK_BASE_URL, ''}
+    # Sentry — DSN vacío deja el SDK deshabilitado (sin tráfico ni costo).
+    # Setear SENTRY_DSN en GH Actions secrets para activar reporte de errores 5xx.
+    SENTRY_DSN: ${env:SENTRY_DSN, ''}
+    SENTRY_ENVIRONMENT: ${env:SENTRY_ENVIRONMENT, ''}
+    SENTRY_TRACES_SAMPLE_RATE: ${env:SENTRY_TRACES_SAMPLE_RATE, '0'}
 
 plugins:
   - serverless-python-requirements

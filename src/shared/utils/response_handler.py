@@ -8,6 +8,7 @@ from bson.errors import InvalidId
 from datetime import datetime
 from bson import ObjectId
 from src.shared.utils.date_utils import iso_utc
+from src.shared.utils import sentry_init  # init Sentry at cold start (no-op si SENTRY_DSN vacío)
 
 logger = Logger()
 
@@ -84,11 +85,15 @@ def create_response(status_code: int, message: str, data: Optional[Any] = None) 
     }
 
 
-def handle_exception(e: Exception) -> Dict[str, Any]:
-    """Map common client-side exceptions to 4xx; otherwise 500 with generic message."""
+def handle_exception(e: Exception, event: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Map common client-side exceptions to 4xx; otherwise 500 with generic message.
+
+    Si se pasa `event`, los 5xx se reportan a Sentry con tags de tenant/usuario.
+    """
     if isinstance(e, (KeyError, ValueError, InvalidId)):
         logger.warning(f"Client error: {type(e).__name__}: {str(e)}")
         return create_response(400, f"Solicitud inválida: {str(e)}")
 
     logger.exception(f"An error occurred: {str(e)}")
+    sentry_init.capture_with_event(e, event)
     return create_response(500, "Ha ocurrido un error interno en el servidor.")
