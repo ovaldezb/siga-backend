@@ -453,6 +453,20 @@ functions:
             type: COGNITO_USER_POOLS
             arn: !GetAtt CognitoUserPool.Arn
 
+  reportes_cliente_historial:
+    handler: src/handlers/admin/reportes_manager.get_customer_history_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: reportes/cliente/{id}
+          method: get
+          cors: true
+          authorizer:
+            name: cognitoAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: !GetAtt CognitoUserPool.Arn
+
   ventas_create:
     handler: src/handlers/ventas/ventas_manager.create_venta_handler
     layers:
