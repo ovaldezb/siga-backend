@@ -391,7 +391,7 @@ _PUBLIC_ITEM_FIELDS = {
 }
 
 
-def _sanitize_orden(orden: dict) -> dict:
+def _sanitize_orden(orden: dict, db=None) -> dict:
     puntos_pub = []
     for p_idx, punto in enumerate(orden.get('puntosArreglar') or []):
         items_pub = []
@@ -416,6 +416,27 @@ def _sanitize_orden(orden: dict) -> dict:
     cliente = orden.get('cliente_snapshot') or {}
     vehiculo = orden.get('vehiculo_snapshot') or {}
     nombre_cliente = ' '.join(filter(None, [cliente.get('nombre'), cliente.get('apellido_paterno')])).strip()
+
+    # El snapshot embebido puede no traer los próximos cambios: el operador los
+    # registra en otra OS o en la ficha del vehículo, y el snapshot queda viejo.
+    # Refrescamos desde la colección `vehiculos` para que la cotización los muestre.
+    veh_fresco = {}
+    v_id = orden.get('vehiculo_id')
+    if db is not None and isinstance(v_id, str) and len(v_id) == 24:
+        try:
+            veh_fresco = db['vehiculos'].find_one(
+                {'_id': ObjectId(v_id)},
+                {'proximo_cambio_aceite': 1, 'proximo_cambio_bujias': 1}
+            ) or {}
+        except Exception:
+            veh_fresco = {}
+    prox_aceite = (orden.get('proximo_cambio_aceite')
+                   or veh_fresco.get('proximo_cambio_aceite')
+                   or vehiculo.get('proximo_cambio_aceite'))
+    prox_bujias = (orden.get('proximo_cambio_bujias')
+                   or veh_fresco.get('proximo_cambio_bujias')
+                   or vehiculo.get('proximo_cambio_bujias'))
+
     return {
         'folio': orden.get('folio'),
         'estado': orden.get('estado'),
@@ -426,12 +447,12 @@ def _sanitize_orden(orden: dict) -> dict:
             'anio': vehiculo.get('anio'),
             'placas': vehiculo.get('placas'),
             'color': vehiculo.get('color'),
-            'proximo_cambio_aceite': vehiculo.get('proximo_cambio_aceite'),
-            'proximo_cambio_bujias': vehiculo.get('proximo_cambio_bujias'),
+            'proximo_cambio_aceite': prox_aceite,
+            'proximo_cambio_bujias': prox_bujias,
         },
         'kilometraje': orden.get('kilometraje', 0),
-        'proximo_cambio_aceite': orden.get('proximo_cambio_aceite'),
-        'proximo_cambio_bujias': orden.get('proximo_cambio_bujias'),
+        'proximo_cambio_aceite': prox_aceite,
+        'proximo_cambio_bujias': prox_bujias,
         'puntosArreglar': puntos_pub,
         'falla_reportada': orden.get('falla_reportada'),
         'diagnostico': orden.get('diagnostico'),
@@ -563,7 +584,7 @@ def public_get_cotizacion_handler(event, context):
         if not orden:
             return create_response(404, 'Cotización no encontrada.')
 
-        publica = _sanitize_orden(orden)
+        publica = _sanitize_orden(orden, db)
         publica['editable'] = orden.get('estado') in ('RECEPCION', 'COTIZADO')
         return create_response(200, 'Cotización', publica)
     except Exception as e:
