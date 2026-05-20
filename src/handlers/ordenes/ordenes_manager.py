@@ -19,6 +19,59 @@ from src.handlers.admin.folios_manager import _get_next_folio_internal
 logger = Logger()
 
 
+# ---------------------------------------------------------------------------
+# Mantenimiento preventivo: sincronización bidireccional OS <-> Vehículo
+# ---------------------------------------------------------------------------
+
+def _sync_mantenimiento_to_vehiculo(db, vehiculo_id: str, proximo_cambio_aceite, proximo_cambio_bujias) -> None:
+    """Persiste los próximos cambios de aceite/bujías en el documento del vehículo.
+
+    Se llama cuando la OS se crea o se actualiza para mantener el vehículo con
+    los valores frescos. Los valores 0 / None se ignoran para no borrar un dato
+    previo con un campo vacío.
+    """
+    if not vehiculo_id:
+        return
+    update_fields = {}
+    if proximo_cambio_aceite and float(proximo_cambio_aceite) > 0:
+        update_fields["proximo_cambio_aceite"] = float(proximo_cambio_aceite)
+    if proximo_cambio_bujias and float(proximo_cambio_bujias) > 0:
+        update_fields["proximo_cambio_bujias"] = float(proximo_cambio_bujias)
+    if not update_fields:
+        return
+    try:
+        db["vehiculos"].update_one(
+            {"_id": ObjectId(vehiculo_id)},
+            {"$set": update_fields}
+        )
+    except Exception as sync_err:
+        logger.warning(f"No se pudo sincronizar mantenimiento al vehículo {vehiculo_id}: {sync_err}")
+
+
+def _get_mantenimiento_previo(db, vehiculo_id: str) -> dict:
+    """Lee los valores de mantenimiento actuales del vehículo ANTES de pisarlos.
+
+    Devuelve un dict con `proximo_cambio_aceite` y `proximo_cambio_bujias`
+    tal como estaban guardados en el vehículo (pueden ser 0 / None si nunca
+    se registraron).
+    """
+    if not vehiculo_id:
+        return {}
+    try:
+        veh = db["vehiculos"].find_one(
+            {"_id": ObjectId(vehiculo_id)},
+            {"proximo_cambio_aceite": 1, "proximo_cambio_bujias": 1}
+        )
+        if not veh:
+            return {}
+        return {
+            "proximo_cambio_aceite_anterior": veh.get("proximo_cambio_aceite") or 0,
+            "proximo_cambio_bujias_anterior": veh.get("proximo_cambio_bujias") or 0,
+        }
+    except Exception:
+        return {}
+
+
 def _calcular_total_orden(puntos_arreglar) -> float:
     """Suma server-side de puntosArreglar.items.(piezas * precioVenta) excluyendo no_cobrar.
 
@@ -286,11 +339,19 @@ def create_orden_handler(event, context):
             "aplica_costo_revision": body.get("aplica_costo_revision", False),
             "costo_revision": body.get("costo_revision"),
             "anticipo": body.get("anticipo", 0),
+            # precios_incluyen_iva=True indica que precioVenta en items YA CONTIENE IVA.
+            # El PDF/frontend debe tomar total como el monto final (NO sumar IVA de nuevo).
+            "precios_incluyen_iva": body.get("precios_incluyen_iva", True),
             "total": _calcular_total_orden(body.get("puntosArreglar", [])),
             "fechaEstimadaEntrega": body.get("fechaEstimadaEntrega"),
             "createdAt": datetime.utcnow(),
             "updatedAt": datetime.utcnow()
         }
+
+        # Enriquecer la OS con los valores PREVIOS del vehículo (historial de mantenimiento).
+        # Esto permite al front mostrar "antes / después" al recibir el auto.
+        mantenimiento_previo = _get_mantenimiento_previo(db, str(vehiculo_id) if vehiculo_id else "")
+        orden_doc.update(mantenimiento_previo)
 
         try:
             orden_result = db["ordenes_servicio"].insert_one(orden_doc)
@@ -305,6 +366,14 @@ def create_orden_handler(event, context):
                 raise
         orden_doc["id"] = str(orden_result.inserted_id)
         del orden_doc["_id"]
+
+        # Sincronizar los nuevos próximos cambios al documento del vehículo.
+        _sync_mantenimiento_to_vehiculo(
+            db,
+            str(vehiculo_id) if vehiculo_id else "",
+            orden_doc.get("proximo_cambio_aceite"),
+            orden_doc.get("proximo_cambio_bujias"),
+        )
 
         # Audit log append-only (item #16) — dual-write con bitacora_estados.
         append_os_event(
@@ -713,7 +782,7 @@ def update_orden_handler(event, context):
             'proximo_cambio_bujias', 'proximo_cambio_aceite', 'anticipo',
             'cliente_snapshot', 'vehiculo_snapshot',
             'aplica_costo_revision', 'costo_revision', 'fechaEstimadaEntrega',
-            'cita_id', 'sucursal_id'
+            'cita_id', 'sucursal_id', 'precios_incluyen_iva'
         ]
 
         # Mapear sucursalId a sucursal_id
@@ -757,6 +826,15 @@ def update_orden_handler(event, context):
         if bitacora_push:
             update_doc["$push"] = {"bitacora_estados": bitacora_push}
         db["ordenes_servicio"].update_one({"_id": ObjectId(orden_id)}, update_doc)
+
+        # Sincronizar próximos cambios al vehículo si se actualizaron en la OS.
+        if 'proximo_cambio_aceite' in update_data or 'proximo_cambio_bujias' in update_data:
+            _sync_mantenimiento_to_vehiculo(
+                db,
+                orden_actual.get("vehiculo_id", ""),
+                update_data.get("proximo_cambio_aceite", orden_actual.get("proximo_cambio_aceite")),
+                update_data.get("proximo_cambio_bujias", orden_actual.get("proximo_cambio_bujias")),
+            )
 
         # Audit log append-only (item #16) — espejea el push a bitacora_estados.
         if bitacora_push:

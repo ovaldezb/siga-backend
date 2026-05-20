@@ -106,7 +106,14 @@ def list_vehiculos_handler(event, context):
                         {"$match": {"$expr": {"$eq": ["$vehiculo_id", "$$vid"]}}},
                         {"$sort": {"createdAt": -1}},
                         {"$limit": 1},
-                        {"$project": {"_id": 0, "createdAt": 1}}
+                        {"$project": {
+                            "_id": 0,
+                            "createdAt": 1,
+                            "proximo_cambio_aceite": 1,
+                            "proximo_cambio_bujias": 1,
+                            "proximo_cambio_aceite_anterior": 1,
+                            "proximo_cambio_bujias_anterior": 1,
+                        }}
                     ],
                     "as": "ultima_os"
                 }
@@ -129,7 +136,18 @@ def list_vehiculos_handler(event, context):
                         }
                     },
                     "cliente_telefono": {"$arrayElemAt": ["$cliente_info.telefono", 0]},
-                    "ultima_visita_at": {"$arrayElemAt": ["$ultima_os.createdAt", 0]}
+                    "ultima_visita_at": {"$arrayElemAt": ["$ultima_os.createdAt", 0]},
+                    # Tomar de la última OS los valores de mantenimiento si no están en el vehículo
+                    "proximo_cambio_aceite": {"$cond": {
+                        "if": {"$gt": [{"$ifNull": ["$proximo_cambio_aceite", 0]}, 0]},
+                        "then": "$proximo_cambio_aceite",
+                        "else": {"$arrayElemAt": ["$ultima_os.proximo_cambio_aceite", 0]}
+                    }},
+                    "proximo_cambio_bujias": {"$cond": {
+                        "if": {"$gt": [{"$ifNull": ["$proximo_cambio_bujias", 0]}, 0]},
+                        "then": "$proximo_cambio_bujias",
+                        "else": {"$arrayElemAt": ["$ultima_os.proximo_cambio_bujias", 0]}
+                    }}
                 }
             },
             {

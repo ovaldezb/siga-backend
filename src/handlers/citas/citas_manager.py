@@ -344,6 +344,26 @@ def create_cita_handler(event, context):
 
             # 3. Crear documento de OS
             responsable = body.get('usuario_email') or 'system'
+
+            # Leer mantenimiento previo del vehículo para incluirlo en la OS
+            veh_id_para_os = body.get("vehiculoId")
+            mant_previo = {}
+            if veh_id_para_os:
+                try:
+                    veh_doc_os = db.vehiculos.find_one(
+                        {"_id": ObjectId(veh_id_para_os)},
+                        {"proximo_cambio_aceite": 1, "proximo_cambio_bujias": 1}
+                    )
+                    if veh_doc_os:
+                        mant_previo = {
+                            "proximo_cambio_aceite": veh_doc_os.get("proximo_cambio_aceite") or 0,
+                            "proximo_cambio_bujias": veh_doc_os.get("proximo_cambio_bujias") or 0,
+                            "proximo_cambio_aceite_anterior": veh_doc_os.get("proximo_cambio_aceite") or 0,
+                            "proximo_cambio_bujias_anterior": veh_doc_os.get("proximo_cambio_bujias") or 0,
+                        }
+                except Exception:
+                    pass
+
             os_doc = {
                 "folio": folio,
                 "tenant_id": tenant_id,
@@ -366,6 +386,9 @@ def create_cita_handler(event, context):
                 "mecanico_nombre": body.get("tecnicoNombre"),
                 "total": 0,
                 "anticipo": 0,
+                # precios_incluyen_iva=True: los precioVenta en items ya incluyen IVA.
+                "precios_incluyen_iva": True,
+                **mant_previo,
                 "createdAt": datetime.utcnow(),
                 "updatedAt": datetime.utcnow()
             }
