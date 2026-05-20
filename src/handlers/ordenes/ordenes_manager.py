@@ -17,7 +17,7 @@ from src.shared.utils.indexes import ensure_indexes
 from src.handlers.admin.folios_manager import _get_next_folio_internal
 
 logger = Logger()
-
+#UPDATE_COMPLETE: 19/05/2026
 
 # ---------------------------------------------------------------------------
 # Mantenimiento preventivo: sincronización bidireccional OS <-> Vehículo
