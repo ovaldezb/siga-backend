@@ -72,24 +72,46 @@ def _get_mantenimiento_previo(db, vehiculo_id: str) -> dict:
         return {}
 
 
-def _calcular_total_orden(puntos_arreglar) -> float:
-    """Suma server-side de puntosArreglar.items.(piezas * precioVenta) excluyendo no_cobrar.
+IVA_RATE = 0.16  # Tasa IVA México
 
-    El cliente no puede mandar `total` manipulado: siempre se recalcula aquí para mantener
-    consistente lo que se reporta vs la venta POS.
+
+def _calcular_totales_orden(puntos_arreglar) -> dict:
+    """Calcula subtotal (base), iva y total respetando precio_incluye_iva e iva_exento por item.
+
+    Convención SIGA (igual que ventas_manager):
+    - precio_incluye_iva=True (default): precioVenta YA CONTIENE IVA -> se extrae la base.
+    - precio_incluye_iva=False: precioVenta es base -> se le suma el 16%.
+    - iva_exento=True: sin IVA en ninguna dirección.
+
+    El cliente no puede mandar `total` manipulado: siempre se recalcula aquí.
     """
-    total = 0.0
+    base_acum = 0.0
+    iva_acum  = 0.0
     for punto in puntos_arreglar or []:
         for item in (punto.get("items") or []):
             if item.get("no_cobrar") or item.get("rechazado") or item.get("decision") == "rechazado":
                 continue
             try:
-                piezas = float(item.get("piezas") or 0)
-                precio = float(item.get("precioVenta") or 0)
-                total += piezas * precio
+                linea = float(item.get("piezas") or 0) * float(item.get("precioVenta") or 0)
             except (TypeError, ValueError):
                 continue
-    return round(total, 2)
+            if item.get("iva_exento"):
+                base_acum += linea
+            elif item.get("precio_incluye_iva", True):  # default True: backward-compat
+                base = linea / (1 + IVA_RATE)
+                base_acum += base
+                iva_acum  += linea - base
+            else:
+                base_acum += linea
+                iva_acum  += linea * IVA_RATE
+    subtotal = round(base_acum, 2)
+    iva      = round(iva_acum, 2)
+    return {"subtotal": subtotal, "iva": iva, "total": round(subtotal + iva, 2)}
+
+
+def _calcular_total_orden(puntos_arreglar) -> float:
+    """Wrapper de compatibilidad — devuelve solo el total (mismo valor que antes)."""
+    return _calcular_totales_orden(puntos_arreglar)["total"]
 
 
 def _derive_decision(item: dict) -> str:
@@ -342,11 +364,15 @@ def create_orden_handler(event, context):
             # precios_incluyen_iva=True indica que precioVenta en items YA CONTIENE IVA.
             # El PDF/frontend debe tomar total como el monto final (NO sumar IVA de nuevo).
             "precios_incluyen_iva": body.get("precios_incluyen_iva", True),
-            "total": _calcular_total_orden(body.get("puntosArreglar", [])),
             "fechaEstimadaEntrega": body.get("fechaEstimadaEntrega"),
             "createdAt": datetime.utcnow(),
             "updatedAt": datetime.utcnow()
         }
+        # Calcular subtotal/iva/total server-side respetando precio_incluye_iva por item
+        _totales = _calcular_totales_orden(orden_doc.get("puntosArreglar", []))
+        orden_doc["subtotal"] = _totales["subtotal"]
+        orden_doc["iva"]      = _totales["iva"]
+        orden_doc["total"]    = _totales["total"]
 
         # Enriquecer la OS con los valores PREVIOS del vehículo (historial de mantenimiento).
         # Esto permite al front mostrar "antes / después" al recibir el auto.
@@ -819,6 +845,14 @@ def update_orden_handler(event, context):
                 "fecha": iso_utc(),
                 "usuario_id": responsable
             }
+
+        # Recalcular subtotal/iva/total si se modificaron los items
+        if 'puntosArreglar' in update_data:
+            puntos_nuevos = update_data['puntosArreglar']
+            _totales = _calcular_totales_orden(puntos_nuevos)
+            update_data['subtotal'] = _totales['subtotal']
+            update_data['iva']      = _totales['iva']
+            update_data['total']    = _totales['total']
 
         update_data['updatedAt'] = datetime.utcnow()
 
