@@ -572,6 +572,48 @@ functions:
             type: COGNITO_USER_POOLS
             arn: !GetAtt CognitoUserPool.Arn
 
+  list_marcas_admin:
+    handler: src/handlers/catalogos/autos_manager.list_marcas_admin_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: catalogos/autos/marcas/admin
+          method: get
+          cors: true
+          authorizer:
+            name: cognitoAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: !GetAtt CognitoUserPool.Arn
+
+  create_marca:
+    handler: src/handlers/catalogos/autos_manager.create_marca_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: catalogos/autos/marcas
+          method: post
+          cors: true
+          authorizer:
+            name: cognitoAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: !GetAtt CognitoUserPool.Arn
+
+  update_marca:
+    handler: src/handlers/catalogos/autos_manager.update_marca_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: catalogos/autos/marcas/{id}
+          method: put
+          cors: true
+          authorizer:
+            name: cognitoAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: !GetAtt CognitoUserPool.Arn
+
   list_modelos:
     handler: src/handlers/catalogos/autos_manager.list_modelos_handler
     layers:

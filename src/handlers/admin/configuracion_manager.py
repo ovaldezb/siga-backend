@@ -44,6 +44,10 @@ def get_config_handler(event, context):
                     {"id": "renta",     "nombre": "Renta",     "categoria": "Inmueble",  "monto_estimado": 0, "activo": True, "icono": "ri-store-2-line"},
                     {"id": "sueldos",   "nombre": "Sueldos",   "categoria": "Nómina",   "monto_estimado": 0, "activo": True, "icono": "ri-team-line"},
                 ],
+                # Templates sugeridos de puntos de revisión. Cada template es un
+                # conjunto nombrado de puntos que el módulo de Órdenes de Servicio
+                # puede inyectar al crear/editar una orden.
+                "templates_revision": [],
                 "tasas": {
                     "iva": 0.16
                 },
@@ -75,6 +79,14 @@ def get_config_handler(event, context):
             db["configuracion"].update_one(
                 {"tenant_id": tenant_id},
                 {"$set": {"gastos_fijos_catalogo": []}}
+            )
+
+        # Migración suave: tenants viejos sin templates_revision lo reciben vacío.
+        if 'templates_revision' not in config:
+            config['templates_revision'] = []
+            db["configuracion"].update_one(
+                {"tenant_id": tenant_id},
+                {"$set": {"templates_revision": []}}
             )
 
         if '_id' in config:

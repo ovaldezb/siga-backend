@@ -367,8 +367,8 @@ def create_vehiculo_handler(event, context):
         body = json.loads(event.get('body', '{}'))
         db = get_tenant_db(tenant_id)
 
-        # VALIDACIÓN ESTRICTA
-        required = ["marca", "modelo", "placas", "cliente_id", "sucursalId"]
+        # VALIDACIÓN ESTRICTA — placas y VIN son opcionales (se pueden capturar después).
+        required = ["marca", "modelo", "cliente_id", "sucursalId"]
         for field in required:
             if not body.get(field):
                 return create_response(400, f"El campo '{field}' es obligatorio para registrar un vehículo.")
@@ -379,7 +379,7 @@ def create_vehiculo_handler(event, context):
         nuevo_vehiculo = {
             "marca": body['marca'],
             "modelo": body['modelo'],
-            "placas": body['placas'],
+            "placas": body.get('placas', ''),
             "cliente_id": body['cliente_id'],
             "sucursal_id": body['sucursalId'],
             "tenant_id": tenant_id,
