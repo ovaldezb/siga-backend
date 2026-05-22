@@ -4,7 +4,7 @@ from bson.errors import InvalidId
 from datetime import datetime
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
-from src.shared.infrastructure.database import get_tenant_db
+from src.shared.infrastructure.database import get_tenant_db, MongoDBConnection
 from src.shared.utils.auth_utils import try_parse_id
 from src.shared.utils.date_utils import iso_utc
 from src.shared.utils.os_events import (
@@ -379,19 +379,63 @@ def create_orden_handler(event, context):
         mantenimiento_previo = _get_mantenimiento_previo(db, str(vehiculo_id) if vehiculo_id else "")
         orden_doc.update(mantenimiento_previo)
 
-        try:
-            orden_result = db["ordenes_servicio"].insert_one(orden_doc)
-        except Exception as ins_err:
-            # Carrera: el índice único rechazó el folio. Pedimos otro y reintentamos UNA vez.
-            if "E11000" in str(ins_err):
-                logger.warning(f"Colisión de folio OS {folio}; reintentando con nuevo folio")
-                folio = _get_next_folio_internal(tenant_id, "os", sucursal_id_os)
-                orden_doc["folio"] = folio
-                orden_result = db["ordenes_servicio"].insert_one(orden_doc)
-            else:
+        # --- Validar la cita ANTES de insertar (falla limpia y monitoreable,
+        #     no un warning silencioso). El backend es el ÚNICO responsable de
+        #     vincular la cita; el frontend ya no la actualiza por su cuenta. ---
+        cita_id = body.get("cita_id")
+        cita_object_id = None
+        if cita_id:
+            try:
+                cita_object_id = ObjectId(cita_id)
+            except (InvalidId, TypeError):
+                return create_response(400, f"cita_id inválido: {cita_id}")
+            cita_doc = db.citas.find_one({"_id": cita_object_id})
+            if not cita_doc:
+                return create_response(404, f"La cita {cita_id} no existe; no se puede crear la OS desde ella.")
+            if cita_doc.get("orden_id"):
+                return create_response(
+                    409, f"La cita {cita_id} ya está vinculada a la OS {cita_doc['orden_id']}.")
+
+        # --- Insertar la OS y vincular la cita ATÓMICAMENTE en una transacción.
+        #     Si la vinculación de la cita falla, la transacción se aborta y la OS
+        #     NO queda creada — así nunca hay OS huérfanas ni citas a medio enlazar. ---
+        client = MongoDBConnection.get_client()
+        max_intentos_folio = 3
+        orden_result = None
+        for intento in range(max_intentos_folio):
+            try:
+                with client.start_session() as session:
+                    with session.start_transaction():
+                        orden_result = db["ordenes_servicio"].insert_one(orden_doc, session=session)
+                        if cita_object_id is not None:
+                            cita_upd = db["citas"].update_one(
+                                {"_id": cita_object_id},
+                                {"$set": {
+                                    "orden_id": str(orden_result.inserted_id),
+                                    "estado": "en_proceso",
+                                    "updatedAt": iso_utc(),
+                                }},
+                                session=session,
+                            )
+                            # Defensa: la cita pudo borrarse entre la validación y la
+                            # transacción. matched_count=0 aborta todo el insert.
+                            if cita_upd.matched_count == 0:
+                                raise RuntimeError(
+                                    f"La cita {cita_id} desapareció antes de poder vincularla.")
+                break  # transacción confirmada
+            except Exception as ins_err:
+                # Carrera de folio: el índice único lo rechazó. Pedimos otro y
+                # reintentamos la transacción completa.
+                if "E11000" in str(ins_err) and intento < max_intentos_folio - 1:
+                    logger.warning(f"Colisión de folio OS {folio}; reintentando con nuevo folio")
+                    folio = _get_next_folio_internal(tenant_id, "os", sucursal_id_os)
+                    orden_doc["folio"] = folio
+                    continue
                 raise
         orden_doc["id"] = str(orden_result.inserted_id)
         del orden_doc["_id"]
+        if cita_object_id is not None:
+            logger.info(f"Cita {cita_id} vinculada a OS {orden_doc['id']}")
 
         # Sincronizar los nuevos próximos cambios al documento del vehículo.
         _sync_mantenimiento_to_vehiculo(
@@ -421,21 +465,8 @@ def create_orden_handler(event, context):
             if 'updatedAt' in vs and isinstance(vs['updatedAt'], datetime):
                 vs['updatedAt'] = iso_utc(vs['updatedAt'])
 
-        # 4. Si viene de una cita, actualizar la cita con la referencia a la OS
-        cita_id = body.get("cita_id")
-        if cita_id:
-            try:
-                db["citas"].update_one(
-                    {"_id": ObjectId(cita_id)},
-                    {"$set": {
-                        "orden_id": orden_doc["id"],
-                        "estado": "en_proceso",
-                        "updatedAt": iso_utc()
-                    }}
-                )
-                logger.info(f"Cita {cita_id} vinculada a OS {orden_doc['id']}")
-            except Exception as cita_err:
-                logger.warning(f"No se pudo actualizar la cita {cita_id}: {cita_err}")
+        # 4. La vinculación de la cita (orden_id + estado "en_proceso") ya quedó
+        #    confirmada dentro de la transacción atómica de arriba.
 
         return create_response(201, "Orden de servicio creada exitosamente", orden_doc)
 
