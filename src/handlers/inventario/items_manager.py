@@ -340,6 +340,8 @@ def update_stock_handler(event, context):
             return create_response(400, "La cantidad de ajuste no puede ser 0.")
 
         sucursal_id = body.get('sucursalId') or body.get('sucursal_id')
+        
+        logger.info(f"Actualizando stock de item {item_id}. Sucursal enviada: {sucursal_id}")
 
         db = get_tenant_db(tenant_id)
 
@@ -347,9 +349,17 @@ def update_stock_handler(event, context):
         query = {"_id": ObjectId(item_id)}
         if sucursal_id:
             query["sucursal_id"] = sucursal_id
-
+        
+        logger.info(f"Query para buscar item: {query}")
+            
         item = db["items"].find_one(query)
         if not item:
+            # Buscar sin sucursal para diagnosticar
+            item_diagnostico = db["items"].find_one({"_id": ObjectId(item_id)})
+            if item_diagnostico:
+                logger.warning(f"Item encontrado pero sucursal no coincide. DB sucursal: {item_diagnostico.get('sucursal_id')}")
+            else:
+                logger.warning(f"Item {item_id} ni siquiera existe con ese ID.")
             return create_response(404, "Item no encontrado.")
 
         if item.get('tipo') == 'SERVICIO' or not item.get('maneja_inventario'):

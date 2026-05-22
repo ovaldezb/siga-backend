@@ -61,6 +61,8 @@ provider:
     SENTRY_DSN: ${env:SENTRY_DSN, ''}
     SENTRY_ENVIRONMENT: ${env:SENTRY_ENVIRONMENT, ''}
     SENTRY_TRACES_SAMPLE_RATE: ${env:SENTRY_TRACES_SAMPLE_RATE, '0'}
+    CLIP_API_KEY: ${env:CLIP_API_KEY, ''}
+    CLIP_SECRET_KEY: ${env:CLIP_SECRET_KEY, ''}
 
 plugins:
   - serverless-python-requirements
@@ -177,6 +179,20 @@ functions:
           path: talleres
           method: post
           cors: true
+
+  pagos_suscripcion:
+    handler: src/handlers/admin/pagos_manager.procesar_pago_suscripcion_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: pagos/suscripcion
+          method: post
+          cors: true
+          authorizer:
+            name: cognitoAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: !GetAtt CognitoUserPool.Arn
 
   clientes_list:
     handler: src/handlers/clientes/clientes_manager.list_clientes_handler
