@@ -66,43 +66,32 @@ def procesar_pago_suscripcion_handler(event, context):
         credentials = f"{CLIP_API_KEY}:{CLIP_SECRET_KEY}"
         encoded_credentials = base64.b64encode(credentials.encode('utf-8')).decode('utf-8')
 
-        # Fallback de desarrollo: Si no hay llaves reales configuradas o el token es de simulación, simular la respuesta
-        if not CLIP_API_KEY or CLIP_API_KEY.startswith('mock') or card_token_id.startswith('mock-'):
-            logger.info("Modo simulación activado (llaves no configuradas o token mock recibido).")
-            clip_response = {
-                "id": f"pay_mock_{int(datetime.utcnow().timestamp())}",
-                "status": "APPROVED",
-                "payment_method": {
-                    "brand": "visa",
-                    "last4": card_token_id[-4:] if len(card_token_id) > 4 else "1234"
-                }
-            }
-        else:
-            req = urllib.request.Request(
-                url="https://api.payclip.com/payments",
-                data=json.dumps(clip_payload).encode('utf-8'),
-                headers={
-                    "accept": "application/vnd.com.payclip.v2+json",
-                    "content-type": "application/json",
-                    "Authorization": f"Basic {encoded_credentials}",
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                },
-                method="POST"
-            )
+        # Realizar la solicitud HTTP directa a Clip
+        req = urllib.request.Request(
+            url="https://api.payclip.com/payments",
+            data=json.dumps(clip_payload).encode('utf-8'),
+            headers={
+                "accept": "application/vnd.com.payclip.v2+json",
+                "content-type": "application/json",
+                "Authorization": f"Basic {encoded_credentials}",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            },
+            method="POST"
+        )
 
+        try:
+            with urllib.request.urlopen(req) as response:
+                res_body = response.read().decode('utf-8')
+                clip_response = json.loads(res_body)
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode('utf-8')
+            logger.error(f"Error de Clip: {error_body}")
             try:
-                with urllib.request.urlopen(req) as response:
-                    res_body = response.read().decode('utf-8')
-                    clip_response = json.loads(res_body)
-            except urllib.error.HTTPError as e:
-                error_body = e.read().decode('utf-8')
-                logger.error(f"Error de Clip: {error_body}")
-                try:
-                    error_json = json.loads(error_body)
-                    error_msg = error_json.get('message', 'Declinado por la pasarela de pagos.')
-                except Exception:
-                    error_msg = "Error de conexión o validación con Clip."
-                return create_response(400, f"Error al procesar el pago en Clip: {error_msg}")
+                error_json = json.loads(error_body)
+                error_msg = error_json.get('message', 'Declinado por la pasarela de pagos.')
+            except Exception:
+                error_msg = "Error de conexión o validación con Clip."
+            return create_response(400, f"Error al procesar el pago en Clip: {error_msg}")
 
         # 4. Registrar el pago en la Colección 'suscripciones_pagos' (Platform DB)
         db = get_platform_db()
