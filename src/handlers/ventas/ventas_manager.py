@@ -341,12 +341,27 @@ def create_venta_handler(event, context):
 
                     # 6. Cerrar OS + insertar compras CxP precalculadas
                     if orden_id:
+                        # Snapshot del pago para la "Nota de Servicio" (PDF + pantalla).
+                        # Si hubo varios métodos distintos lo marcamos MIXTO.
+                        metodos_usados = {
+                            str(p.get('metodo', '')).upper()
+                            for p in pagos_body if p.get('metodo')
+                        }
+                        metodo_nota = (
+                            'MIXTO' if len(metodos_usados) > 1
+                            else (next(iter(metodos_usados)) if metodos_usados else metodo_pago)
+                        )
                         os_update = {
                             "estado": "ENTREGADO" if monto_credito == 0 else "FINALIZADO",
                             "pagada": monto_credito == 0,
                             "venta_id": nueva_venta["id"],
                             "venta_folio": folio,
                             "saldo_pendiente": round(monto_credito, 2),
+                            "pago_info": {
+                                "fecha": iso_utc(),
+                                "metodo": metodo_nota,
+                                "venta_folio": folio,
+                            },
                             "updatedAt": datetime.utcnow(),
                         }
                         db["ordenes_servicio"].update_one(
