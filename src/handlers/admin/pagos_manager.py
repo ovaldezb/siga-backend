@@ -66,9 +66,9 @@ def procesar_pago_suscripcion_handler(event, context):
         credentials = f"{CLIP_API_KEY}:{CLIP_SECRET_KEY}"
         encoded_credentials = base64.b64encode(credentials.encode('utf-8')).decode('utf-8')
 
-        # Fallback de desarrollo: Si no hay llaves reales configuradas, simular la respuesta
-        if not CLIP_API_KEY or CLIP_API_KEY.startswith('mock'):
-            logger.info("CLIP_API_KEY no configurada o es mock. Simulando respuesta de Clip...")
+        # Fallback de desarrollo: Si no hay llaves reales configuradas o el token es de simulación, simular la respuesta
+        if not CLIP_API_KEY or CLIP_API_KEY.startswith('mock') or card_token_id.startswith('mock-'):
+            logger.info("Modo simulación activado (llaves no configuradas o token mock recibido).")
             clip_response = {
                 "id": f"pay_mock_{int(datetime.utcnow().timestamp())}",
                 "status": "APPROVED",
