@@ -170,7 +170,21 @@ def registrar_movimiento_handler(event, context):
     except Exception as e:
         return handle_exception(e)
 
+def _to_money(value):
+    """Castea a float redondeado a 2 decimales; devuelve None si no es numérico."""
+    try:
+        return round(float(value or 0), 2)
+    except (TypeError, ValueError):
+        return None
+
+
 def cerrar_caja_handler(event, context):
+    """POST /caja/cierre — Cierra la sesión con arqueo (conteo físico por método).
+
+    Acepta el desglose nuevo (`efectivo_fisico`/`tarjeta_fisico`/`otros_fisico`)
+    y, por retrocompatibilidad, el `monto_final` plano de clientes viejos.
+    Persiste un sub-objeto `arqueo` con el cuadre cuenta-vs-sistema para auditoría.
+    """
     try:
         claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
         tenant_id = claims.get('custom:tenant_id')
@@ -179,32 +193,60 @@ def cerrar_caja_handler(event, context):
 
         body = json.loads(event.get('body', '{}'))
         sesion_id = body.get('sesion_id')
-        try:
-            monto_final = float(body.get('monto_final', 0))
-        except (TypeError, ValueError):
-            return create_response(400, "Monto final inválido.")
-        if monto_final < 0:
-            return create_response(400, "El monto final no puede ser negativo.")
 
         if not tenant_id:
             return create_response(403, "No se encontró un tenantId asociado.")
         if not sesion_id:
             return create_response(400, "El campo 'sesion_id' es obligatorio.")
 
+        # Arqueo: el cajero captura el conteo físico por método de pago.
+        efectivo_fisico = _to_money(body.get('efectivo_fisico'))
+        tarjeta_fisico = _to_money(body.get('tarjeta_fisico'))
+        otros_fisico = _to_money(body.get('otros_fisico'))
+        motivo = (body.get('motivo') or '').strip()
+
+        tiene_desglose = any(x is not None for x in (efectivo_fisico, tarjeta_fisico, otros_fisico))
+        if tiene_desglose:
+            efectivo_fisico = efectivo_fisico or 0.0
+            tarjeta_fisico = tarjeta_fisico or 0.0
+            otros_fisico = otros_fisico or 0.0
+            monto_final = round(efectivo_fisico + tarjeta_fisico + otros_fisico, 2)
+        else:
+            # Retrocompat: cliente viejo manda solo `monto_final`.
+            monto_final = _to_money(body.get('monto_final'))
+            if monto_final is None:
+                return create_response(400, "Monto final inválido.")
+            efectivo_fisico, tarjeta_fisico, otros_fisico = monto_final, 0.0, 0.0
+        if monto_final < 0:
+            return create_response(400, "El monto final no puede ser negativo.")
+
         db = get_tenant_db(tenant_id)
 
-        # Calcular monto esperado en caja: inicial + entradas + ventas - salidas
         sesion = db.caja_sesiones.find_one({"_id": ObjectId(sesion_id), "estado": "ABIERTA"})
         if not sesion:
             return create_response(404, "Sesión de caja no encontrada o ya cerrada.")
 
-        monto_esperado = (
+        # Monto esperado en caja: inicial + entradas + ventas - salidas
+        monto_esperado = round(
             float(sesion.get('monto_inicial', 0))
             + float(sesion.get('total_ventas', 0))
             + float(sesion.get('total_entradas', 0))
-            - float(sesion.get('total_salidas', 0))
+            - float(sesion.get('total_salidas', 0)),
+            2,
         )
         diferencia = round(monto_final - monto_esperado, 2)
+
+        arqueo = {
+            "efectivo_fisico": efectivo_fisico,
+            "tarjeta_fisico": tarjeta_fisico,
+            "otros_fisico": otros_fisico,
+            "total_fisico": monto_final,
+            "esperado": monto_esperado,
+            "diferencia": diferencia,
+            "motivo": motivo,
+            "cerrado_por": usuario_nombre or usuario_id,
+            "cerrado_at": iso_utc(),
+        }
 
         cierre = {
             "estado": "CERRADA",
@@ -212,8 +254,9 @@ def cerrar_caja_handler(event, context):
             "usuario_cierre_id": usuario_id,
             "usuario_cierre_nombre": usuario_nombre,
             "monto_final": monto_final,
-            "monto_esperado": round(monto_esperado, 2),
-            "diferencia": diferencia
+            "monto_esperado": monto_esperado,
+            "diferencia": diferencia,
+            "arqueo": arqueo,
         }
 
         result = db.caja_sesiones.find_one_and_update(
@@ -227,5 +270,58 @@ def cerrar_caja_handler(event, context):
 
         result['id'] = str(result.pop('_id'))
         return create_response(200, "Caja cerrada exitosamente", result)
+    except Exception as e:
+        return handle_exception(e)
+
+
+def list_arqueos_handler(event, context):
+    """GET /caja/arqueos?year=&month=&sucursal_id= — Cierres de caja para auditoría.
+
+    Devuelve las sesiones CERRADAS del periodo con su arqueo, y agrega cuántos
+    días tuvieron diferencia (faltante/sobrante) para la vista de auditoría.
+    """
+    try:
+        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        tenant_id = claims.get('custom:tenant_id')
+        if not tenant_id:
+            return create_response(403, "No se encontró un tenantId asociado.")
+
+        qp = event.get('queryStringParameters') or {}
+        sucursal_id = qp.get('sucursal_id') or qp.get('sucursalId')
+
+        query = {"estado": "CERRADA"}
+        if sucursal_id:
+            query["sucursal_id"] = sucursal_id
+
+        # Filtro mensual sobre fecha_cierre (string ISO ordenable lexicográficamente).
+        try:
+            year = int(qp['year'])
+            month = int(qp['month'])
+            inicio = datetime(year, month, 1)
+            fin = datetime(year + (month // 12), (month % 12) + 1, 1)
+            query["fecha_cierre"] = {"$gte": iso_utc(inicio), "$lt": iso_utc(fin)}
+        except (KeyError, ValueError, TypeError):
+            pass  # sin filtro de fecha: últimas 200 sesiones cerradas
+
+        db = get_tenant_db(tenant_id)
+        sesiones = list(db.caja_sesiones.find(query).sort("fecha_cierre", -1).limit(200))
+
+        items = []
+        total_diferencia = 0.0
+        dias_con_diferencia = 0
+        for s in sesiones:
+            s['id'] = str(s.pop('_id'))
+            dif = float(s.get('diferencia', 0) or 0)
+            total_diferencia += dif
+            if abs(dif) >= 0.01:
+                dias_con_diferencia += 1
+            items.append(s)
+
+        return create_response(200, "Arqueos de caja", {
+            "items": items,
+            "count": len(items),
+            "total_diferencia": round(total_diferencia, 2),
+            "dias_con_diferencia": dias_con_diferencia,
+        })
     except Exception as e:
         return handle_exception(e)

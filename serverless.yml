@@ -1157,6 +1157,34 @@ functions:
             type: COGNITO_USER_POOLS
             arn: !GetAtt CognitoUserPool.Arn
 
+  caja_cierre:
+    handler: src/handlers/caja/caja_manager.cerrar_caja_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: caja/cierre
+          method: post
+          cors: true
+          authorizer:
+            name: cognitoAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: !GetAtt CognitoUserPool.Arn
+
+  caja_arqueos:
+    handler: src/handlers/caja/caja_manager.list_arqueos_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: caja/arqueos
+          method: get
+          cors: true
+          authorizer:
+            name: cognitoAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: !GetAtt CognitoUserPool.Arn
+
   getConfig:
     handler: src.handlers.admin.configuracion_manager.get_config_handler
     layers:
