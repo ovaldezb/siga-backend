@@ -84,7 +84,8 @@ def procesar_pago_suscripcion_handler(event, context):
                 headers={
                     "accept": "application/vnd.com.payclip.v2+json",
                     "content-type": "application/json",
-                    "Authorization": f"Basic {encoded_credentials}"
+                    "Authorization": f"Basic {encoded_credentials}",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
                 },
                 method="POST"
             )
