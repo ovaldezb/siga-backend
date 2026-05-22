@@ -187,3 +187,31 @@ def procesar_pago_suscripcion_handler(event, context):
     except Exception as e:
         logger.error(f"Error procesando pago: {str(e)}")
         return handle_exception(e)
+
+def obtener_historial_pagos_handler(event, context):
+    try:
+        # 1. Obtener tenant_id desde el token Cognito
+        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        tenant_id = claims.get('custom:tenant_id')
+
+        # 2. Consultar base de datos
+        db = get_platform_db()
+        cursor = db["suscripciones_pagos"].find({"tallerTenantId": tenant_id}).sort("fechaPago", -1)
+
+        historial = []
+        for doc in cursor:
+            historial.append({
+                "id": str(doc["_id"]),
+                "concepto": doc.get("concepto"),
+                "monto": doc.get("monto"),
+                "fecha": iso_utc(doc.get("fechaPago")),
+                "metodo": doc.get("metodo"),
+                "estado": doc.get("estado"),
+                "tokenClip": doc.get("folioClip")
+            })
+
+        return create_response(200, "Historial obtenido exitosamente", historial)
+
+    except Exception as e:
+        logger.error(f"Error obteniendo historial: {str(e)}")
+        return handle_exception(e)

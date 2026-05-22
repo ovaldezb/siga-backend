@@ -194,6 +194,20 @@ functions:
             type: COGNITO_USER_POOLS
             arn: !GetAtt CognitoUserPool.Arn
 
+  pagos_historial:
+    handler: src/handlers/admin/pagos_manager.obtener_historial_pagos_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: pagos/suscripcion
+          method: get
+          cors: true
+          authorizer:
+            name: cognitoAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: !GetAtt CognitoUserPool.Arn
+
   clientes_list:
     handler: src/handlers/clientes/clientes_manager.list_clientes_handler
     layers:
