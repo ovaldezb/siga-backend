@@ -837,6 +837,21 @@ def update_orden_handler(event, context):
 
         # 2. Si el estado cambió, agregar a la bitácora automáticamente con $push.
         nuevo_estado = body.get('estado')
+
+        # GUARD: ENTREGADO solo se alcanza completando la venta en Punto de Venta.
+        # create_venta_handler estampa estado=ENTREGADO + venta_id juntos dentro de
+        # su transacción; llegar a este handler con ENTREGADO y sin venta_id significa
+        # que se intentó cerrar la OS desde el dropdown sin cobrarla — eso la dejaría
+        # fuera de ventas/caja/contabilidad y sin descuento de inventario. Se rechaza.
+        if (nuevo_estado == 'ENTREGADO'
+                and nuevo_estado != orden_actual.get('estado')
+                and not orden_actual.get('venta_id')):
+            return create_response(
+                409,
+                "Esta orden debe cobrarse en Punto de Venta antes de marcarse como "
+                "ENTREGADO. Genera la venta desde POS."
+            )
+
         bitacora_push = None
         if nuevo_estado and nuevo_estado != orden_actual.get('estado'):
             responsable = claims.get('email') or claims.get('name') or claims.get('sub') or 'system'
