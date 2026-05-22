@@ -22,7 +22,7 @@ ALLOWED_FIELDS = {
     "servicio", "estado", "notas", "orden_id"
 }
 
-VALID_ESTADOS = {"pendiente", "confirmada", "en_proceso", "completada", "cancelada"}
+VALID_ESTADOS = {"pendiente", "confirmada", "en_proceso", "completada", "cancelada", "pospuesta", "no_asistio"}
 
 
 def _serialize(doc):
@@ -308,110 +308,10 @@ def create_cita_handler(event, context):
         nueva['id'] = cita_id
         del nueva['_id']
 
-        # NUEVO: Crear Orden de Servicio automáticamente — sólo si la cita
-        # no nace cancelada (no tendría sentido abrir OS para una cita cancelada).
-        if estado == 'cancelada':
-            return create_response(201, "Cita creada (sin OS por estado=cancelada)", nueva)
-
-        try:
-            # 1. Obtener siguiente folio de OS scoped por sucursal (consistente con ventas/folios_manager)
-            from src.handlers.admin.folios_manager import _get_next_folio_internal
-            sucursal_id_cita = body.get("sucursal_id")
-            if not sucursal_id_cita:
-                raise ValueError("La cita no tiene sucursal_id, no se puede crear folio de OS")
-            folio = _get_next_folio_internal(tenant_id, "os", sucursal_id_cita)
-
-            # 2. Crear snapshot del cliente (incluye apellido_materno para PDF Orden y Cotización)
-            cliente_id = body.get('clienteId')
-            cliente_doc = None
-            if cliente_id:
-                try:
-                    cliente_doc = db.clientes.find_one({"_id": ObjectId(cliente_id)})
-                except Exception:
-                    cliente_doc = None
-            cliente_snapshot = {}
-            if cliente_doc:
-                cliente_snapshot = {
-                    "id": str(cliente_doc["_id"]),
-                    "nombre": cliente_doc.get("nombre"),
-                    "apellido_paterno": cliente_doc.get("apellido_paterno"),
-                    "apellido_materno": cliente_doc.get("apellido_materno"),
-                    "telefono": cliente_doc.get("telefono"),
-                    "email": cliente_doc.get("email")
-                }
-            else:
-                cliente_snapshot = {"nombre": body.get("clienteNombre"), "id": cliente_id}
-
-            # 3. Crear documento de OS
-            responsable = body.get('usuario_email') or 'system'
-
-            # Leer mantenimiento previo del vehículo para incluirlo en la OS
-            veh_id_para_os = body.get("vehiculoId")
-            mant_previo = {}
-            if veh_id_para_os:
-                try:
-                    veh_doc_os = db.vehiculos.find_one(
-                        {"_id": ObjectId(veh_id_para_os)},
-                        {"proximo_cambio_aceite": 1, "proximo_cambio_bujias": 1}
-                    )
-                    if veh_doc_os:
-                        mant_previo = {
-                            "proximo_cambio_aceite": veh_doc_os.get("proximo_cambio_aceite") or 0,
-                            "proximo_cambio_bujias": veh_doc_os.get("proximo_cambio_bujias") or 0,
-                            "proximo_cambio_aceite_anterior": veh_doc_os.get("proximo_cambio_aceite") or 0,
-                            "proximo_cambio_bujias_anterior": veh_doc_os.get("proximo_cambio_bujias") or 0,
-                        }
-                except Exception:
-                    pass
-
-            os_doc = {
-                "folio": folio,
-                "tenant_id": tenant_id,
-                "sucursal_id": body.get("sucursal_id"),
-                "estado": "RECEPCION",
-                "bitacora_estados": [{
-                    "estado": "RECEPCION",
-                    "fecha": iso_utc(),
-                    "usuario_id": responsable
-                }],
-                "cliente_snapshot": cliente_snapshot,
-                "vehiculo_id": body.get("vehiculoId"),
-                "cita_id": cita_id,
-                "puntosArreglar": [{
-                    "nombre": body.get("servicio", "Servicio General"),
-                    "items": []
-                }],
-                "falla_reportada": body.get("notas", ""),
-                "mecanico_id": body.get("tecnicoId"),
-                "mecanico_nombre": body.get("tecnicoNombre"),
-                "total": 0,
-                "anticipo": 0,
-                # precios_incluyen_iva=True: los precioVenta en items ya incluyen IVA.
-                "precios_incluyen_iva": True,
-                **mant_previo,
-                "createdAt": datetime.utcnow(),
-                "updatedAt": datetime.utcnow()
-            }
-
-            os_result = db.ordenes_servicio.insert_one(os_doc)
-            orden_id = str(os_result.inserted_id)
-
-            # Actualizar la cita con el orden_id
-            db.citas.update_one({"_id": ObjectId(cita_id)}, {"$set": {"orden_id": orden_id}})
-            nueva['orden_id'] = orden_id
-
-            # Audit log (item #16) — OS creada vía flujo cita.
-            append_os_event(
-                db, tenant_id, orden_id, OS_EVENT_CREATED,
-                payload={"folio": folio, "estado": "RECEPCION", "cita_id": cita_id},
-                claims=get_claims(event), event=event,
-            )
-
-        except Exception as os_err:
-            # No bloqueamos la creación de la cita si falla la OS automática, pero lo logueamos
-            logger.warning(f"Error creando OS automática para cita {cita_id}: {os_err}")
-
-        return create_response(201, "Cita y Orden de Servicio creadas exitosamente", nueva)
+        # La cita NO genera Orden de Servicio automáticamente. La OS se crea
+        # sólo cuando el usuario decide convertir la cita (cliente presente),
+        # desde el flujo manual en sae-app -> ordenes_manager.create con cita_id.
+        return create_response(201, "Cita creada exitosamente", nueva)
     except Exception as e:
         return handle_exception(e)
 
