@@ -2,7 +2,7 @@ import os
 import json
 import uuid
 import boto3
-from datetime import datetime
+from datetime import datetime, timedelta
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.utils.date_utils import iso_utc
@@ -86,6 +86,33 @@ def create_taller_handler(event, context):
             logger.error(f"Error creating Cognito user: {str(e)}")
             return create_response(500, "Error al crear el administrador del taller.")
 
+        # Calcular proximaFechaCorte y proximaFechaPago
+        try:
+            if "T" in fecha_alta:
+                clean_str = fecha_alta.replace("Z", "")
+                if "." in clean_str:
+                    clean_str = clean_str.split(".")[0]
+                dt_alta = datetime.strptime(clean_str, "%Y-%m-%dT%H:%M:%S")
+            else:
+                dt_alta = datetime.strptime(fecha_alta[:10], "%Y-%m-%d")
+        except Exception:
+            dt_alta = datetime.utcnow()
+
+        try:
+            month = dt_alta.month - 1 + 1
+            year = dt_alta.year + month // 12
+            month = month % 12 + 1
+            days_in_months = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+            if month == 2 and year % 4 == 0 and (year % 100 != 0 or year % 400 == 0):
+                day = min(dt_alta.day, 29)
+            else:
+                day = min(dt_alta.day, days_in_months[month-1])
+            proxima_corte = datetime(year, month, day, dt_alta.hour, dt_alta.minute, dt_alta.second)
+        except Exception:
+            proxima_corte = dt_alta + timedelta(days=30)
+
+        proxima_pago = proxima_corte + timedelta(days=10)
+
         # 2. Insert into Platform DB
         taller_doc = {
             "tenantId": tenant_id,
@@ -94,6 +121,8 @@ def create_taller_handler(event, context):
             "modulos": body.get("modulos", []),
             "estado": body.get("estado", "ACTIVO"),
             "fechaSuscripcion": fecha_alta,
+            "proximaFechaCorte": proxima_corte,
+            "proximaFechaPago": proxima_pago,
             "adminEmail": admin_email,
             "adminNombre": body["adminNombre"],
             "adminApellido": body["adminApellido"],
@@ -128,6 +157,10 @@ def create_taller_handler(event, context):
         taller_doc["id"] = str(result.inserted_id)
         if "createdAt" in taller_doc:
             taller_doc["createdAt"] = iso_utc(taller_doc["createdAt"])
+        if "proximaFechaCorte" in taller_doc and isinstance(taller_doc["proximaFechaCorte"], datetime):
+            taller_doc["proximaFechaCorte"] = iso_utc(taller_doc["proximaFechaCorte"])
+        if "proximaFechaPago" in taller_doc and isinstance(taller_doc["proximaFechaPago"], datetime):
+            taller_doc["proximaFechaPago"] = iso_utc(taller_doc["proximaFechaPago"])
         del taller_doc["_id"]
         
         return create_response(201, "Taller creado exitosamente", taller_doc)
@@ -152,10 +185,20 @@ def get_my_modulos_handler(event, context):
             return create_response(200, "Módulos para admin global", {"modulos": ["*"]})
 
         db = get_platform_db()
-        taller = db["talleres"].find_one({"tenantId": tenant_id}, {"_id": 0, "modulos": 1, "estado": 1, "logoUrl": 1, "nombreComercial": 1, "direccion": 1, "adminTelefono": 1})
+        taller = db["talleres"].find_one(
+            {"tenantId": tenant_id}, 
+            {"_id": 0, "modulos": 1, "estado": 1, "logoUrl": 1, "nombreComercial": 1, "direccion": 1, "adminTelefono": 1, "proximaFechaCorte": 1, "proximaFechaPago": 1}
+        )
 
         if not taller:
             return create_response(404, "Taller no encontrado")
+
+        p_corte = taller.get("proximaFechaCorte")
+        p_pago = taller.get("proximaFechaPago")
+        if isinstance(p_corte, datetime):
+            p_corte = iso_utc(p_corte)
+        if isinstance(p_pago, datetime):
+            p_pago = iso_utc(p_pago)
 
         return create_response(200, "Configuración recuperada", {
             "modulos": taller.get("modulos", []),
@@ -163,7 +206,9 @@ def get_my_modulos_handler(event, context):
             "logoUrl": taller.get("logoUrl"),
             "nombreTaller": taller.get("nombreComercial", "SIGA"),
             "direccion": taller.get("direccion", "Dirección no especificada"),
-            "adminTelefono": taller.get("adminTelefono", "Teléfono no especificado")
+            "adminTelefono": taller.get("adminTelefono", "Teléfono no especificado"),
+            "proximaFechaCorte": p_corte,
+            "proximaFechaPago": p_pago
         })
 
     except Exception as e:
