@@ -200,8 +200,14 @@ def obtener_historial_pagos_handler(event, context):
         claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
         tenant_id = claims.get('custom:tenant_id')
 
-        # 2. Leer query params para paginación
+        # 2. Leer query params para paginación y tallerTenantId
         query_params = event.get('queryStringParameters') or {}
+        
+        # Permitir filtrar por tallerTenantId o tenantId específico si se pasa por query params (para administrador)
+        taller_tenant_id = query_params.get('tallerTenantId') or query_params.get('tenantId')
+        if not taller_tenant_id:
+            taller_tenant_id = tenant_id
+
         try:
             page = int(query_params.get('page', 1))
             if page < 1:
@@ -216,10 +222,10 @@ def obtener_historial_pagos_handler(event, context):
         db = get_platform_db()
         
         # Contar total de registros para paginación
-        total = db["suscripciones_pagos"].count_documents({"tallerTenantId": tenant_id})
+        total = db["suscripciones_pagos"].count_documents({"tallerTenantId": taller_tenant_id})
         total_pages = max(1, (total + limit - 1) // limit)
 
-        cursor = db["suscripciones_pagos"].find({"tallerTenantId": tenant_id}).sort("fechaPago", -1).skip(skip).limit(limit)
+        cursor = db["suscripciones_pagos"].find({"tallerTenantId": taller_tenant_id}).sort("fechaPago", -1).skip(skip).limit(limit)
 
         historial = []
         for doc in cursor:
