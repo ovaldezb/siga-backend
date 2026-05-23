@@ -123,6 +123,7 @@ def create_taller_handler(event, context):
             "fechaSuscripcion": fecha_alta,
             "proximaFechaCorte": proxima_corte,
             "proximaFechaPago": proxima_pago,
+            "precioSuscripcion": body.get("precioSuscripcion"),
             "adminEmail": admin_email,
             "adminNombre": body["adminNombre"],
             "adminApellido": body["adminApellido"],
@@ -187,7 +188,7 @@ def get_my_modulos_handler(event, context):
         db = get_platform_db()
         taller = db["talleres"].find_one(
             {"tenantId": tenant_id}, 
-            {"_id": 0, "modulos": 1, "estado": 1, "logoUrl": 1, "nombreComercial": 1, "direccion": 1, "adminTelefono": 1, "proximaFechaCorte": 1, "proximaFechaPago": 1}
+            {"_id": 0, "modulos": 1, "estado": 1, "logoUrl": 1, "nombreComercial": 1, "direccion": 1, "adminTelefono": 1, "proximaFechaCorte": 1, "proximaFechaPago": 1, "precioSuscripcion": 1}
         )
 
         if not taller:
@@ -208,7 +209,8 @@ def get_my_modulos_handler(event, context):
             "direccion": taller.get("direccion", "Dirección no especificada"),
             "adminTelefono": taller.get("adminTelefono", "Teléfono no especificado"),
             "proximaFechaCorte": p_corte,
-            "proximaFechaPago": p_pago
+            "proximaFechaPago": p_pago,
+            "precioSuscripcion": taller.get("precioSuscripcion")
         })
 
     except Exception as e:
@@ -236,6 +238,7 @@ def update_taller_handler(event, context):
             "adminApellido": body.get("adminApellido"),
             "adminTelefono": body.get("adminTelefono"),
             "estado": body.get("estado"),
+            "precioSuscripcion": body.get("precioSuscripcion"),
             "updatedAt": datetime.utcnow()
         }
 
