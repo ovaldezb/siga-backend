@@ -9,7 +9,8 @@ from src.shared.infrastructure.database import get_tenant_db
 from src.shared.utils.date_utils import iso_utc
 
 logger = Logger()
-client = boto3.client('cognito-idp')
+from botocore.config import Config
+client = boto3.client('cognito-idp', config=Config(connect_timeout=5, read_timeout=15))
 
 USER_POOL_ID = os.environ.get('COGNITO_USER_POOL_ID')
 GROUPS = ['SUPER_ADMIN', 'ADMIN', 'ASESOR', 'MECANICO', 'CAJERO']

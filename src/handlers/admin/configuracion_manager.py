@@ -66,8 +66,7 @@ def get_config_handler(event, context):
                     "Sucursales": ["ADMIN"],
                     "Reportes": ["ADMIN", "ASESOR"],
                     "Usuarios": ["ADMIN"],
-                    "Configuración": ["ADMIN"],
-                    "Taller": ["SUPER_ADMIN"]
+                    "Configuración": ["ADMIN"]
                 }
             }
             db["configuracion"].insert_one(config)
@@ -111,7 +110,7 @@ def update_config_handler(event, context):
         if 'id' in body:
             del body['id']
             
-        result = db["configuracion"].update_one(
+        db["configuracion"].update_one(
             {"tenant_id": tenant_id},
             {"$set": body},
             upsert=True

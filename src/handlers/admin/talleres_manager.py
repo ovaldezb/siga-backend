@@ -9,7 +9,9 @@ from src.shared.utils.date_utils import iso_utc
 from src.shared.infrastructure.database import get_platform_db, get_tenant_db
 
 logger = Logger()
-client = boto3.client('cognito-idp')
+from botocore.config import Config
+client = boto3.client('cognito-idp', config=Config(connect_timeout=5, read_timeout=15))
+s3_client = boto3.client('s3', config=Config(connect_timeout=5, read_timeout=15))
 USER_POOL_ID = os.environ.get('COGNITO_USER_POOL_ID')
 
 # @logger.inject_lambda_context
@@ -288,7 +290,7 @@ def upload_logo_handler(event, context):
             return create_response(400, f"Error al procesar la imagen: {str(img_err)}")
 
         # 3. Subir a S3
-        s3 = boto3.client('s3')
+        s3 = s3_client
         bucket = os.environ.get('S3_MEDIA_BUCKET')
         key = f"logotipos/logo_{tenant_id}.{ext}"
 

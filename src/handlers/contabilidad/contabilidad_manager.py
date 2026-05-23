@@ -332,7 +332,7 @@ def get_margen_ventas_handler(event, context):
 # instancias por mes viven en la collection `gastos_fijos_mes`.
 # ----------------------------------------------------------------------------
 
-def _parse_year_month(qp, default_now=True):
+def _parse_year_month(qp):
     """Devuelve (year, month) leyendo de query params; usa hoy si faltan o son inválidos."""
     now = datetime.utcnow()
     try:

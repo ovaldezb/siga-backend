@@ -539,7 +539,7 @@ def list_ordenes_handler(event, context):
         ordenes_list = list(ordenes_cursor)
         
         # Obtener datos de vehículos por lote para evitar lazy loading en el front
-        vehiculo_ids = list(set([o.get('vehiculo_id') for o in ordenes_list if o.get('vehiculo_id')]))
+        vehiculo_ids = list({o.get('vehiculo_id') for o in ordenes_list if o.get('vehiculo_id')})
         
         vehiculos_map = {}
         if vehiculo_ids:

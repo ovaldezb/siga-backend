@@ -9,6 +9,8 @@ from bson import ObjectId
 from src.shared.utils.date_utils import iso_utc
 
 logger = Logger()
+from botocore.config import Config
+s3_client = boto3.client('s3', config=Config(connect_timeout=5, read_timeout=15))
 
 def get_upload_url_handler(event, context):
     """
@@ -44,7 +46,7 @@ def get_upload_url_handler(event, context):
             short_tenant = tenant_id[:len(tenant_id)//2]
             logger.info(f"Tenant ID truncado de {len(tenant_id)} a {len(short_tenant)} caracteres")
 
-        s3 = boto3.client('s3')
+        s3 = s3_client
         bucket = os.environ.get('S3_EVIDENCIA_BUCKET')
         
         # Estructura REQUERIDA: {SHORT_TENANT}/{FOLIO}/{file_name}
@@ -117,7 +119,7 @@ def add_evidencia_handler(event, context):
             nueva_evidencia['createdAt'] = iso_utc(nueva_evidencia['createdAt'])
 
         # Generar URL de visualización para respuesta inmediata
-        s3 = boto3.client('s3')
+        s3 = s3_client
         bucket = os.environ.get('S3_EVIDENCIA_BUCKET')
         try:
             view_url = s3.generate_presigned_url(
@@ -156,7 +158,7 @@ def list_evidencia_handler(event, context):
             return create_response(404, "Orden no encontrada")
             
         evidencias = orden.get("evidencia", [])
-        s3 = boto3.client('s3')
+        s3 = s3_client
         bucket = os.environ.get('S3_EVIDENCIA_BUCKET')
         
         for ev in evidencias:
