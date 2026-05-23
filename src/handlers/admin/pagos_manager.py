@@ -189,9 +189,26 @@ def obtener_historial_pagos_handler(event, context):
         claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
         tenant_id = claims.get('custom:tenant_id')
 
-        # 2. Consultar base de datos
+        # 2. Leer query params para paginación
+        query_params = event.get('queryStringParameters') or {}
+        try:
+            page = int(query_params.get('page', 1))
+            if page < 1:
+                page = 1
+        except (ValueError, TypeError):
+            page = 1
+
+        limit = 5
+        skip = (page - 1) * limit
+
+        # 3. Consultar base de datos
         db = get_platform_db()
-        cursor = db["suscripciones_pagos"].find({"tallerTenantId": tenant_id}).sort("fechaPago", -1)
+        
+        # Contar total de registros para paginación
+        total = db["suscripciones_pagos"].count_documents({"tallerTenantId": tenant_id})
+        total_pages = max(1, (total + limit - 1) // limit)
+
+        cursor = db["suscripciones_pagos"].find({"tallerTenantId": tenant_id}).sort("fechaPago", -1).skip(skip).limit(limit)
 
         historial = []
         for doc in cursor:
@@ -205,7 +222,15 @@ def obtener_historial_pagos_handler(event, context):
                 "tokenClip": doc.get("folioClip")
             })
 
-        return create_response(200, "Historial obtenido exitosamente", historial)
+        paginated_data = {
+            "items": historial,
+            "total": total,
+            "page": page,
+            "limit": limit,
+            "totalPages": total_pages
+        }
+
+        return create_response(200, "Historial obtenido exitosamente", paginated_data)
 
     except Exception as e:
         logger.error(f"Error obteniendo historial: {str(e)}")
