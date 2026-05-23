@@ -100,10 +100,13 @@ def procesar_pago_suscripcion_handler(event, context):
         status = str(clip_response.get('status', '')).upper()
         logger.info(f"Status recibido de Clip: '{status}'")
         
+        status_detail = clip_response.get('status_detail') or {}
+        status_detail_msg = status_detail.get('message')
+        
         internal_status = 'pending'
         if status == 'APPROVED':
             internal_status = 'COMPLETADO'
-        elif status in ['DECLINED', 'CANCELLED', 'ERROR', 'FAILED']:
+        elif status in ['DECLINED', 'CANCELLED', 'ERROR', 'FAILED', 'REJECTED']:
             internal_status = 'FALLIDO'
 
         pago_doc = {
@@ -116,18 +119,29 @@ def procesar_pago_suscripcion_handler(event, context):
             "metodo": f"Tarjeta ({clip_response.get('payment_method', {}).get('brand', 'Visa').upper()} •••• {clip_response.get('payment_method', {}).get('last4', '0000')})",
             "fechaPago": datetime.utcnow()
         }
+        if status_detail_msg:
+            pago_doc["detalle"] = status_detail_msg
+
         db["suscripciones_pagos"].insert_one(pago_doc)
 
         if internal_status != 'COMPLETADO':
-            return create_response(400, "La transacción no fue aprobada por la pasarela de pagos.", {
-                "pago": {
-                    "id": str(pago_doc["_id"]),
-                    "concepto": concepto,
-                    "monto": float(monto),
-                    "fechaPago": iso_utc(pago_doc["fechaPago"]),
-                    "metodo": pago_doc["metodo"],
-                    "estado": pago_doc["estado"]
-                }
+            msg = "La transacción no fue aprobada por la pasarela de pagos."
+            if status_detail_msg:
+                msg = f"{msg} Detalle: {status_detail_msg}"
+            
+            pago_data = {
+                "id": str(pago_doc["_id"]),
+                "concepto": concepto,
+                "monto": float(monto),
+                "fechaPago": iso_utc(pago_doc["fechaPago"]),
+                "metodo": pago_doc["metodo"],
+                "estado": pago_doc["estado"]
+            }
+            if status_detail_msg:
+                pago_data["detalle"] = status_detail_msg
+
+            return create_response(400, msg, {
+                "pago": pago_data
             })
 
         # 5. Extender la vigencia del Taller (Platform DB -> talleres)
