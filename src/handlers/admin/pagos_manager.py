@@ -66,9 +66,6 @@ def procesar_pago_suscripcion_handler(event, context):
         credentials = f"{CLIP_API_KEY}:{CLIP_SECRET_KEY}"
         encoded_credentials = base64.b64encode(credentials.encode('utf-8')).decode('utf-8')
 
-        logger.info(f"Iniciando solicitud a Clip para taller {tenant_id}. Concepto: {concepto}, Monto: {monto}")
-        logger.info(f"Payload enviado a Clip: {json.dumps(clip_payload)}")
-
         # Realizar la solicitud HTTP directa a Clip
         req = urllib.request.Request(
             url="https://api.payclip.com/payments",
@@ -99,7 +96,7 @@ def procesar_pago_suscripcion_handler(event, context):
 
         # 4. Registrar el pago en la Colección 'suscripciones_pagos' (Platform DB)
         db = get_platform_db()
-        
+        logger.info(f"Clip Response: {json.dumps(clip_response)}")
         status = str(clip_response.get('status', '')).upper()
         logger.info(f"Status recibido de Clip: '{status}'")
         
