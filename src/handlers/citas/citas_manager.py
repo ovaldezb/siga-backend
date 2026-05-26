@@ -73,6 +73,21 @@ def list_citas_handler(event, context):
             
         if estado and estado != 'todos':
             filter_query["estado"] = estado
+        # Filtros adicionales para tabs (activas/canceladas) sin tocar el dropdown del front
+        estado_in = (query_params.get('estado_in') or '').strip()
+        estado_ne = (query_params.get('estado_ne') or '').strip()
+        if estado_in:
+            estados_list = [e.strip() for e in estado_in.split(',') if e.strip()]
+            if estados_list:
+                filter_query["estado"] = {"$in": estados_list}
+        if estado_ne:
+            estados_ne_list = [e.strip() for e in estado_ne.split(',') if e.strip()]
+            if estados_ne_list:
+                # Si ya hay un $in, mantenerlo y añadir $nin como condición adicional
+                if isinstance(filter_query.get("estado"), dict):
+                    filter_query["estado"]["$nin"] = estados_ne_list
+                else:
+                    filter_query["estado"] = {"$nin": estados_ne_list}
         if fecha_desde or fecha_hasta:
             filter_query["fecha"] = {}
             if fecha_desde:
@@ -81,9 +96,11 @@ def list_citas_handler(event, context):
                 filter_query["fecha"]["$lte"] = fecha_hasta
 
         total = db.citas.count_documents(filter_query)
+        # Orden: fecha y hora descendente (las últimas primero), con createdAt
+        # como desempate para citas registradas el mismo día/hora.
         citas = list(
             db.citas.find(filter_query)
-            .sort([("fecha", 1), ("horaInicio", 1)])
+            .sort([("fecha", -1), ("horaInicio", -1), ("createdAt", -1)])
             .skip(skip)
             .limit(limit)
         )
