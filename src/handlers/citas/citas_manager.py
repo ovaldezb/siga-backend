@@ -111,8 +111,22 @@ def list_citas_handler(event, context):
         veh_counts = {}
         pending_os_counts = {}
         pending_cot_counts = {}
+        cliente_phones = {}
 
         if cliente_ids:
+            # Teléfono del cliente para el botón WhatsApp en la fila.
+            cliente_object_ids = []
+            for cid in cliente_ids:
+                try:
+                    cliente_object_ids.append(ObjectId(cid))
+                except Exception:
+                    pass
+            if cliente_object_ids:
+                cli_docs = db.clientes.find(
+                    {"_id": {"$in": cliente_object_ids}},
+                    {"telefono": 1}
+                )
+                cliente_phones = {str(d["_id"]): (d.get("telefono") or "") for d in cli_docs}
             # Conteo de vehículos por cliente
             counts_agg = list(db["vehiculos"].aggregate([
                 {"$match": {"cliente_id": {"$in": cliente_ids}}},
@@ -145,6 +159,7 @@ def list_citas_handler(event, context):
             c['num_vehiculos'] = veh_counts.get(cid, 1) if cid else 1
             c['os_pendientes'] = pending_os_counts.get(cid, 0) if cid else 0
             c['cotizaciones_pendientes'] = pending_cot_counts.get(cid, 0) if cid else 0
+            c['cliente_telefono'] = cliente_phones.get(cid, '') if cid else ''
 
         return create_response(200, "Citas obtenidas", {
             "items": citas,
