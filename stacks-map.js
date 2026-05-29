@@ -3,51 +3,36 @@
 /**
  * stacks-map.js — Migración custom para serverless-plugin-split-stacks
  *
- * Problema: La configuración previa (perGroupFunction) dejó recursos en nested
- * stacks con nombres diferentes. Al cambiar estrategia, migrate-existing-resources
- * re-fija esos recursos a sus stacks viejos, saturando unos y dejando demasiados
- * en root.
+ * IMPORTANTE: Todos los recursos de API Gateway deben ir al MISMO nested stack.
+ * AWS::ApiGateway::Deployment tiene una dependencia implícita de CloudFormation
+ * con todos los AWS::ApiGateway::Method. Si están en stacks distintos se genera
+ * una dependencia circular que CloudFormation rechaza.
  *
- * Solución: force: true obliga al plugin a mover TODOS los recursos de API Gateway
- * a los nuevos nested stacks dedicados, ignorando su ubicación previa.
+ * force: true es necesario para mover recursos que estaban en nested stacks
+ * anteriores (de la era perGroupFunction), ignorando su ubicación previa.
+ * Para API Gateway es seguro — el endpoint URL no cambia.
  *
- * NOTA: force puede causar delete+recreate de recursos. Para API Gateway esto
- * es seguro (no hay pérdida de datos). El endpoint URL no cambia.
- *
- * Formato: (resource, logicalId) => { destination, force? } | null
+ * Formato: (resource, logicalId) => { destination, force?, allowSuffix? } | null
  */
 module.exports = (resource, logicalId) => {
   const type = resource.Type;
 
-  // AWS::ApiGateway::Resource — paths compartidos entre múltiples funciones.
-  // perFunction los deja en root; los forzamos a un nested stack dedicado.
-  if (type === 'AWS::ApiGateway::Resource') {
-    return { destination: 'ApiGatewayResources', force: true, allowSuffix: true };
-  }
+  // Todos los tipos de API Gateway van al MISMO stack para evitar dependencias
+  // circulares. El Deployment depende implícitamente de los Methods/Resources.
+  const apiGatewayTypes = [
+    'AWS::ApiGateway::Resource',
+    'AWS::ApiGateway::Method',
+    'AWS::ApiGateway::Deployment',
+    'AWS::ApiGateway::Stage',
+    'AWS::ApiGateway::Authorizer',
+    'AWS::ApiGateway::GatewayResponse',
+    'AWS::ApiGateway::BasePathMapping',
+    'AWS::ApiGateway::UsagePlan',
+    'AWS::ApiGateway::ApiKey',
+  ];
 
-  // AWS::ApiGateway::Method — incluye OPTIONS (CORS) compartidos y los que
-  // perFunction no pudo asignar a una sola función.
-  if (type === 'AWS::ApiGateway::Method') {
-    return { destination: 'ApiGatewayMethods', force: true, allowSuffix: true };
-  }
-
-  // AWS::ApiGateway::Deployment y Stage — siempre generados en root.
-  if (type === 'AWS::ApiGateway::Deployment') {
-    return { destination: 'ApiGatewayDeployment', force: true };
-  }
-
-  if (type === 'AWS::ApiGateway::Stage') {
-    return { destination: 'ApiGatewayDeployment', force: true };
-  }
-
-  // Authorizer de Cognito en API Gateway.
-  if (type === 'AWS::ApiGateway::Authorizer') {
-    return { destination: 'ApiGatewayDeployment', force: true };
-  }
-
-  // AWS::ApiGateway::GatewayResponse — respuestas de error globales (4xx/5xx CORS).
-  if (type === 'AWS::ApiGateway::GatewayResponse') {
-    return { destination: 'ApiGatewayDeployment', force: true };
+  if (apiGatewayTypes.includes(type)) {
+    return { destination: 'ApiGateway', force: true, allowSuffix: true };
   }
 
   // Dejar que perFunction maneje el resto (Lambdas, LogGroups, Permissions, etc.)
