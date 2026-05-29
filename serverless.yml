@@ -7,7 +7,7 @@ provider:
   stage: ${opt:stage, 'dev'}
   region: ${opt:region, 'us-east-1'}
   memorySize: 256
-  timeout: 30
+  timeout: 29
   versionFunctions: false
   iam:
     role:
