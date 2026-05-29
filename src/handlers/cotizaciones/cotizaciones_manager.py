@@ -1,19 +1,27 @@
 """
-Cotizaciones independientes (no atadas a una Orden de Servicio).
+Cotizaciones — dos modalidades en la misma colección:
 
-Caso de uso típico: empresas/flotillas piden cotización formal antes de llevar
-el auto. Cuando el cliente acepta y trae el vehículo, se convierte la cotización
-en una OS preservando cliente, vehículo, puntos e items.
+  • tipo='PLANTILLA' → catálogo reusable por marca/modelo/años/servicio
+    (ej. "Aveo 2007-2020 afinación"). No requiere cliente. Folio TPL-####.
+    Se inyecta desde el botón "templates" de la OS.
+  • tipo='CLIENTE'  → cotización formal a un cliente (empresa/flotilla) antes
+    de que el auto entre. Folio COT-####. Convertible a OS.
 
-Schema (colección `cotizaciones`):
-    _id, tenant_id, sucursal_id, folio (COT-YYYYMMDD-####),
-    status: BORRADOR | ENVIADA | ACEPTADA | RECHAZADA | CONVERTIDA | EXPIRADA,
-    cliente_snapshot, vehiculo_snapshot, puntosArreglar,
+Schema:
+    _id, tenant_id, sucursal_id (opcional para PLANTILLA),
+    tipo: 'PLANTILLA' | 'CLIENTE',
+    folio (TPL-AAAAMMDD-#### | COT-AAAAMMDD-####),
+    nombre               (PLANTILLA: requerido — "Aveo 2007-2020 afinación"),
+    marca, modelo,
+    anio_desde, anio_hasta,
+    tipo_servicio        (PLANTILLA: afinación | frenos | suspensión | …),
+    status               (CLIENTE: BORRADOR|ENVIADA|ACEPTADA|RECHAZADA|CONVERTIDA|EXPIRADA),
+    cliente_snapshot     (CLIENTE),
+    vehiculo_snapshot, puntosArreglar,
     subtotal, iva, total,
-    observaciones, vigencia_dias, vigencia_hasta,
-    cotizacion_origen_id  (cuando se clonó),
-    os_destino_id          (cuando se convirtió),
-    createdAt, updatedAt, created_by
+    observaciones, vigencia_dias, vigencia_hasta,  (CLIENTE)
+    cotizacion_origen_id, os_destino_id,           (CLIENTE)
+    createdAt, updatedAt, created_by.
 """
 import json
 from datetime import datetime, timedelta
@@ -38,19 +46,31 @@ logger = Logger()
 ALLOWED_STATUS = {
     "BORRADOR", "ENVIADA", "ACEPTADA", "RECHAZADA", "CONVERTIDA", "EXPIRADA",
 }
+ALLOWED_TIPOS = {"PLANTILLA", "CLIENTE"}
 
 
-def _next_folio_cotizacion(db, sucursal_id: str) -> str:
-    """Folio atómico COT-YYYYMMDD-#### scoped por sucursal."""
+def _next_folio_cotizacion(db, tipo: str, sucursal_id: str | None) -> str:
+    """Folio atómico:
+        CLIENTE   → COT-YYYYMMDD-####  scoped por sucursal
+        PLANTILLA → TPL-YYYYMMDD-####  scoped por tenant (sucursal='*')
+    """
+    if tipo == "PLANTILLA":
+        prefix = "TPL"
+        scope_sucursal = "*"
+        folio_tipo = "tpl"
+    else:
+        prefix = "COT"
+        scope_sucursal = sucursal_id or "*"
+        folio_tipo = "cot"
     res = db.folios.find_one_and_update(
-        {"tipo": "cot", "sucursal_id": sucursal_id},
+        {"tipo": folio_tipo, "sucursal_id": scope_sucursal},
         {"$inc": {"secuencia": 1}},
         upsert=True,
         return_document=ReturnDocument.AFTER,
     )
     seq = res.get("secuencia", 1)
     date_str = datetime.utcnow().strftime("%Y%m%d")
-    return f"COT-{date_str}-{str(seq).zfill(4)}"
+    return f"{prefix}-{date_str}-{str(seq).zfill(4)}"
 
 
 def _ensure_folio_index(db) -> None:
@@ -100,8 +120,31 @@ def list_cotizaciones_handler(event, context):
             return create_response(403, scope_err)
 
         query: dict = {"tenant_id": tenant_id}
-        if sucursales_filter is not None:
-            query["sucursal_id"] = {"$in": sucursales_filter} if len(sucursales_filter) > 1 else sucursales_filter[0]
+
+        # Tipo: filtro opcional. Plantillas son tenant-wide; cotizaciones a cliente
+        # respetan el scope de sucursal del usuario.
+        tipo = (qs.get("tipo") or "").upper() or None
+        if tipo:
+            if tipo not in ALLOWED_TIPOS:
+                return create_response(400, f"tipo inválido. Permitidos: {sorted(ALLOWED_TIPOS)}")
+            query["tipo"] = tipo
+
+        # El scope de sucursal solo aplica a cotizaciones tipo=CLIENTE. Plantillas
+        # son visibles a todo el tenant — si la query es solo PLANTILLA, no
+        # filtramos por sucursal; si es CLIENTE o sin tipo, sí.
+        if tipo != "PLANTILLA" and sucursales_filter is not None:
+            sucursal_clause = (
+                {"$in": sucursales_filter} if len(sucursales_filter) > 1 else sucursales_filter[0]
+            )
+            if tipo is None:
+                # Sin filtro de tipo: mostrar plantillas (sin sucursal_id o sucursal_id=null)
+                # MÁS las cotizaciones de cliente dentro del scope.
+                query["$or"] = [
+                    {"tipo": "PLANTILLA"},
+                    {"tipo": "CLIENTE", "sucursal_id": sucursal_clause},
+                ]
+            else:
+                query["sucursal_id"] = sucursal_clause
 
         status = qs.get("status")
         if status:
@@ -151,26 +194,36 @@ def create_cotizacion_handler(event, context):
             return create_response(403, "No se encontró un tenantId asociado.")
 
         body = json.loads(event.get("body") or "{}")
+        tipo = (body.get("tipo") or "CLIENTE").upper()
+        if tipo not in ALLOWED_TIPOS:
+            return create_response(400, f"tipo inválido. Permitidos: {sorted(ALLOWED_TIPOS)}")
+
         sucursal_id = body.get("sucursalId") or body.get("sucursal_id")
-        if not sucursal_id:
-            return create_response(400, "El campo 'sucursalId' es obligatorio.")
+        if tipo == "CLIENTE" and not sucursal_id:
+            return create_response(400, "El campo 'sucursalId' es obligatorio para cotizaciones a cliente.")
 
         db = get_tenant_db(tenant_id)
 
-        # Validar scope de sucursal
-        sucursales_filter, scope_err = resolve_sucursal_scope(claims, db, sucursal_id)
-        if scope_err:
-            return create_response(403, scope_err)
+        # Scope de sucursal solo aplica al modo CLIENTE.
+        if tipo == "CLIENTE":
+            _, scope_err = resolve_sucursal_scope(claims, db, sucursal_id)
+            if scope_err:
+                return create_response(403, scope_err)
 
         _ensure_folio_index(db)
-        folio = _next_folio_cotizacion(db, sucursal_id)
+        folio = _next_folio_cotizacion(db, tipo, sucursal_id)
 
         cliente_snapshot = body.get("cliente_snapshot") or {}
         vehiculo_snapshot = body.get("vehiculo_snapshot") or {}
         puntos = body.get("puntosArreglar") or []
+        nombre = (body.get("nombre") or "").strip()
 
-        if not cliente_snapshot or not (cliente_snapshot.get("nombre") or cliente_snapshot.get("razon_social")):
-            return create_response(400, "El cliente (nombre o razón social) es obligatorio.")
+        if tipo == "PLANTILLA":
+            if not nombre:
+                return create_response(400, "El campo 'nombre' es obligatorio para plantillas (ej. 'Aveo 2007-2020 afinación').")
+        else:
+            if not cliente_snapshot or not (cliente_snapshot.get("nombre") or cliente_snapshot.get("razon_social")):
+                return create_response(400, "El cliente (nombre o razón social) es obligatorio.")
 
         totales = _calcular_totales_orden(puntos)
         now = datetime.utcnow()
@@ -178,28 +231,38 @@ def create_cotizacion_handler(event, context):
 
         doc = {
             "tenant_id": tenant_id,
-            "sucursal_id": sucursal_id,
+            "tipo": tipo,
+            "sucursal_id": sucursal_id if tipo == "CLIENTE" else None,
             "folio": folio,
-            "status": (body.get("status") or "BORRADOR").upper(),
-            "cliente_snapshot": cliente_snapshot,
+            "nombre": nombre or None,
+            # Metadata vehicular (para plantillas; opcional en CLIENTE).
+            "marca": (body.get("marca") or "").strip() or None,
+            "modelo": (body.get("modelo") or "").strip() or None,
+            "anio_desde": body.get("anio_desde"),
+            "anio_hasta": body.get("anio_hasta"),
+            "tipo_servicio": (body.get("tipo_servicio") or "").strip() or None,
+            "cliente_snapshot": cliente_snapshot if tipo == "CLIENTE" else {},
             "vehiculo_snapshot": vehiculo_snapshot,
             "puntosArreglar": puntos,
             "subtotal": totales["subtotal"],
             "iva": totales["iva"],
             "total": totales["total"],
             "observaciones": body.get("observaciones", ""),
-            "vigencia_dias": vigencia_dias,
-            "vigencia_hasta": _vigencia_hasta(now, vigencia_dias),
-            "cotizacion_origen_id": body.get("cotizacion_origen_id"),
-            "os_destino_id": None,
             "kilometraje": body.get("kilometraje"),
+            "cotizacion_origen_id": body.get("cotizacion_origen_id"),
             "createdAt": now,
             "updatedAt": now,
             "created_by": claims.get("email") or claims.get("sub"),
+            "created_by_nombre": claims.get("name") or claims.get("given_name"),
         }
-
-        if doc["status"] not in ALLOWED_STATUS:
-            return create_response(400, f"Status inválido. Permitidos: {sorted(ALLOWED_STATUS)}")
+        # Campos exclusivos del modo CLIENTE.
+        if tipo == "CLIENTE":
+            doc["status"] = (body.get("status") or "BORRADOR").upper()
+            doc["vigencia_dias"] = vigencia_dias
+            doc["vigencia_hasta"] = _vigencia_hasta(now, vigencia_dias)
+            doc["os_destino_id"] = None
+            if doc["status"] not in ALLOWED_STATUS:
+                return create_response(400, f"Status inválido. Permitidos: {sorted(ALLOWED_STATUS)}")
 
         res = db["cotizaciones"].insert_one(doc)
         doc["_id"] = res.inserted_id
@@ -233,20 +296,27 @@ def update_cotizacion_handler(event, context):
         if actual.get("status") == "CONVERTIDA":
             return create_response(409, "La cotización ya fue convertida a OS y no se puede modificar.")
 
-        # Campos editables (whitelist — folio y tenant_id no se tocan).
+        tipo_actual = (actual.get("tipo") or "CLIENTE").upper()
+
+        # Campos editables (whitelist — folio, tenant_id y tipo no se tocan).
         editable = {}
         for fld in (
             "cliente_snapshot", "vehiculo_snapshot", "puntosArreglar",
-            "observaciones", "vigencia_dias", "kilometraje",
+            "observaciones", "kilometraje",
+            "nombre", "marca", "modelo", "anio_desde", "anio_hasta", "tipo_servicio",
         ):
             if fld in body:
                 editable[fld] = body[fld]
 
-        if "status" in body:
-            new_status = (body["status"] or "").upper()
-            if new_status not in ALLOWED_STATUS:
-                return create_response(400, f"Status inválido. Permitidos: {sorted(ALLOWED_STATUS)}")
-            editable["status"] = new_status
+        # vigencia y status solo aplican al modo CLIENTE
+        if tipo_actual == "CLIENTE":
+            if "vigencia_dias" in body:
+                editable["vigencia_dias"] = body["vigencia_dias"]
+            if "status" in body:
+                new_status = (body["status"] or "").upper()
+                if new_status not in ALLOWED_STATUS:
+                    return create_response(400, f"Status inválido. Permitidos: {sorted(ALLOWED_STATUS)}")
+                editable["status"] = new_status
 
         if "puntosArreglar" in editable:
             totales = _calcular_totales_orden(editable["puntosArreglar"])
@@ -304,8 +374,12 @@ def delete_cotizacion_handler(event, context):
 def convertir_a_os_handler(event, context):
     """Crea una nueva OS copiando cliente, vehículo y puntos de la cotización.
 
-    Marca la cotización como CONVERTIDA y guarda os_destino_id para trazabilidad.
-    No registra inventario ni cobros — eso ocurre en el flujo normal de OS.
+    Modo CLIENTE: reusa cliente_snapshot/vehiculo_snapshot/sucursal_id de la cotización.
+    Modo PLANTILLA: requiere cliente_snapshot, vehiculo_snapshot y sucursalId en el body
+    (la plantilla aporta solo los puntosArreglar).
+
+    Marca la cotización CLIENTE como CONVERTIDA y guarda os_destino_id. Una plantilla
+    no se "consume" — puede convertirse N veces, una por cliente que la pida.
     """
     try:
         claims = get_claims(event)
@@ -318,18 +392,34 @@ def convertir_a_os_handler(event, context):
         if err:
             return create_response(400, err)
 
+        body = json.loads(event.get("body") or "{}")
+
         db = get_tenant_db(tenant_id)
         cot = db["cotizaciones"].find_one({"_id": oid, "tenant_id": tenant_id})
         if not cot:
             return create_response(404, "Cotización no encontrada")
-        if cot.get("status") == "CONVERTIDA" and cot.get("os_destino_id"):
+
+        tipo = (cot.get("tipo") or "CLIENTE").upper()
+
+        if tipo == "CLIENTE" and cot.get("status") == "CONVERTIDA" and cot.get("os_destino_id"):
             return create_response(409, "La cotización ya fue convertida.", {
                 "os_id": cot.get("os_destino_id"),
             })
 
-        sucursal_id = cot.get("sucursal_id")
-        if not sucursal_id:
-            return create_response(400, "La cotización no tiene sucursal_id; no se puede convertir.")
+        if tipo == "PLANTILLA":
+            sucursal_id = body.get("sucursalId") or body.get("sucursal_id")
+            cliente_snapshot = body.get("cliente_snapshot") or {}
+            vehiculo_snapshot = body.get("vehiculo_snapshot") or cot.get("vehiculo_snapshot") or {}
+            if not sucursal_id:
+                return create_response(400, "Se requiere sucursalId para convertir una plantilla.")
+            if not (cliente_snapshot.get("nombre") or cliente_snapshot.get("razon_social")):
+                return create_response(400, "Se requiere cliente_snapshot para convertir una plantilla.")
+        else:
+            sucursal_id = cot.get("sucursal_id")
+            cliente_snapshot = cot.get("cliente_snapshot") or {}
+            vehiculo_snapshot = cot.get("vehiculo_snapshot") or {}
+            if not sucursal_id:
+                return create_response(400, "La cotización no tiene sucursal_id; no se puede convertir.")
 
         # Folio OS server-side
         from src.handlers.admin.folios_manager import _get_next_folio_internal
@@ -344,13 +434,13 @@ def convertir_a_os_handler(event, context):
             "sucursal_id": sucursal_id,
             "folio": folio_os,
             "estado": "RECEPCION",
-            "cliente_snapshot": cot.get("cliente_snapshot") or {},
-            "vehiculo_snapshot": cot.get("vehiculo_snapshot") or {},
+            "cliente_snapshot": cliente_snapshot,
+            "vehiculo_snapshot": vehiculo_snapshot,
             "puntosArreglar": puntos,
             "subtotal": totales["subtotal"],
             "iva": totales["iva"],
             "total": totales["total"],
-            "kilometraje": cot.get("kilometraje"),
+            "kilometraje": cot.get("kilometraje") or body.get("kilometraje"),
             "cotizacion_origen_id": str(cot["_id"]),
             "createdAt": now,
             "updatedAt": now,
@@ -358,20 +448,24 @@ def convertir_a_os_handler(event, context):
         }
         os_res = db["ordenes_servicio"].insert_one(os_doc)
 
-        db["cotizaciones"].update_one(
-            {"_id": oid},
-            {"$set": {
-                "status": "CONVERTIDA",
-                "os_destino_id": str(os_res.inserted_id),
-                "os_destino_folio": folio_os,
-                "updatedAt": now,
-            }},
-        )
+        # Solo las cotizaciones a CLIENTE se "consumen" al convertirse. Una plantilla
+        # se reusa N veces — no la marcamos como CONVERTIDA.
+        if tipo == "CLIENTE":
+            db["cotizaciones"].update_one(
+                {"_id": oid},
+                {"$set": {
+                    "status": "CONVERTIDA",
+                    "os_destino_id": str(os_res.inserted_id),
+                    "os_destino_folio": folio_os,
+                    "updatedAt": now,
+                }},
+            )
 
         return create_response(201, "Cotización convertida a Orden de Servicio", {
             "os_id": str(os_res.inserted_id),
             "os_folio": folio_os,
             "cotizacion_id": str(cot["_id"]),
+            "tipo_origen": tipo,
         })
     except Exception as e:
         return handle_exception(e, event)
