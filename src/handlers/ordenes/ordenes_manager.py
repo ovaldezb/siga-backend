@@ -474,7 +474,7 @@ def create_orden_handler(event, context):
         # ROLLBACK: Solo si el vehículo fue creado nuevo en esta misma operación
         if vehiculo_es_nuevo and vehiculo_id:
             try:
-                db = get_tenant_dbget_claims(event).get('custom:tenant_id'))
+                db = get_tenant_db(get_claims(event).get('custom:tenant_id'))
                 db["vehiculos"].delete_one({"_id": vehiculo_id})
                 logger.warning(f"ROLLBACK: Vehículo nuevo {vehiculo_id} eliminado por error en creación de OS")
             except Exception as rb_error:
