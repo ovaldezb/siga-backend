@@ -3,7 +3,7 @@ from datetime import datetime
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.infrastructure.database import get_tenant_db
-from src.shared.utils.auth_utils import try_parse_id, resolve_sucursal_scope, is_admin
+from src.shared.utils.auth_utils import try_parse_id, resolve_sucursal_scope, is_admin, get_claims
 from bson import ObjectId
 from src.shared.utils.date_utils import iso_utc
 
@@ -11,7 +11,7 @@ logger = Logger()
 
 def list_items_handler(event, context):
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
 
         query_params = event.get('queryStringParameters') or {}
@@ -69,7 +69,7 @@ def list_items_handler(event, context):
 
 def create_item_handler(event, context):
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         
         body = json.loads(event.get('body', '{}'))
@@ -168,7 +168,7 @@ def create_item_handler(event, context):
 
 def get_item_handler(event, context):
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         if not tenant_id:
             return create_response(403, "No se encontró un tenantId asociado.")
@@ -206,7 +206,7 @@ def get_item_handler(event, context):
 def update_item_handler(event, context):
     """PUT /items/{id} — Actualiza datos del item (no incluye stock). Scoped por sucursal activa."""
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         if not tenant_id:
             return create_response(403, "No se encontró un tenantId asociado.")
@@ -277,7 +277,7 @@ def update_item_handler(event, context):
 
 def delete_item_handler(event, context):
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         if not tenant_id:
             return create_response(403, "No se encontró un tenantId asociado.")
@@ -324,7 +324,7 @@ def delete_item_handler(event, context):
 
 def update_stock_handler(event, context):
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         if not tenant_id:
             return create_response(403, "No se encontró un tenantId asociado.")

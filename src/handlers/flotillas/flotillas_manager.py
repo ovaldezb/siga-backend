@@ -13,7 +13,7 @@ from bson import ObjectId
 from aws_lambda_powertools import Logger
 
 from src.shared.utils.response_handler import create_response, handle_exception
-from src.shared.utils.auth_utils import parse_object_id
+from src.shared.utils.auth_utils import parse_object_id, get_claims
 from src.shared.infrastructure.database import get_tenant_db
 from src.shared.utils.indexes import ensure_indexes
 from src.shared.utils.date_utils import iso_utc
@@ -36,7 +36,7 @@ def _serialize(doc: dict) -> dict:
 
 def list_flotillas_handler(event, context):
     try:
-        claims = event.get("requestContext", {}).get("authorizer", {}).get("claims", {})
+        claims =get_claims(event)
         tenant_id = claims.get("custom:tenant_id")
         if not tenant_id:
             return create_response(403, "No tenantId")
@@ -65,7 +65,7 @@ def list_flotillas_handler(event, context):
 def get_flotilla_handler(event, context):
     """Devuelve la flotilla + resumen agregado (clientes, vehículos, OS, pipeline)."""
     try:
-        claims = event.get("requestContext", {}).get("authorizer", {}).get("claims", {})
+        claims =get_claims(event)
         tenant_id = claims.get("custom:tenant_id")
         if not tenant_id:
             return create_response(403, "No tenantId")
@@ -153,7 +153,7 @@ def get_flotilla_handler(event, context):
 
 def create_flotilla_handler(event, context):
     try:
-        claims = event.get("requestContext", {}).get("authorizer", {}).get("claims", {})
+        claims =get_claims(event)
         tenant_id = claims.get("custom:tenant_id")
         if not tenant_id:
             return create_response(403, "No tenantId")
@@ -178,7 +178,7 @@ def create_flotilla_handler(event, context):
 
 def update_flotilla_handler(event, context):
     try:
-        claims = event.get("requestContext", {}).get("authorizer", {}).get("claims", {})
+        claims =get_claims(event)
         tenant_id = claims.get("custom:tenant_id")
         if not tenant_id:
             return create_response(403, "No tenantId")
@@ -212,7 +212,7 @@ def delete_flotilla_handler(event, context):
     """Borra la flotilla. Bloquea si tiene clientes asignados — el usuario debe
     desasignarlos primero para evitar referencias colgadas."""
     try:
-        claims = event.get("requestContext", {}).get("authorizer", {}).get("claims", {})
+        claims =get_claims(event)
         tenant_id = claims.get("custom:tenant_id")
         if not tenant_id:
             return create_response(403, "No tenantId")

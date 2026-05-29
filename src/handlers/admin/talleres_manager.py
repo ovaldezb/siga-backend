@@ -1,3 +1,4 @@
+from src.shared.utils.auth_utils import get_claims
 import os
 import json
 import uuid
@@ -177,7 +178,7 @@ def get_my_modulos_handler(event, context):
     Obtiene los módulos habilitados para el taller del usuario logueado.
     """
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
 
         if not tenant_id:

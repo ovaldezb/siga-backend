@@ -1,3 +1,4 @@
+from src.shared.utils.auth_utils import get_claims
 import json
 from datetime import datetime
 from aws_lambda_powertools import Logger
@@ -31,7 +32,7 @@ def _ensure_caja_indexes(db, tenant_id):
 
 def get_active_caja_handler(event, context):
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         
         query_params = event.get('queryStringParameters') or {}
@@ -58,7 +59,7 @@ def get_active_caja_handler(event, context):
 
 def abrir_caja_handler(event, context):
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         usuario_id = claims.get('sub')
         usuario_nombre = claims.get('name') or claims.get('email')
@@ -110,7 +111,7 @@ def abrir_caja_handler(event, context):
 
 def registrar_movimiento_handler(event, context):
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         usuario_id = claims.get('sub')
         usuario_nombre = claims.get('name') or claims.get('email')
@@ -186,7 +187,7 @@ def cerrar_caja_handler(event, context):
     Persiste un sub-objeto `arqueo` con el cuadre cuenta-vs-sistema para auditoría.
     """
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         usuario_id = claims.get('sub')
         usuario_nombre = claims.get('name') or claims.get('email')
@@ -281,7 +282,7 @@ def list_arqueos_handler(event, context):
     días tuvieron diferencia (faltante/sobrante) para la vista de auditoría.
     """
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         if not tenant_id:
             return create_response(403, "No se encontró un tenantId asociado.")

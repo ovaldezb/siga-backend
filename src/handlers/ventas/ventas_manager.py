@@ -2,7 +2,7 @@ import json
 from datetime import datetime
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
-from src.shared.utils.auth_utils import try_parse_id
+from src.shared.utils.auth_utils import try_parse_id, get_claims
 from src.shared.infrastructure.database import get_tenant_db, MongoDBConnection
 from src.shared.utils.indexes import ensure_indexes
 from src.handlers.admin.folios_manager import _get_next_folio_internal
@@ -25,7 +25,7 @@ class StockInsuficienteError(Exception):
 def create_venta_handler(event, context):
     """POST /ventas — Registra una venta, descuenta inventario y liga OS."""
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         if not tenant_id:
             return create_response(403, "No autorizado")
@@ -460,7 +460,7 @@ def create_venta_handler(event, context):
 def registrar_abono_handler(event, context):
     """POST /ventas/{id}/pagos — Registra un abono contra el saldo pendiente (CxC)."""
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         if not tenant_id:
             return create_response(403, "No autorizado")
@@ -574,7 +574,7 @@ def registrar_abono_handler(event, context):
 def list_cxc_handler(event, context):
     """GET /ventas/cxc — Lista ventas con saldo pendiente (cuentas por cobrar)."""
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         if not tenant_id:
             return create_response(403, "No autorizado")
@@ -614,7 +614,7 @@ def list_cxc_handler(event, context):
 def list_ventas_handler(event, context):
     """GET /ventas — Lista el historial de ventas (POS)."""
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         if not tenant_id: return create_response(403, "No autorizado")
 

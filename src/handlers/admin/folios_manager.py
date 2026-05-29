@@ -1,3 +1,4 @@
+from src.shared.utils.auth_utils import get_claims
 import json
 from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.infrastructure.database import get_tenant_db
@@ -29,7 +30,7 @@ def _get_next_folio_internal(tenant_id, tipo, sucursal_id):
 
 def get_next_folio_handler(event, context):
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         tipo = event.get('pathParameters', {}).get('tipo', 'os')
         

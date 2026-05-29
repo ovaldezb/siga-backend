@@ -5,7 +5,7 @@ from datetime import datetime
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.infrastructure.database import get_tenant_db, MongoDBConnection
-from src.shared.utils.auth_utils import try_parse_id
+from src.shared.utils.auth_utils import try_parse_id, get_claims
 from src.shared.utils.date_utils import iso_utc
 from src.shared.utils.os_events import (
     append_os_event,
@@ -188,7 +188,7 @@ def create_orden_handler(event, context):
     vehiculo_id = None
     vehiculo_es_nuevo = False
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
 
         tenant_id = claims.get('custom:tenant_id')
 
@@ -474,7 +474,7 @@ def create_orden_handler(event, context):
         # ROLLBACK: Solo si el vehículo fue creado nuevo en esta misma operación
         if vehiculo_es_nuevo and vehiculo_id:
             try:
-                db = get_tenant_db(event.get('requestContext', {}).get('authorizer', {}).get('claims', {}).get('custom:tenant_id'))
+                db = get_tenant_dbget_claims(event).get('custom:tenant_id'))
                 db["vehiculos"].delete_one({"_id": vehiculo_id})
                 logger.warning(f"ROLLBACK: Vehículo nuevo {vehiculo_id} eliminado por error en creación de OS")
             except Exception as rb_error:
@@ -484,7 +484,7 @@ def create_orden_handler(event, context):
 @logger.inject_lambda_context
 def list_ordenes_handler(event, context):
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         
         query_params = event.get('queryStringParameters') or {}
@@ -657,7 +657,7 @@ def list_ordenes_handler(event, context):
 def get_orden_handler(event, context):
     """GET /ordenes/{id} — Detalle de orden con vehículo enriquecido."""
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         if not tenant_id:
             return create_response(403, "No se encontró un tenantId asociado.")
@@ -727,7 +727,7 @@ def list_sugerencias_pendientes_handler(event, context):
     items nunca tocados en OS abandonadas.
     """
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         if not tenant_id:
             return create_response(403, "No se encontró un tenantId asociado.")
@@ -812,7 +812,7 @@ def list_sugerencias_pendientes_handler(event, context):
 @logger.inject_lambda_context
 def update_orden_handler(event, context):
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         
         if not tenant_id:
@@ -968,7 +968,7 @@ def list_orden_events_handler(event, context):
     hacen update/delete; este endpoint solo lee.
     """
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         if not tenant_id:
             return create_response(403, "No se encontró un tenantId asociado.")

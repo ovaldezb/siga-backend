@@ -1,3 +1,4 @@
+from src.shared.utils.auth_utils import get_claims
 import json
 from bson import ObjectId
 from datetime import datetime
@@ -11,7 +12,7 @@ logger = Logger()
 @logger.inject_lambda_context
 def create_traspaso_handler(event, context):
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         usuario_id = claims.get('sub')
         usuario_nombre = claims.get('name', 'Usuario Desconocido')
@@ -100,7 +101,7 @@ def create_traspaso_handler(event, context):
 @logger.inject_lambda_context
 def list_traspasos_handler(event, context):
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
 
         query_params = event.get('queryStringParameters') or {}
@@ -140,7 +141,7 @@ def list_traspasos_handler(event, context):
 @logger.inject_lambda_context
 def receive_traspaso_handler(event, context):
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         usuario_id = claims.get('sub')
         usuario_nombre = claims.get('name', 'Usuario Desconocido')

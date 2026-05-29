@@ -4,7 +4,7 @@ import boto3
 from typing import Dict, Any, List
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
-from src.shared.utils.auth_utils import parse_object_id
+from src.shared.utils.auth_utils import parse_object_id, get_claims
 from src.shared.infrastructure.database import get_tenant_db
 from src.shared.utils.date_utils import iso_utc
 
@@ -80,7 +80,7 @@ def get_sucursales_map(tenant_db):
 @logger.inject_lambda_context
 def list_users_handler(event, context):
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         
         tenant_db = get_tenant_db(tenant_id)
@@ -106,7 +106,7 @@ def list_users_handler(event, context):
 @logger.inject_lambda_context
 def create_user_handler(event, context):
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         
         if not tenant_id:
@@ -171,7 +171,7 @@ def create_user_handler(event, context):
 @logger.inject_lambda_context
 def update_user_handler(event, context):
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         user_id = event['pathParameters']['id']
         body = json.loads(event.get('body', '{}'))
@@ -229,7 +229,7 @@ def update_user_handler(event, context):
 @logger.inject_lambda_context
 def get_me_handler(event, context):
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         email = claims.get('email')
         

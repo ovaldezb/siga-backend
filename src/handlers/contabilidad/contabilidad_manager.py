@@ -9,7 +9,7 @@ from bson import ObjectId
 from bson.errors import InvalidId
 
 from src.shared.utils.response_handler import create_response, handle_exception
-from src.shared.utils.auth_utils import is_admin
+from src.shared.utils.auth_utils import is_admin, get_claims
 from src.shared.infrastructure.database import get_tenant_db
 from src.shared.utils.date_utils import iso_utc
 
@@ -17,7 +17,7 @@ logger = Logger()
 
 
 def _get_claims(event):
-    return event.get('requestContext', {}).get('authorizer', {}).get('claims', {}) or {}
+    returnget_claims(event)
 
 
 def _parse_date(s, default=None):

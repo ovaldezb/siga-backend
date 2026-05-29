@@ -3,13 +3,19 @@ from bson import ObjectId
 from bson.errors import InvalidId
 
 
-def get_tenant_id(event) -> Optional[str]:
-    claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
-    return claims.get('custom:tenant_id')
-
-
 def get_claims(event) -> Dict[str, Any]:
-    return event.get('requestContext', {}).get('authorizer', {}).get('claims', {}) or {}
+    if not event:
+        return {}
+    request_context = event.get('requestContext', {})
+    authorizer = request_context.get('authorizer', {}) or {}
+    if 'jwt' in authorizer:
+        return authorizer.get('jwt', {}).get('claims', {}) or {}
+    return authorizer.get('claims', {}) or {}
+
+
+def get_tenant_id(event) -> Optional[str]:
+    claims = get_claims(event)
+    return claims.get('custom:tenant_id')
 
 
 def parse_object_id(value: str) -> Tuple[Optional[ObjectId], Optional[str]]:

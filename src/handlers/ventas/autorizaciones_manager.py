@@ -1,3 +1,4 @@
+from src.shared.utils.auth_utils import get_claims
 import json
 from bson import ObjectId
 from datetime import datetime
@@ -11,7 +12,7 @@ logger = Logger()
 @logger.inject_lambda_context
 def create_autorizacion_handler(event, context):
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         solicitante_id = claims.get('sub')
         solicitante_nombre = claims.get('name', 'Usuario Desconocido')
@@ -48,7 +49,7 @@ def create_autorizacion_handler(event, context):
 @logger.inject_lambda_context
 def list_autorizaciones_handler(event, context):
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
 
         query_params = event.get('queryStringParameters') or {}
@@ -78,7 +79,7 @@ def list_autorizaciones_handler(event, context):
 @logger.inject_lambda_context
 def update_autorizacion_handler(event, context):
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         aprobador_id = claims.get('sub')
         aprobador_nombre = claims.get('name', 'Admin')

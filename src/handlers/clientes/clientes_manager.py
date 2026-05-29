@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
-from src.shared.utils.auth_utils import parse_object_id, try_parse_id, resolve_sucursal_scope
+from src.shared.utils.auth_utils import parse_object_id, try_parse_id, resolve_sucursal_scope, get_claims
 from src.shared.infrastructure.database import get_tenant_db
 from src.shared.utils.indexes import ensure_indexes
 from bson import ObjectId
@@ -21,7 +21,7 @@ ALLOWED_UPDATE_FIELDS = {
 
 def list_clientes_handler(event, context):
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         
         if not tenant_id:
@@ -117,7 +117,7 @@ def list_clientes_handler(event, context):
 
 def create_cliente_handler(event, context):
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         
         if not tenant_id:
@@ -170,7 +170,7 @@ def create_cliente_handler(event, context):
 
 def get_cliente_handler(event, context):
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         cliente_id = event['pathParameters']['id']
 
@@ -194,7 +194,7 @@ def get_cliente_handler(event, context):
 
 def update_cliente_handler(event, context):
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
 
         if not tenant_id:
@@ -238,7 +238,7 @@ def update_cliente_handler(event, context):
 
 def delete_cliente_handler(event, context):
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
 
         if not tenant_id:
@@ -282,7 +282,7 @@ def delete_cliente_handler(event, context):
 
 def add_vehiculo_handler(event, context):
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         cliente_id = event['pathParameters']['id']
         

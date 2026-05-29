@@ -3,14 +3,14 @@ from datetime import datetime
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.infrastructure.database import get_tenant_db
-from src.shared.utils.auth_utils import parse_object_id, is_admin
+from src.shared.utils.auth_utils import parse_object_id, is_admin, get_claims
 from bson import ObjectId
 
 logger = Logger()
 
 def get_config_handler(event, context):
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         
         db = get_tenant_db(tenant_id)
@@ -97,7 +97,7 @@ def get_config_handler(event, context):
 
 def update_config_handler(event, context):
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         
         if not is_admin(claims):

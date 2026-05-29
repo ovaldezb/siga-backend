@@ -1,3 +1,4 @@
+from src.shared.utils.auth_utils import get_claims
 import os
 import json
 import boto3
@@ -17,7 +18,7 @@ def get_upload_url_handler(event, context):
     Genera una URL firmada para subir un archivo directamente a S3.
     """
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         orden_id = event.get('pathParameters', {}).get('id')
         
@@ -81,7 +82,7 @@ def add_evidencia_handler(event, context):
     Registra una nueva evidencia en la base de datos después de haber sido subida a S3.
     """
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         orden_id = event.get('pathParameters', {}).get('id')
         
@@ -143,7 +144,7 @@ def list_evidencia_handler(event, context):
     Lista las evidencias de una orden de servicio, generando URLs temporales de visualización.
     """
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         orden_id = event.get('pathParameters', {}).get('id')
         

@@ -4,7 +4,7 @@ from datetime import datetime
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.infrastructure.database import get_tenant_db
-from src.shared.utils.auth_utils import try_parse_id, parse_object_id
+from src.shared.utils.auth_utils import try_parse_id, parse_object_id, get_claims
 from src.shared.utils.indexes import ensure_indexes
 from src.shared.utils.date_utils import iso_utc
 
@@ -22,7 +22,7 @@ def list_vehiculos_handler(event, context):
     para que el front pueda pintar badges en la lista normal.
     """
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
 
         if not tenant_id:
@@ -276,7 +276,7 @@ def list_vehiculos_handler(event, context):
 def get_vehiculo_handler(event, context):
     """GET /vehiculos/{id}  — Obtiene un vehículo por su _id de MongoDB."""
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
 
         if not tenant_id:
@@ -358,7 +358,7 @@ def get_vehiculo_handler(event, context):
 def create_vehiculo_handler(event, context):
     """POST /vehiculos — Crea un nuevo vehículo."""
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
 
         if not tenant_id:
@@ -414,7 +414,7 @@ def create_vehiculo_handler(event, context):
 def delete_vehiculo_handler(event, context):
     """DELETE /vehiculos/{id} — Elimina un vehículo (bloqueado si tiene OS)."""
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
 
         if not tenant_id:
@@ -496,7 +496,7 @@ def _sync_vehiculos_resumen_update(db, cliente_id, vehiculo_id, vehiculo_doc):
 def update_vehiculo_handler(event, context):
     """PUT /vehiculos/{id} — Actualiza un vehículo existente."""
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
 
         if not tenant_id:

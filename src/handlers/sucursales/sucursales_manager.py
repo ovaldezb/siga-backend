@@ -1,3 +1,4 @@
+from src.shared.utils.auth_utils import get_claims
 import json
 from bson import ObjectId
 from datetime import datetime
@@ -11,7 +12,7 @@ logger = Logger()
 @logger.inject_lambda_context
 def list_sucursales_handler(event, context):
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         if not tenant_id:
             return create_response(403, "No se encontró un tenantId asociado.")
@@ -33,7 +34,7 @@ def list_sucursales_handler(event, context):
 @logger.inject_lambda_context
 def create_sucursal_handler(event, context):
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         if not tenant_id:
             return create_response(403, "No se encontró un tenantId asociado.")
@@ -74,7 +75,7 @@ def create_sucursal_handler(event, context):
 @logger.inject_lambda_context
 def update_sucursal_handler(event, context):
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         if not tenant_id:
             return create_response(403, "No se encontró un tenantId asociado.")
@@ -108,7 +109,7 @@ def update_sucursal_handler(event, context):
 @logger.inject_lambda_context
 def delete_sucursal_handler(event, context):
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         if not tenant_id:
             return create_response(403, "No se encontró un tenantId asociado.")

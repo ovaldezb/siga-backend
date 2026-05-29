@@ -1,3 +1,4 @@
+from src.shared.utils.auth_utils import get_claims
 import json
 import re
 from datetime import datetime
@@ -18,7 +19,7 @@ ALLOWED_FIELDS = {
 
 
 def _get_tenant_id(event):
-    claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+    claims =get_claims(event)
     return claims.get('custom:tenant_id')
 
 

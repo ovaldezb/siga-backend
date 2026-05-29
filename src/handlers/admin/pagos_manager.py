@@ -1,3 +1,4 @@
+from src.shared.utils.auth_utils import get_claims
 import os
 import json
 import base64
@@ -18,7 +19,7 @@ CLIP_SECRET_KEY = os.environ.get('CLIP_SECRET_KEY', '').strip()
 def procesar_pago_suscripcion_handler(event, context):
     try:
         # 1. Obtener la identidad del usuario desde el token Cognito
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         user_email = claims.get('email', 'pago@cliente.com')
         
@@ -197,7 +198,7 @@ def procesar_pago_suscripcion_handler(event, context):
 def obtener_historial_pagos_handler(event, context):
     try:
         # 1. Obtener tenant_id desde el token Cognito
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
 
         # 2. Leer query params para paginación y tallerTenantId
