@@ -19,7 +19,7 @@ IVA_RATE = 0.16
 
 
 def _get_claims(event):
-    returnget_claims(event)
+    return get_claims(event)
 
 
 def _calc_line_fiscal(precio, cantidad, incluye_iva, iva_exento):

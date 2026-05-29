@@ -17,7 +17,7 @@ logger = Logger()
 
 
 def _get_claims(event):
-    returnget_claims(event)
+    return get_claims(event)
 
 
 def _parse_date(s, default=None):
