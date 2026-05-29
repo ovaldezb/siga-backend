@@ -3,22 +3,26 @@
 /**
  * stacks-map.js — Migración custom para serverless-plugin-split-stacks
  *
- * IMPORTANTE: Todos los recursos de API Gateway deben ir al MISMO nested stack.
- * AWS::ApiGateway::Deployment tiene una dependencia implícita de CloudFormation
- * con todos los AWS::ApiGateway::Method. Si están en stacks distintos se genera
- * una dependencia circular que CloudFormation rechaza.
+ * Mueve recursos de API Gateway compartidos (usados por >1 función) a un
+ * nested stack dedicado. El plugin perFunction ya maneja los recursos
+ * únicos por función.
  *
- * force: true es necesario para mover recursos que estaban en nested stacks
- * anteriores (de la era perGroupFunction), ignorando su ubicación previa.
- * Para API Gateway es seguro — el endpoint URL no cambia.
+ * SIN force: los recursos que ya existen en el root stack desplegado se
+ * OMITEN (el plugin los salta). Solo los recursos NUEVOS (nunca deployados,
+ * como cotizaciones, contabilidad, compras, caja) se migran aquí.
+ * Esto evita el conflicto de CloudFormation de crear un path de API Gateway
+ * mientras el mismo path ya existe en el root stack.
  *
- * Formato: (resource, logicalId) => { destination, force?, allowSuffix? } | null
+ * allowSuffix: si el nested stack llega a 500 recursos, el plugin crea
+ * automáticamente ApiGateway2NestedStack, etc.
+ *
+ * Formato: (resource, logicalId) => { destination, allowSuffix? } | null
  */
 module.exports = (resource, logicalId) => {
   const type = resource.Type;
 
-  // Todos los tipos de API Gateway van al MISMO stack para evitar dependencias
-  // circulares. El Deployment depende implícitamente de los Methods/Resources.
+  // Todos los tipos de API Gateway al mismo nested stack (evita dependencias
+  // circulares: Deployment depende implícitamente de todos los Methods).
   const apiGatewayTypes = [
     'AWS::ApiGateway::Resource',
     'AWS::ApiGateway::Method',
@@ -32,9 +36,14 @@ module.exports = (resource, logicalId) => {
   ];
 
   if (apiGatewayTypes.includes(type)) {
-    return { destination: 'ApiGateway', force: true, allowSuffix: true };
+    return { destination: 'ApiGateway', allowSuffix: true };
   }
 
-  // Dejar que perFunction maneje el resto (Lambdas, LogGroups, Permissions, etc.)
+  // Lambda Permissions también van a un nested stack (son muchas y saturan root)
+  if (type === 'AWS::Lambda::Permission') {
+    return { destination: 'LambdaPermissions', allowSuffix: true };
+  }
+
+  // Dejar que perFunction maneje Lambdas, LogGroups, etc.
   return null;
 };
