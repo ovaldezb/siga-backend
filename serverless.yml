@@ -977,6 +977,91 @@ functions:
             type: COGNITO_USER_POOLS
             arn: !GetAtt CognitoUserPool.Arn
 
+  # ─── Cotizaciones independientes (no atadas a una OS) ───
+  cotizaciones_list:
+    handler: src/handlers/cotizaciones/cotizaciones_manager.list_cotizaciones_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: cotizaciones
+          method: get
+          cors: true
+          authorizer:
+            name: cognitoAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: !GetAtt CognitoUserPool.Arn
+
+  cotizaciones_create:
+    handler: src/handlers/cotizaciones/cotizaciones_manager.create_cotizacion_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: cotizaciones
+          method: post
+          cors: true
+          authorizer:
+            name: cognitoAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: !GetAtt CognitoUserPool.Arn
+
+  cotizaciones_get:
+    handler: src/handlers/cotizaciones/cotizaciones_manager.get_cotizacion_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: cotizaciones/{id}
+          method: get
+          cors: true
+          authorizer:
+            name: cognitoAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: !GetAtt CognitoUserPool.Arn
+
+  cotizaciones_update:
+    handler: src/handlers/cotizaciones/cotizaciones_manager.update_cotizacion_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: cotizaciones/{id}
+          method: put
+          cors: true
+          authorizer:
+            name: cognitoAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: !GetAtt CognitoUserPool.Arn
+
+  cotizaciones_delete:
+    handler: src/handlers/cotizaciones/cotizaciones_manager.delete_cotizacion_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: cotizaciones/{id}
+          method: delete
+          cors: true
+          authorizer:
+            name: cognitoAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: !GetAtt CognitoUserPool.Arn
+
+  cotizaciones_convertir_a_os:
+    handler: src/handlers/cotizaciones/cotizaciones_manager.convertir_a_os_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - http:
+          path: cotizaciones/{id}/convertir-a-os
+          method: post
+          cors: true
+          authorizer:
+            name: cognitoAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: !GetAtt CognitoUserPool.Arn
+
   proveedores_list:
     handler: src/handlers/proveedores/proveedores_manager.list_proveedores_handler
     layers:
