@@ -12,6 +12,7 @@ from src.shared.utils.auth_utils import is_admin, get_claims
 from src.shared.infrastructure.database import get_tenant_db
 from src.handlers.admin.folios_manager import _get_next_folio_internal
 from src.shared.utils.date_utils import iso_utc
+from src.shared.utils.indexes import ensure_indexes
 
 logger = Logger()
 
