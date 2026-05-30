@@ -21,6 +21,12 @@ Schema:
     subtotal, iva, total,
     observaciones, vigencia_dias, vigencia_hasta,  (CLIENTE)
     cotizacion_origen_id, os_destino_id,           (CLIENTE)
+    # Estructura completa heredada de la OS (hoja de recepción + diagnóstico):
+    falla_reportada, diagnostico, info_adicional_vehiculo,
+    nivel_tanque, testigos_encendidos, inventario,
+    proximo_cambio_aceite, proximo_cambio_bujias,
+    mecanico_id, mecanico_nombre,
+    aplica_costo_revision, costo_revision, fechaEstimadaEntrega,
     createdAt, updatedAt, created_by.
 """
 import json
@@ -250,6 +256,22 @@ def create_cotizacion_handler(event, context):
             "observaciones": body.get("observaciones", ""),
             "kilometraje": body.get("kilometraje"),
             "cotizacion_origen_id": body.get("cotizacion_origen_id"),
+            # Estructura completa heredada de la OS (hoja de recepción + diagnóstico).
+            # Permite que plantillas y cotizaciones lleven absolutamente todo lo que
+            # contiene la cotización de una orden de servicio.
+            "falla_reportada": body.get("falla_reportada", ""),
+            "diagnostico": body.get("diagnostico", ""),
+            "info_adicional_vehiculo": body.get("info_adicional_vehiculo") or [],
+            "nivel_tanque": body.get("nivel_tanque"),
+            "testigos_encendidos": body.get("testigos_encendidos") or [],
+            "inventario": body.get("inventario") or [],
+            "proximo_cambio_aceite": body.get("proximo_cambio_aceite"),
+            "proximo_cambio_bujias": body.get("proximo_cambio_bujias"),
+            "mecanico_id": body.get("mecanico_id"),
+            "mecanico_nombre": body.get("mecanico_nombre"),
+            "aplica_costo_revision": bool(body.get("aplica_costo_revision")),
+            "costo_revision": body.get("costo_revision"),
+            "fechaEstimadaEntrega": body.get("fechaEstimadaEntrega"),
             "createdAt": now,
             "updatedAt": now,
             "created_by": claims.get("email") or claims.get("sub"),
@@ -304,6 +326,12 @@ def update_cotizacion_handler(event, context):
             "cliente_snapshot", "vehiculo_snapshot", "puntosArreglar",
             "observaciones", "kilometraje",
             "nombre", "marca", "modelo", "anio_desde", "anio_hasta", "tipo_servicio",
+            # Estructura completa heredada de la OS (recepción + diagnóstico).
+            "falla_reportada", "diagnostico", "info_adicional_vehiculo",
+            "nivel_tanque", "testigos_encendidos", "inventario",
+            "proximo_cambio_aceite", "proximo_cambio_bujias",
+            "mecanico_id", "mecanico_nombre",
+            "aplica_costo_revision", "costo_revision", "fechaEstimadaEntrega",
         ):
             if fld in body:
                 editable[fld] = body[fld]
@@ -441,6 +469,21 @@ def convertir_a_os_handler(event, context):
             "iva": totales["iva"],
             "total": totales["total"],
             "kilometraje": cot.get("kilometraje") or body.get("kilometraje"),
+            # Hereda la estructura completa de recepción/diagnóstico de la cotización.
+            # El body puede sobrescribir (datos capturados al momento de recibir el auto).
+            "falla_reportada": body.get("falla_reportada") or cot.get("falla_reportada", ""),
+            "diagnostico": body.get("diagnostico") or cot.get("diagnostico", ""),
+            "info_adicional_vehiculo": body.get("info_adicional_vehiculo") or cot.get("info_adicional_vehiculo") or [],
+            "nivel_tanque": body.get("nivel_tanque") if body.get("nivel_tanque") is not None else cot.get("nivel_tanque"),
+            "testigos_encendidos": body.get("testigos_encendidos") or cot.get("testigos_encendidos") or [],
+            "inventario": body.get("inventario") or cot.get("inventario") or [],
+            "proximo_cambio_aceite": body.get("proximo_cambio_aceite") if body.get("proximo_cambio_aceite") is not None else cot.get("proximo_cambio_aceite"),
+            "proximo_cambio_bujias": body.get("proximo_cambio_bujias") if body.get("proximo_cambio_bujias") is not None else cot.get("proximo_cambio_bujias"),
+            "mecanico_id": body.get("mecanico_id") or cot.get("mecanico_id"),
+            "mecanico_nombre": body.get("mecanico_nombre") or cot.get("mecanico_nombre"),
+            "aplica_costo_revision": bool(cot.get("aplica_costo_revision")),
+            "costo_revision": cot.get("costo_revision"),
+            "fechaEstimadaEntrega": body.get("fechaEstimadaEntrega") or cot.get("fechaEstimadaEntrega"),
             "cotizacion_origen_id": str(cot["_id"]),
             "createdAt": now,
             "updatedAt": now,
