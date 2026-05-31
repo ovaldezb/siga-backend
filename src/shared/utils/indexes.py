@@ -40,6 +40,18 @@ def ensure_indexes(db, tenant_id: str) -> None:
             [("orden_id", 1)], unique=True, name="uniq_cotizacion_orden"
         )
 
+        # citas: el listing ordena por (fecha desc, horaInicio desc, createdAt desc)
+        # con scope sucursal_id; sin índice compuesto el sort cae a memoria (>10k docs).
+        db.citas.create_index(
+            [("sucursal_id", 1), ("fecha", -1), ("horaInicio", -1), ("createdAt", -1)],
+            name="citas_scope_orden",
+        )
+        # Para los filtros por estado (estado / estado_in / estado_ne) antes del sort.
+        db.citas.create_index(
+            [("sucursal_id", 1), ("estado", 1), ("fecha", -1)],
+            name="citas_scope_estado_fecha",
+        )
+
         # clientes: filtrar por flotilla en la vista flota (item #7 audit 2026-05-17).
         db.clientes.create_index([("flotilla_id", 1)], name="clientes_flotilla")
         # clientes.telefono: consolidación automática en create_orden/create_cita busca por
