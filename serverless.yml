@@ -1341,6 +1341,39 @@ functions:
           authorizer:
             name: cognitoAuthorizer
 
+  contabilidad_gastos_variables_list:
+    handler: src/handlers/contabilidad/contabilidad_manager.list_gastos_variables_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /contabilidad/gastos-variables
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  contabilidad_gastos_variables_upsert:
+    handler: src/handlers/contabilidad/contabilidad_manager.upsert_gasto_variable_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /contabilidad/gastos-variables
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  contabilidad_gastos_variables_delete:
+    handler: src/handlers/contabilidad/contabilidad_manager.delete_gasto_variable_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /contabilidad/gastos-variables/{id}
+          method: delete
+          authorizer:
+            name: cognitoAuthorizer
+
 resources:
   Resources:
     S3BucketImages:

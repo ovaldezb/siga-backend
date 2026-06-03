@@ -517,6 +517,23 @@ def list_ordenes_handler(event, context):
             elif estados:
                 and_conditions.append({'estado': {'$in': estados}})
 
+        # `tab` = pestaña principal del frontend. Traduce la combinación estado+pago
+        # a condiciones Mongo para que paginación y conteos sean correctos por pestaña
+        # (antes el front recibía todo y filtraba en cliente, rompiendo el total/páginas).
+        # "Por Cobrar" = reparación finalizada con cobro pendiente (incluye ventas a
+        # crédito, que ventas_manager deja en FINALIZADO + pagada:False).
+        tab = query_params.get('tab')
+        if tab == 'activas':
+            and_conditions.append({'estado': {'$nin': ['CANCELADO', 'FINALIZADO', 'ENTREGADO']}})
+            and_conditions.append({'pagada': {'$ne': True}})
+        elif tab == 'porcobrar':
+            and_conditions.append({'estado': 'FINALIZADO'})
+            and_conditions.append({'pagada': {'$ne': True}})
+        elif tab == 'pagadas':
+            and_conditions.append({'$or': [{'pagada': True}, {'estado': 'ENTREGADO'}]})
+        elif tab == 'canceladas':
+            and_conditions.append({'estado': 'CANCELADO'})
+
         search_query = query_params.get('q')
         if search_query:
             import re

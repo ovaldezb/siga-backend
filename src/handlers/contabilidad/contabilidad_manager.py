@@ -590,6 +590,170 @@ def delete_gasto_fijo_mes_handler(event, context):
 
 
 # ----------------------------------------------------------------------------
+# Gastos variables (operativos manuales): gastos del día a día del taller que NO
+# son costo de venta ni compras a inventario (combustible, viáticos, comisiones,
+# papelería, mantenimiento menor…). Viven en la collection `gastos_variables`,
+# completamente separados de `compras` (costo de ventas) y `gastos_fijos_mes`.
+# ----------------------------------------------------------------------------
+
+def _gasto_variable_filter(year, month, sucursal_id):
+    """Query por mes. Si pides sucursal_id incluye también los gastos generales
+    (sucursal_id None/ausente) para no esconderlos."""
+    q = {"year": int(year), "month": int(month)}
+    if sucursal_id:
+        q['$or'] = [
+            {"sucursal_id": sucursal_id},
+            {"sucursal_id": None},
+            {"sucursal_id": {"$exists": False}},
+        ]
+    return q
+
+
+def list_gastos_variables_handler(event, context):
+    """GET /contabilidad/gastos-variables?year=&month=&sucursal_id="""
+    try:
+        claims = _get_claims(event)
+        tenant_id = claims.get('custom:tenant_id')
+        if not tenant_id:
+            return create_response(403, "No autorizado")
+
+        qp = event.get('queryStringParameters') or {}
+        year, month = _parse_year_month(qp)
+        sucursal_id = qp.get('sucursal_id') or qp.get('sucursalId')
+
+        db = get_tenant_db(tenant_id)
+        docs = list(db.gastos_variables.find(_gasto_variable_filter(year, month, sucursal_id))
+                    .sort([("fecha", -1), ("createdAt", -1)]))
+
+        items = []
+        total = 0.0
+        for d in docs:
+            d['id'] = str(d.pop('_id'))
+            for k in ('fecha', 'createdAt', 'updatedAt'):
+                v = d.get(k)
+                if isinstance(v, datetime):
+                    d[k] = iso_utc(v)
+            total += float(d.get('monto') or 0)
+            items.append(d)
+
+        return create_response(200, "Gastos variables del mes", {
+            "year": year,
+            "month": month,
+            "items": items,
+            "totales": {
+                "monto": round(total, 2),
+                "count": len(items),
+            }
+        })
+    except Exception as e:
+        return handle_exception(e)
+
+
+def upsert_gasto_variable_handler(event, context):
+    """POST /contabilidad/gastos-variables  body: {id?, fecha, concepto, categoria?,
+       monto, metodo_pago?, notas?, sucursal_id?}. Si trae id actualiza; si no, crea.
+       year/month se derivan de `fecha` (o del par year/month explícito)."""
+    try:
+        claims = _get_claims(event)
+        tenant_id = claims.get('custom:tenant_id')
+        if not tenant_id:
+            return create_response(403, "No autorizado")
+
+        body = json.loads(event.get('body', '{}'))
+        db = get_tenant_db(tenant_id)
+        usuario_nombre = claims.get('name') or claims.get('email') or 'unknown'
+        now = datetime.utcnow()
+
+        # Normalizar campos editables
+        editable = {}
+        fecha_dt = None
+        if 'fecha' in body:
+            fecha_dt = _parse_date(body.get('fecha'))
+            if fecha_dt is None:
+                return create_response(400, "fecha inválida (usa YYYY-MM-DD).")
+            editable['fecha'] = fecha_dt
+            editable['year'] = fecha_dt.year
+            editable['month'] = fecha_dt.month
+        if 'concepto' in body:    editable['concepto'] = (body.get('concepto') or '').strip()
+        if 'categoria' in body:   editable['categoria'] = (body.get('categoria') or '').strip()
+        if 'monto' in body:       editable['monto'] = float(body.get('monto') or 0)
+        if 'metodo_pago' in body: editable['metodo_pago'] = (body.get('metodo_pago') or '').strip()
+        if 'notas' in body:       editable['notas'] = (body.get('notas') or '').strip()
+        if 'sucursal_id' in body: editable['sucursal_id'] = body.get('sucursal_id') or None
+
+        gasto_id = body.get('id')
+        if gasto_id:
+            try:
+                oid = ObjectId(gasto_id)
+            except InvalidId:
+                return create_response(400, "id inválido.")
+            editable['updatedAt'] = now
+            editable['updatedBy'] = usuario_nombre
+            res = db.gastos_variables.update_one({"_id": oid, "tenant_id": tenant_id}, {"$set": editable})
+            if res.matched_count == 0:
+                return create_response(404, "Gasto no encontrado.")
+            doc = db.gastos_variables.find_one({"_id": oid})
+        else:
+            # creación: requiere concepto + monto + fecha
+            if not editable.get('concepto'):
+                return create_response(400, "El concepto es obligatorio.")
+            if fecha_dt is None:
+                # Si no mandaron fecha, usar hoy.
+                fecha_dt = now
+                editable['fecha'] = fecha_dt
+                editable['year'] = fecha_dt.year
+                editable['month'] = fecha_dt.month
+            doc_new = {
+                "tenant_id": tenant_id,
+                "fecha": editable['fecha'],
+                "year": editable['year'],
+                "month": editable['month'],
+                "concepto": editable.get('concepto'),
+                "categoria": editable.get('categoria', ''),
+                "monto": editable.get('monto', 0.0),
+                "metodo_pago": editable.get('metodo_pago', ''),
+                "notas": editable.get('notas', ''),
+                "sucursal_id": editable.get('sucursal_id'),
+                "createdAt": now,
+                "updatedAt": now,
+                "createdBy": usuario_nombre,
+            }
+            inserted = db.gastos_variables.insert_one(doc_new)
+            doc = db.gastos_variables.find_one({"_id": inserted.inserted_id})
+
+        doc['id'] = str(doc.pop('_id'))
+        for k in ('fecha', 'createdAt', 'updatedAt'):
+            if isinstance(doc.get(k), datetime):
+                doc[k] = iso_utc(doc[k])
+        return create_response(200, "Gasto variable guardado", doc)
+    except Exception as e:
+        return handle_exception(e)
+
+
+def delete_gasto_variable_handler(event, context):
+    """DELETE /contabilidad/gastos-variables/{id}"""
+    try:
+        claims = _get_claims(event)
+        tenant_id = claims.get('custom:tenant_id')
+        if not tenant_id:
+            return create_response(403, "No autorizado")
+
+        gasto_id = (event.get('pathParameters') or {}).get('id')
+        try:
+            oid = ObjectId(gasto_id)
+        except (InvalidId, TypeError):
+            return create_response(400, "id inválido.")
+
+        db = get_tenant_db(tenant_id)
+        res = db.gastos_variables.delete_one({"_id": oid, "tenant_id": tenant_id})
+        if res.deleted_count == 0:
+            return create_response(404, "Gasto no encontrado.")
+        return create_response(200, "Gasto eliminado.")
+    except Exception as e:
+        return handle_exception(e)
+
+
+# ----------------------------------------------------------------------------
 # Resumen mensual (P&L) e IVA mensual
 # ----------------------------------------------------------------------------
 
@@ -743,11 +907,30 @@ def get_resumen_mensual_handler(event, context):
                 'fecha_pago': d.get('fecha_pago'),
             })
 
+        # --- Gastos variables manuales del mes (collection gastos_variables) ---
+        # Gastos operativos capturados a mano, separados de compras (costo de venta)
+        # y de gastos fijos. Restan de la utilidad neta como egreso del mes.
+        gastos_variables_manuales = 0.0
+        gastos_variables_manuales_detalle = []
+        for d in db.gastos_variables.find(_gasto_variable_filter(year, month, sucursal_id)):
+            monto = float(d.get('monto') or 0)
+            gastos_variables_manuales += monto
+            fecha_v = d.get('fecha')
+            gastos_variables_manuales_detalle.append({
+                'id': str(d.get('_id')),
+                'fecha': iso_utc(fecha_v) if isinstance(fecha_v, datetime) else fecha_v,
+                'concepto': d.get('concepto') or 'Gasto',
+                'categoria': d.get('categoria') or '',
+                'metodo_pago': d.get('metodo_pago') or '',
+                'monto': round(monto, 2),
+            })
+
         # --- Cálculos finales ---
         # Utilidad bruta = ingresos netos - costo de venta
         utilidad_bruta = ingresos_netos - costo_venta
-        # Utilidad operativa = bruta - gastos variables (sin inventario) - gastos fijos REAL (pagados o no, son obligación devengada)
-        utilidad_neta = utilidad_bruta - gastos_variables - gastos_fijos_real
+        # Utilidad operativa = bruta - gastos variables (compras sin inventario)
+        #   - gastos variables manuales - gastos fijos REAL (devengados).
+        utilidad_neta = utilidad_bruta - gastos_variables - gastos_variables_manuales - gastos_fijos_real
 
         margen_bruto_pct = (utilidad_bruta / ingresos_netos * 100) if ingresos_netos > 0 else 0.0
         margen_neto_pct = (utilidad_neta / ingresos_netos * 100) if ingresos_netos > 0 else 0.0
@@ -766,6 +949,7 @@ def get_resumen_mensual_handler(event, context):
             },
             "costo_venta": round(costo_venta, 2),
             "gastos_variables": round(gastos_variables, 2),
+            "gastos_variables_manuales": round(gastos_variables_manuales, 2),
             "gastos_fijos": {
                 "estimado": round(gastos_fijos_estimado, 2),
                 "real": round(gastos_fijos_real, 2),
@@ -786,6 +970,7 @@ def get_resumen_mensual_handler(event, context):
                 "ventas": ventas_detalle[:500],
                 "ordenes_servicio": os_detalle[:500],
                 "gastos_variables": gastos_variables_detalle[:500],
+                "gastos_variables_manuales": gastos_variables_manuales_detalle[:500],
                 "gastos_fijos": gastos_fijos_detalle,
             },
         })
