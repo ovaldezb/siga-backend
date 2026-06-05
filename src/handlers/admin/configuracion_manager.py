@@ -122,8 +122,18 @@ def update_config_handler(event, context):
                 from src.handlers.cotizaciones.cotizaciones_manager import _next_folio_cotizacion, _ensure_folio_index
                 templates_revision = body["templates_revision"] or []
                 
-                # 1. Obtener plantillas existentes en la colección cotizaciones
-                cursor = db["cotizaciones"].find({"tenant_id": tenant_id, "tipo": "PLANTILLA"})
+                # 1. Obtener SOLO las plantillas que este mismo sync creó.
+                #    Scope estricto a created_by="configuracion_sync": las plantillas
+                #    que el usuario crea a mano en el módulo Cotizaciones NO deben ser
+                #    tocadas (ni actualizadas ni borradas) al Guardar la Configuración.
+                #    Antes este bloque consideraba TODA plantilla y borraba cualquiera
+                #    cuyo nombre no estuviera en el payload → "plantillas fantasma" que
+                #    desaparecían solas al guardar config.
+                cursor = db["cotizaciones"].find({
+                    "tenant_id": tenant_id,
+                    "tipo": "PLANTILLA",
+                    "created_by": "configuracion_sync",
+                })
                 existing_templates = {}
                 for doc in cursor:
                     nombre = doc.get("nombre")
@@ -223,10 +233,15 @@ def update_config_handler(event, context):
                         }
                         db["cotizaciones"].insert_one(new_doc)
                 
-                # 2. Eliminar plantillas que estaban en cotizaciones pero fueron borradas en la Configuración
-                for existing_name_lower, doc in existing_templates.items():
-                    if existing_name_lower not in sent_names:
-                        db["cotizaciones"].delete_one({"_id": doc["_id"]})
+                # 2. Eliminar SOLO las plantillas creadas por este sync que el usuario
+                #    removió en la Configuración. Guard anti-wipe: si el payload no trajo
+                #    ningún template con nombre válido (sent_names vacío) NO borramos nada.
+                #    Esto evita el borrado masivo cuando la UI envía templates_revision
+                #    vacío por una carga aún no resuelta (race de montado del componente).
+                if sent_names:
+                    for existing_name_lower, doc in existing_templates.items():
+                        if existing_name_lower not in sent_names:
+                            db["cotizaciones"].delete_one({"_id": doc["_id"]})
                         
             except Exception as sync_err:
                 logger.error(f"Error sincronizando templates a cotizaciones: {sync_err}")
