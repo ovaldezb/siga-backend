@@ -147,34 +147,55 @@ def procesar_pago_suscripcion_handler(event, context):
 
         # 5. Extender la vigencia del Taller (Platform DB -> talleres)
         taller = db["talleres"].find_one({"tenantId": tenant_id})
-        vencimiento_actual = None
+        corte_actual = None
+        pago_actual = None
         if taller:
-            vencimiento_actual = taller.get("fechaVencimiento")
+            corte_actual = taller.get("proximaFechaCorte")
+            pago_actual = taller.get("proximaFechaPago")
         
-        # Si ya está vencido o no tiene fecha, empezamos desde hoy
-        base_date = datetime.utcnow()
-        if vencimiento_actual:
-            # Si el valor de la base de datos es un string, lo parseamos. Si es un datetime, lo usamos.
-            if isinstance(vencimiento_actual, str):
+        # Parsear proximaFechaCorte a datetime naive
+        corte_dt = None
+        if corte_actual:
+            if isinstance(corte_actual, str):
                 try:
-                    # Intentar parsear formato ISO
-                    vencimiento_actual = datetime.fromisoformat(vencimiento_actual.replace("Z", "+00:00"))
+                    corte_dt = datetime.fromisoformat(corte_actual.replace("Z", "+00:00")).replace(tzinfo=None)
                 except ValueError:
                     pass
-            
-            if isinstance(vencimiento_actual, datetime):
-                # Si no ha vencido, sumamos al vencimiento actual
-                # Hacemos la comparación sin zona horaria (naive) para concordar con datetime.utcnow()
-                vencimiento_naive = vencimiento_actual.replace(tzinfo=None)
-                if vencimiento_naive > base_date:
-                    base_date = vencimiento_naive
-        
-        nuevo_vencimiento = base_date + timedelta(days=30)
-        
+            elif isinstance(corte_actual, datetime):
+                corte_dt = corte_actual.replace(tzinfo=None)
+
+        # Parsear proximaFechaPago a datetime naive
+        pago_dt = None
+        if pago_actual:
+            if isinstance(pago_actual, str):
+                try:
+                    pago_dt = datetime.fromisoformat(pago_actual.replace("Z", "+00:00")).replace(tzinfo=None)
+                except ValueError:
+                    pass
+            elif isinstance(pago_actual, datetime):
+                pago_dt = pago_actual.replace(tzinfo=None)
+
+        fecha_pago = datetime.utcnow()
+
+        # Determinar nueva corte y pago basados en las reglas de pago a tiempo vs tardío
+        if corte_dt and pago_dt:
+            if fecha_pago <= pago_dt:
+                # Pago antes o el mismo día límite de pago -> corte + 30 días
+                nueva_corte = corte_dt + timedelta(days=30)
+            else:
+                # Pago después del día límite de pago -> fecha actual + 20 días
+                nueva_corte = fecha_pago + timedelta(days=20)
+        else:
+            # Si no hay fechas guardadas previas, inicializar a partir de hoy
+            nueva_corte = fecha_pago + timedelta(days=30)
+
+        nueva_pago = nueva_corte + timedelta(days=10)
+
         db["talleres"].update_one(
             {"tenantId": tenant_id},
             {"$set": {
-                "fechaVencimiento": nuevo_vencimiento,
+                "proximaFechaCorte": nueva_corte,
+                "proximaFechaPago": nueva_pago,
                 "estado": "ACTIVO"
             }}
         )
@@ -184,7 +205,7 @@ def procesar_pago_suscripcion_handler(event, context):
         pago_doc["fechaPago"] = iso_utc(pago_doc["fechaPago"])
         
         # Guardar string de fecha de vencimiento formateada
-        fecha_vencimiento_str = iso_utc(nuevo_vencimiento)
+        fecha_vencimiento_str = iso_utc(nueva_corte)
 
         return create_response(200, "Suscripción pagada exitosamente", {
             "pago": pago_doc,
