@@ -202,14 +202,16 @@ def procesar_pago_suscripcion_handler(event, context):
 
         pago_doc["id"] = str(pago_doc["_id"])
         del pago_doc["_id"]
-        pago_doc["fechaPago"] = iso_utc(pago_doc["fechaPago"])
+        pago_doc["proximaFechaCorte"] = iso_utc(nueva_corte)
+        pago_doc["proximaFechaPago"] = iso_utc(nueva_pago)
         
+    
         # Guardar string de fecha de vencimiento formateada
-        fecha_vencimiento_str = iso_utc(nueva_corte)
+        proximaFechaCorte_str = iso_utc(nueva_corte)
+        proximaFechaPago_str = iso_utc(nueva_pago)
 
         return create_response(200, "Suscripción pagada exitosamente", {
             "pago": pago_doc,
-            "fechaVencimiento": fecha_vencimiento_str
         })
 
     except Exception as e:
