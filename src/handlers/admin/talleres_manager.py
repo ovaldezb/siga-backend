@@ -195,6 +195,28 @@ def get_my_modulos_handler(event, context):
         if not taller:
             return create_response(404, "Taller no encontrado")
 
+        p_pago_val = taller.get("proximaFechaPago")
+        estado_taller = taller.get("estado", "ACTIVO")
+
+        if estado_taller == "ACTIVO" and p_pago_val:
+            pago_dt = None
+            if isinstance(p_pago_val, str):
+                try:
+                    pago_dt = datetime.fromisoformat(p_pago_val.replace("Z", "+00:00")).replace(tzinfo=None)
+                except ValueError:
+                    pass
+            elif isinstance(p_pago_val, datetime):
+                pago_dt = p_pago_val.replace(tzinfo=None)
+
+            if pago_dt:
+                now = datetime.utcnow() #tener cuidado aqui, esto va a depender de en que region se despliegue la lambda, se podria reemplazar por la fecha del usuario, es decir enviarla como parametro
+                if now >= pago_dt:
+                    db["talleres"].update_one(
+                        {"tenantId": tenant_id},
+                        {"$set": {"estado": "INACTIVO", "updatedAt": now}}
+                    )
+                    taller["estado"] = "INACTIVO"
+
         p_corte = taller.get("proximaFechaCorte")
         p_pago = taller.get("proximaFechaPago")
         if isinstance(p_corte, datetime):
