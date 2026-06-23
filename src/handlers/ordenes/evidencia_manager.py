@@ -139,6 +139,51 @@ def add_evidencia_handler(event, context):
         logger.error(f"Error adding evidencia: {str(e)}", exc_info=True)
         return handle_exception(e)
 
+def delete_evidencia_handler(event, context):
+    """
+    Elimina una evidencia (video) de una orden de servicio: borra la referencia
+    en MongoDB ($pull del arreglo 'evidencia') y el objeto correspondiente en S3.
+    El s3Key llega por body o por query string.
+    """
+    try:
+        claims = get_claims(event)
+        tenant_id = claims.get('custom:tenant_id')
+        orden_id = event.get('pathParameters', {}).get('id')
+
+        body = json.loads(event.get('body') or '{}')
+        qs = event.get('queryStringParameters') or {}
+        s3_key = body.get('s3Key') or qs.get('s3Key')
+
+        if not tenant_id or not orden_id or not s3_key:
+            return create_response(400, "Parámetros insuficientes")
+
+        logger.info(f"Eliminando evidencia {s3_key} de orden {orden_id} (Tenant: {tenant_id})")
+        db = get_tenant_db(tenant_id)
+
+        # 1. Quitar la referencia en Mongo.
+        result = db["ordenes_servicio"].update_one(
+            {"_id": ObjectId(orden_id)},
+            {"$pull": {"evidencia": {"s3Key": s3_key}}}
+        )
+
+        if result.matched_count == 0:
+            return create_response(404, "Orden no encontrada en la base de datos")
+
+        # 2. Borrar el objeto en S3 (no es fatal si ya no existe).
+        bucket = os.environ.get('S3_EVIDENCIA_BUCKET')
+        try:
+            s3_client.delete_object(Bucket=bucket, Key=s3_key)
+        except Exception as s3_err:
+            logger.warning(f"No se pudo borrar el objeto S3 {s3_key}: {str(s3_err)}")
+
+        logger.info(f"Evidencia {s3_key} eliminada de orden {orden_id}")
+        return create_response(200, "Evidencia eliminada", {"s3Key": s3_key})
+
+    except Exception as e:
+        logger.error(f"Error deleting evidencia: {str(e)}", exc_info=True)
+        return handle_exception(e)
+
+
 def list_evidencia_handler(event, context):
     """
     Lista las evidencias de una orden de servicio, generando URLs temporales de visualización.
