@@ -25,7 +25,15 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v6
         with:
-          python-version: '3.11' # Versión utilizada por defecto en AWS Lambda
+          python-version: '3.13' # Debe coincidir con provider.runtime en serverless.yml
+
+      # Necesario para que serverless-python-requirements (dockerizePip: true) pueda
+      # construir las wheels nativas del layer para arm64 (aarch64) emulando esa
+      # arquitectura sobre el runner x86. Registra binfmt/QEMU para arm64.
+      - name: Set up QEMU (arm64)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
 
       - name: Install Node dependencies
         run: npm install

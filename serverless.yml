@@ -3,10 +3,19 @@ useDotenv: true
 
 provider:
   name: aws
-  runtime: python3.11
+  runtime: python3.13
+  # ARM64 (Graviton): ~más rápido y ~20% más barato que x86 para este workload.
+  # IMPORTANTE para el deploy: el layer de dependencias DEBE construirse con wheels
+  # aarch64. serverless-python-requirements lo hace vía Docker (dockerizePip: true);
+  # en CI Linux el runner necesita poder ejecutar contenedores arm64 (binfmt/QEMU).
+  # Si el build de arm64 no es viable en tu CI, revierte esta línea a x86_64.
+  architecture: arm64
   stage: ${opt:stage, 'dev'}
   region: ${opt:region, 'us-east-1'}
-  memorySize: 256
+  # 256MB era bajo; en Lambda más memoria = más CPU, suele bajar la duración tanto
+  # que sale neutro o más barato. 512 es un punto de partida razonable; afinar con
+  # AWS Lambda Power Tuning por familia de funciones.
+  memorySize: 512
   timeout: 29
   versionFunctions: false
   iam:
@@ -87,12 +96,19 @@ plugins:
 
 custom:
   pythonRequirements:
-    dockerizePip: non-linux
+    # Dockerizar SIEMPRE: necesario para producir wheels nativas (pymongo, pydantic-core,
+    # Pillow) con la arquitectura correcta (aarch64) y el ABI de python3.13. El plugin
+    # toma la arquitectura de provider.architecture. En CI Linux asegúrate de tener
+    # Docker + soporte arm64 (docker/setup-qemu-action). Si no, vuelve a 'non-linux'
+    # junto con architecture: x86_64.
+    dockerizePip: true
+    # Adelgaza el paquete (quita .pyc, __pycache__, tests) => cold start más rápido.
+    slim: true
     layer:
       name: ${self:service}-${self:provider.stage}-lib
       description: Python requirements layer
       compatibleRuntimes:
-        - python3.11
+        - python3.13
   splitStacks:
     nestedStackTrace: true
     perFunction: true
