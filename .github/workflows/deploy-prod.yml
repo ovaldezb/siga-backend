@@ -64,7 +64,7 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
+          aws-region: us-west-1
 
       - name: Parse and Load .env
         run: |
@@ -76,5 +76,32 @@ jobs:
             fi
           done < .env
 
+      - name: Validate Environment Variables
+        run: |
+          python -c '
+          import re, sys, os
+          env_keys = set()
+          if os.path.exists(".env"):
+              with open(".env") as f:
+                  for line in f:
+                      line = line.strip()
+                      if line and not line.startswith("#"):
+                          parts = line.split("=", 1)
+                          if len(parts) >= 1:
+                              env_keys.add(parts[0].strip())
+
+          with open("serverless.yml") as f:
+              content = f.read()
+
+          matches = set(re.findall(r"\$\{env:([A-Za-z0-9_]+)(?:,.*?)?\}", content))
+          missing = [m for m in matches if m not in env_keys]
+          if missing:
+              print("ERROR: Las siguientes variables de ambiente de serverless.yml no estan en el secret ENV_FILE_PROD:")
+              for m in sorted(missing):
+                  print(f"  - {m}")
+              sys.exit(1)
+          print("OK: Todas las variables estan en ENV_FILE_PROD")
+          '
+
       - name: Serverless Deploy
-        run: npx sls deploy --stage prod
+        run: npx sls deploy --stage prod --region us-west-1
