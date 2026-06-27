@@ -352,6 +352,7 @@ def create_venta_handler(event, context):
                     # 5. Descontar stock (atómico + scoped por sucursal). Si la condición
                     #    {"stock": {"$gte": cantidad}} no se cumple ⇒ otro flow se llevó el stock
                     #    entre validación y descuento. Abortamos toda la venta.
+                    movimientos_inventario = []
                     for item in items:
                         producto = item.get('producto', {})
                         item_id = producto.get('id')
@@ -362,16 +363,39 @@ def create_venta_handler(event, context):
                                             or item.get('no_inventario'))
                         if is_manual_or_ext:
                             continue
-                        update_result = db["items"].update_one(
+                        # find_one_and_update con return_document=True devuelve el doc YA
+                        # actualizado, así obtenemos el stock resultante para la bitácora.
+                        item_actualizado = db["items"].find_one_and_update(
                             {"_id": ObjectId(item_id), "sucursal_id": sucursal_id, "stock": {"$gte": cantidad}},
                             {"$inc": {"stock": -cantidad}},
+                            return_document=True,
                             session=session,
                         )
-                        if update_result.modified_count == 0:
+                        if not item_actualizado:
                             raise StockInsuficienteError(
                                 f"Stock insuficiente para {producto.get('nombre', 'item')} "
                                 f"(carrera con otra venta). Venta abortada."
                             )
+                        stock_resultante = item_actualizado.get('stock', 0)
+                        movimientos_inventario.append({
+                            "tenant_id": tenant_id,
+                            "item_id": item_id,
+                            "item_nombre": item_actualizado.get('nombre') or producto.get('nombre'),
+                            "sucursal_id": sucursal_id,
+                            "cantidad": -cantidad,
+                            "stock_anterior": stock_resultante + cantidad,
+                            "stock_resultante": stock_resultante,
+                            "concepto": "VENTA",
+                            "referencia_id": nueva_venta["id"],
+                            "referencia_folio": folio,
+                            "usuario_id": usuario_id,
+                            "usuario_nombre": usuario_nombre,
+                            "createdAt": created_at,
+                        })
+
+                    # 5.5 Bitácora de inventario por las salidas de la venta (misma transacción).
+                    if movimientos_inventario:
+                        db["inventario_movimientos"].insert_many(movimientos_inventario, session=session)
 
                     # 6. Cerrar OS + insertar compras CxP precalculadas
                     if orden_id:
