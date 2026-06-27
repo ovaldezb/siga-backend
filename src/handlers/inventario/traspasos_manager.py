@@ -15,7 +15,7 @@ def create_traspaso_handler(event, context):
         claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         usuario_id = claims.get('sub')
-        usuario_nombre = claims.get('name', 'Usuario Desconocido')
+        usuario_nombre = claims.get('name') or claims.get('email') or 'Usuario Desconocido'
 
         body = json.loads(event.get('body', '{}'))
         origen_id = body.get('origen_id')
@@ -170,7 +170,7 @@ def receive_traspaso_handler(event, context):
         claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         usuario_id = claims.get('sub')
-        usuario_nombre = claims.get('name', 'Usuario Desconocido')
+        usuario_nombre = claims.get('name') or claims.get('email') or 'Usuario Desconocido'
 
         traspaso_id = event['pathParameters']['id']
         body = json.loads(event.get('body', '{}'))
