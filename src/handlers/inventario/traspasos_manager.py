@@ -64,16 +64,33 @@ def create_traspaso_handler(event, context):
                 )
             return create_response(409, f"No se pudo crear el traspaso: {dec_err}")
 
-        # 3. Snapshot de no_parte/nombre para que el destino pueda recibir aunque no tenga el item
+        # 3. Snapshot de no_parte/nombre para que el destino pueda recibir aunque no tenga el item.
+        #    Aprovechamos para armar la bitácora de salida (el stock de origen_doc ya está descontado).
         items_enriched = []
+        movimientos_salida = []
         for it in items:
             origen_doc = db["items"].find_one({"_id": ObjectId(it['item_id']), "sucursal_id": origen_id})
+            cantidad = int(it['cantidad'])
             items_enriched.append({
                 "item_id": str(it['item_id']),
-                "cantidad": int(it['cantidad']),
+                "cantidad": cantidad,
                 "no_parte": (origen_doc or {}).get('no_parte'),
                 "nombre": (origen_doc or {}).get('nombre'),
                 "precio_compra": (origen_doc or {}).get('precio_compra', 0),
+            })
+            stock_resultante = int((origen_doc or {}).get('stock', 0))
+            movimientos_salida.append({
+                "tenant_id": tenant_id,
+                "item_id": str(it['item_id']),
+                "item_nombre": (origen_doc or {}).get('nombre'),
+                "sucursal_id": origen_id,
+                "cantidad": -cantidad,
+                "stock_anterior": stock_resultante + cantidad,
+                "stock_resultante": stock_resultante,
+                "concepto": "TRASPASO_SALIDA",
+                "usuario_id": usuario_id,
+                "usuario_nombre": usuario_nombre,
+                "createdAt": datetime.utcnow(),
             })
 
         # 4. Crear registro de traspaso en tránsito
@@ -93,6 +110,15 @@ def create_traspaso_handler(event, context):
         del doc["_id"]
         doc["createdAt"] = iso_utc(doc["createdAt"])
         doc["updatedAt"] = iso_utc(doc["updatedAt"])
+
+        # 5. Bitácora de inventario (salida). No es fatal si falla la escritura.
+        try:
+            for m in movimientos_salida:
+                m["referencia_id"] = doc["id"]
+            if movimientos_salida:
+                db["inventario_movimientos"].insert_many(movimientos_salida)
+        except Exception as bit_err:
+            logger.warning(f"No se pudo registrar bitácora de traspaso (salida): {bit_err}")
 
         return create_response(201, "Traspaso creado y en tránsito", doc)
     except Exception as e:
@@ -166,6 +192,7 @@ def receive_traspaso_handler(event, context):
             # Mapa de snapshot por item_id para poder clonar si el item no existe en destino
             snapshot_by_id = {str(s.get('item_id')): s for s in (traspaso.get('items') or [])}
 
+            movimientos_entrada = []
             for rec in items_recibidos:
                 item_id = rec.get('item_id')
                 try:
@@ -175,40 +202,67 @@ def receive_traspaso_handler(event, context):
                 if cant_recibida <= 0:
                     continue
 
-                # 1) Intentar sumar stock por _id si el item ya existe en destino
-                res = db["items"].update_one(
-                    {"_id": ObjectId(item_id), "sucursal_id": destino_id},
-                    {"$inc": {"stock": cant_recibida}}
-                )
-                if res.matched_count == 1:
-                    continue
-
                 snap = snapshot_by_id.get(str(item_id), {})
                 no_parte = snap.get('no_parte')
 
+                # 1) Sumar stock por _id si el item ya existe en destino. find_one_and_update
+                #    con return_document=True nos da el stock resultante para la bitácora.
+                destino_doc = db["items"].find_one_and_update(
+                    {"_id": ObjectId(item_id), "sucursal_id": destino_id},
+                    {"$inc": {"stock": cant_recibida}},
+                    return_document=True,
+                )
+
                 # 2) Reconciliar por no_parte: misma SKU pero ya existe en destino con otro _id
-                if no_parte:
-                    res2 = db["items"].update_one(
+                if not destino_doc and no_parte:
+                    destino_doc = db["items"].find_one_and_update(
                         {"no_parte": no_parte, "sucursal_id": destino_id},
-                        {"$inc": {"stock": cant_recibida}}
+                        {"$inc": {"stock": cant_recibida}},
+                        return_document=True,
                     )
-                    if res2.matched_count == 1:
-                        continue
 
                 # 3) Clonar el item del origen para crear stock inicial en destino
-                origen_doc = db["items"].find_one({"_id": ObjectId(item_id)})
-                if origen_doc:
-                    clone = {k: v for k, v in origen_doc.items() if k != '_id'}
-                    clone["sucursal_id"] = destino_id
-                    clone["stock"] = cant_recibida
-                    clone["createdAt"] = iso_utc()
-                    clone["clonado_de"] = str(origen_doc['_id'])
-                    try:
-                        db["items"].insert_one(clone)
-                    except Exception as clone_err:
-                        logger.warning(f"No se pudo clonar item {item_id} a sucursal {destino_id}: {clone_err}")
-                else:
-                    logger.warning(f"Recepción de traspaso: item {item_id} no existe en origen ni destino; stock perdido")
+                if not destino_doc:
+                    origen_doc = db["items"].find_one({"_id": ObjectId(item_id)})
+                    if origen_doc:
+                        clone = {k: v for k, v in origen_doc.items() if k != '_id'}
+                        clone["sucursal_id"] = destino_id
+                        clone["stock"] = cant_recibida
+                        clone["createdAt"] = iso_utc()
+                        clone["clonado_de"] = str(origen_doc['_id'])
+                        try:
+                            ins = db["items"].insert_one(clone)
+                            clone["_id"] = ins.inserted_id
+                            destino_doc = clone
+                        except Exception as clone_err:
+                            logger.warning(f"No se pudo clonar item {item_id} a sucursal {destino_id}: {clone_err}")
+                    else:
+                        logger.warning(f"Recepción de traspaso: item {item_id} no existe en origen ni destino; stock perdido")
+
+                # Bitácora de entrada por este item recibido.
+                if destino_doc:
+                    stock_resultante = int(destino_doc.get('stock', 0))
+                    movimientos_entrada.append({
+                        "tenant_id": tenant_id,
+                        "item_id": str(destino_doc.get('_id', item_id)),
+                        "item_nombre": destino_doc.get('nombre') or snap.get('nombre'),
+                        "sucursal_id": destino_id,
+                        "cantidad": cant_recibida,
+                        "stock_anterior": stock_resultante - cant_recibida,
+                        "stock_resultante": stock_resultante,
+                        "concepto": "TRASPASO_ENTRADA",
+                        "referencia_id": traspaso_id,
+                        "usuario_id": usuario_id,
+                        "usuario_nombre": usuario_nombre,
+                        "createdAt": datetime.utcnow(),
+                    })
+
+            # Bitácora de inventario (entrada). No es fatal si falla.
+            try:
+                if movimientos_entrada:
+                    db["inventario_movimientos"].insert_many(movimientos_entrada)
+            except Exception as bit_err:
+                logger.warning(f"No se pudo registrar bitácora de traspaso (entrada): {bit_err}")
 
         update_data = {
             "estado": estado,

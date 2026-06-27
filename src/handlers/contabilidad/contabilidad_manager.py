@@ -358,6 +358,54 @@ def _month_range(year, month):
     return inicio, fin
 
 
+def _resolve_periodo(qp):
+    """Resuelve el periodo del reporte. Si vienen `desde` y `hasta` (YYYY-MM-DD), usa ese
+    rango personalizado (hasta inclusivo). Si no, cae al mes (year/month).
+
+    Devuelve (desde, hasta_excl, year, month, es_rango). `year`/`month` se conservan para
+    los reportes que aún razonan por mes (p.ej. gastos fijos); en modo rango apuntan al
+    mes de la fecha `desde`."""
+    desde = _parse_date(qp.get('desde')) if qp.get('desde') else None
+    hasta = _parse_date(qp.get('hasta')) if qp.get('hasta') else None
+    if desde and hasta:
+        desde = desde.replace(hour=0, minute=0, second=0, microsecond=0)
+        # hasta inclusivo: el fin exclusivo es el día siguiente a medianoche
+        hasta_excl = hasta.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        return desde, hasta_excl, desde.year, desde.month, True
+    year, month = _parse_year_month(qp)
+    d, h = _month_range(year, month)
+    return d, h, year, month, False
+
+
+def _meses_en_rango(desde, hasta_excl):
+    """Lista de (year, month) que toca el rango [desde, hasta_excl). Usado para sumar
+    gastos fijos (que viven por mes) cuando el periodo abarca varios meses."""
+    meses = []
+    y, m = desde.year, desde.month
+    # límite: el mes del último día incluido (hasta_excl - 1 día)
+    fin = hasta_excl - timedelta(days=1)
+    while (y, m) <= (fin.year, fin.month):
+        meses.append((y, m))
+        if m == 12:
+            y, m = y + 1, 1
+        else:
+            m += 1
+    return meses
+
+
+def _gasto_fijo_filter_rango(meses, sucursal_id):
+    """Query de gastos fijos para una lista de meses (year, month)."""
+    pares = [{"year": int(y), "month": int(m)} for (y, m) in meses]
+    q = {"$or": pares} if pares else {"_id": None}
+    if sucursal_id:
+        q = {"$and": [q, {"$or": [
+            {"sucursal_id": sucursal_id},
+            {"sucursal_id": None},
+            {"sucursal_id": {"$exists": False}},
+        ]}]}
+    return q
+
+
 def _gasto_fijo_filter(year, month, sucursal_id):
     """Query para encontrar instancias del mes. Si pides sucursal_id incluye también
     los gastos generales (sucursal_id None) para no esconderlos."""
@@ -776,9 +824,8 @@ def get_resumen_mensual_handler(event, context):
             return create_response(403, "No autorizado")
 
         qp = event.get('queryStringParameters') or {}
-        year, month = _parse_year_month(qp)
         sucursal_id = qp.get('sucursal_id') or qp.get('sucursalId')
-        desde, hasta_excl = _month_range(year, month)
+        desde, hasta_excl, year, month, es_rango = _resolve_periodo(qp)
 
         db = get_tenant_db(tenant_id)
 
@@ -885,8 +932,14 @@ def get_resumen_mensual_handler(event, context):
                 else:
                     compras_inventario_base += base_ln
 
-        # --- Gastos fijos del mes ---
-        docs_fijos = list(db.gastos_fijos_mes.find(_gasto_fijo_filter(year, month, sucursal_id)))
+        # --- Gastos fijos del periodo ---
+        # En modo rango sumamos los gastos fijos de todos los meses que toca el periodo;
+        # en modo mes, solo ese mes.
+        if es_rango:
+            filtro_fijos = _gasto_fijo_filter_rango(_meses_en_rango(desde, hasta_excl), sucursal_id)
+        else:
+            filtro_fijos = _gasto_fijo_filter(year, month, sucursal_id)
+        docs_fijos = list(db.gastos_fijos_mes.find(filtro_fijos))
         gastos_fijos_real = 0.0
         gastos_fijos_estimado = 0.0
         gastos_fijos_pagado = 0.0
@@ -914,7 +967,18 @@ def get_resumen_mensual_handler(event, context):
         # y de gastos fijos. Restan de la utilidad neta como egreso del mes.
         gastos_variables_manuales = 0.0
         gastos_variables_manuales_detalle = []
-        for d in db.gastos_variables.find(_gasto_variable_filter(year, month, sucursal_id)):
+        if es_rango:
+            # En rango filtramos por la fecha real del gasto, no por year/month.
+            filtro_var = {"fecha": {"$gte": desde, "$lt": hasta_excl}}
+            if sucursal_id:
+                filtro_var['$or'] = [
+                    {"sucursal_id": sucursal_id},
+                    {"sucursal_id": None},
+                    {"sucursal_id": {"$exists": False}},
+                ]
+        else:
+            filtro_var = _gasto_variable_filter(year, month, sucursal_id)
+        for d in db.gastos_variables.find(filtro_var):
             monto = float(d.get('monto') or 0)
             gastos_variables_manuales += monto
             fecha_v = d.get('fecha')
@@ -940,6 +1004,7 @@ def get_resumen_mensual_handler(event, context):
         return create_response(200, "Resumen mensual", {
             "year": year,
             "month": month,
+            "es_rango": es_rango,
             "sucursal_id": sucursal_id,
             "rango": {"desde": iso_utc(desde), "hasta": iso_utc(hasta_excl)},
             "ingresos": {
@@ -1003,9 +1068,8 @@ def get_resumen_por_os_handler(event, context):
             return create_response(403, "No autorizado")
 
         qp = event.get('queryStringParameters') or {}
-        year, month = _parse_year_month(qp)
         sucursal_id = qp.get('sucursal_id') or qp.get('sucursalId')
-        desde, hasta_excl = _month_range(year, month)
+        desde, hasta_excl, year, month, es_rango = _resolve_periodo(qp)
 
         db = get_tenant_db(tenant_id)
 
@@ -1173,6 +1237,7 @@ def get_resumen_por_os_handler(event, context):
         return create_response(200, "Resumen por OS", {
             'year': year,
             'month': month,
+            'es_rango': es_rango,
             'sucursal_id': sucursal_id,
             'rango': {"desde": iso_utc(desde), "hasta": iso_utc(hasta_excl)},
             'totales': {
@@ -1210,9 +1275,8 @@ def get_concentrado_ventas_handler(event, context):
             return create_response(403, "No autorizado")
 
         qp = event.get('queryStringParameters') or {}
-        year, month = _parse_year_month(qp)
         sucursal_id = qp.get('sucursal_id') or qp.get('sucursalId')
-        desde, hasta_excl = _month_range(year, month)
+        desde, hasta_excl, year, month, es_rango = _resolve_periodo(qp)
 
         db = get_tenant_db(tenant_id)
 
@@ -1316,6 +1380,7 @@ def get_concentrado_ventas_handler(event, context):
         return create_response(200, "Concentrado de ventas", {
             'year': year,
             'month': month,
+            'es_rango': es_rango,
             'sucursal_id': sucursal_id,
             'rango': {"desde": iso_utc(desde), "hasta": iso_utc(hasta_excl)},
             'totales': {
@@ -1346,9 +1411,8 @@ def get_iva_mensual_handler(event, context):
             return create_response(403, "No autorizado")
 
         qp = event.get('queryStringParameters') or {}
-        year, month = _parse_year_month(qp)
         sucursal_id = qp.get('sucursal_id') or qp.get('sucursalId')
-        desde, hasta_excl = _month_range(year, month)
+        desde, hasta_excl, year, month, es_rango = _resolve_periodo(qp)
 
         db = get_tenant_db(tenant_id)
 
@@ -1390,6 +1454,8 @@ def get_iva_mensual_handler(event, context):
         return create_response(200, "IVA mensual", {
             "year": year,
             "month": month,
+            "es_rango": es_rango,
+            "rango": {"desde": iso_utc(desde), "hasta": iso_utc(hasta_excl)},
             "ventas": {
                 "subtotal": round(float(v.get('subtotal') or 0), 2),
                 "iva": round(iva_cobrado, 2),
