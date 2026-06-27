@@ -1144,6 +1144,28 @@ functions:
           authorizer:
             name: cognitoAuthorizer
 
+  catalogos_marcas_productos_list:
+    handler: src.handlers.admin.configuracion_manager.list_marcas_productos_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /catalogos/marcas-productos
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  catalogos_marcas_productos_upsert:
+    handler: src.handlers.admin.configuracion_manager.upsert_marcas_productos_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /catalogos/marcas-productos
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
   get_ventas:
     handler: src.handlers.ventas.ventas_manager.list_ventas_handler
     layers:

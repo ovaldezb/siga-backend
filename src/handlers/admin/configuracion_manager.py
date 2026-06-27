@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import datetime
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
@@ -247,5 +248,143 @@ def update_config_handler(event, context):
                 logger.error(f"Error sincronizando templates a cotizaciones: {sync_err}")
         
         return create_response(200, "Configuración actualizada")
+    except Exception as e:
+        return handle_exception(e)
+
+
+# ----------------------------------------------------------------------------
+# Catálogo de marcas de productos. Vive dentro de `configuracion.marcas[]`
+# ({id, nombre, activa}). Estos endpoints dedicados permiten leer/editar SOLO
+# ese catálogo sin enviar ni reescribir toda la configuración del taller.
+# ----------------------------------------------------------------------------
+
+def _slug_marca(nombre):
+    """Genera un id estable a partir del nombre (ej. 'AC Delco' -> 'ac-delco')."""
+    s = (nombre or '').strip().lower()
+    s = re.sub(r'[^a-z0-9]+', '-', s).strip('-')
+    return s or 'marca'
+
+
+def _normalizar_marcas(lista):
+    """Normaliza una lista de marcas garantizando id/nombre/activa y sin nombres vacíos."""
+    out = []
+    vistos = set()
+    for m in lista or []:
+        nombre = (m.get('nombre') or '').strip()
+        if not nombre:
+            continue
+        marca_id = (m.get('id') or _slug_marca(nombre))
+        if marca_id in vistos:
+            continue
+        vistos.add(marca_id)
+        out.append({
+            "id": marca_id,
+            "nombre": nombre,
+            "activa": bool(m.get('activa', True)),
+        })
+    return out
+
+
+def list_marcas_productos_handler(event, context):
+    """GET /catalogos/marcas-productos[?todas=true]
+
+    Devuelve el catálogo de marcas de productos. Por defecto solo las activas;
+    con ?todas=true incluye también las inactivas (para administración)."""
+    try:
+        claims = get_claims(event)
+        tenant_id = claims.get('custom:tenant_id')
+        if not tenant_id:
+            return create_response(403, "No autorizado")
+
+        qp = event.get('queryStringParameters') or {}
+        incluir_todas = str(qp.get('todas', '')).lower() in ('1', 'true', 'yes')
+
+        db = get_tenant_db(tenant_id)
+        config = db["configuracion"].find_one({"tenant_id": tenant_id}, {"marcas": 1}) or {}
+        marcas = config.get('marcas') or []
+        if not incluir_todas:
+            marcas = [m for m in marcas if m.get('activa', True)]
+
+        return create_response(200, "Marcas de productos", {"marcas": marcas})
+    except Exception as e:
+        return handle_exception(e)
+
+
+def upsert_marcas_productos_handler(event, context):
+    """POST /catalogos/marcas-productos — CRUD del catálogo de marcas (solo admin).
+
+    Dos modos de uso:
+      1) Reemplazo total del catálogo:  {"marcas": [{id?, nombre, activa?}, ...]}
+      2) Operación puntual:             {"accion": "add"|"update"|"delete", "marca": {...}}
+         - add:    requiere marca.nombre (id se deriva del nombre si no viene)
+         - update: requiere marca.id; actualiza nombre y/o activa
+         - delete: requiere marca.id
+
+    Solo escribe el campo `marcas`, sin tocar el resto de la configuración."""
+    try:
+        claims = get_claims(event)
+        tenant_id = claims.get('custom:tenant_id')
+        if not tenant_id:
+            return create_response(403, "No autorizado")
+        if not is_admin(claims):
+            return create_response(403, "No tiene permisos para modificar el catálogo de marcas.")
+
+        body = json.loads(event.get('body', '{}'))
+        db = get_tenant_db(tenant_id)
+        config = db["configuracion"].find_one({"tenant_id": tenant_id}, {"marcas": 1}) or {}
+        marcas = config.get('marcas') or []
+
+        # Modo 1: reemplazo total del catálogo.
+        if isinstance(body.get('marcas'), list):
+            marcas = _normalizar_marcas(body['marcas'])
+        else:
+            # Modo 2: operación puntual.
+            accion = (body.get('accion') or '').strip().lower()
+            marca = body.get('marca') or {}
+            nombre = (marca.get('nombre') or '').strip()
+            marca_id = (marca.get('id') or '').strip()
+
+            if accion == 'add':
+                if not nombre:
+                    return create_response(400, "El nombre de la marca es obligatorio.")
+                nuevo_id = marca_id or _slug_marca(nombre)
+                dup = any(m.get('id') == nuevo_id or (m.get('nombre', '').strip().lower() == nombre.lower())
+                          for m in marcas)
+                if dup:
+                    return create_response(409, f"La marca '{nombre}' ya existe.")
+                marcas.append({"id": nuevo_id, "nombre": nombre, "activa": bool(marca.get('activa', True))})
+
+            elif accion == 'update':
+                if not marca_id:
+                    return create_response(400, "Se requiere el id de la marca para actualizar.")
+                encontrada = False
+                for m in marcas:
+                    if m.get('id') == marca_id:
+                        if nombre:
+                            m['nombre'] = nombre
+                        if 'activa' in marca:
+                            m['activa'] = bool(marca['activa'])
+                        encontrada = True
+                        break
+                if not encontrada:
+                    return create_response(404, "Marca no encontrada.")
+
+            elif accion == 'delete':
+                if not marca_id:
+                    return create_response(400, "Se requiere el id de la marca para eliminar.")
+                antes = len(marcas)
+                marcas = [m for m in marcas if m.get('id') != marca_id]
+                if len(marcas) == antes:
+                    return create_response(404, "Marca no encontrada.")
+
+            else:
+                return create_response(400, "Acción inválida. Usa add/update/delete o envía 'marcas' (lista completa).")
+
+        db["configuracion"].update_one(
+            {"tenant_id": tenant_id},
+            {"$set": {"marcas": marcas, "updatedAt": datetime.utcnow()}},
+            upsert=True,
+        )
+        return create_response(200, "Catálogo de marcas actualizado", {"marcas": marcas})
     except Exception as e:
         return handle_exception(e)
