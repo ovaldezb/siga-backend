@@ -15,6 +15,8 @@ from src.shared.utils.date_utils import iso_utc
 
 logger = Logger()
 
+IVA_RATE = 0.16  # Tasa de IVA en México (mismo valor que ventas/compras)
+
 
 def _get_claims(event):
     return get_claims(event)
@@ -1184,6 +1186,151 @@ def get_resumen_por_os_handler(event, context):
             },
             'proveedores_global': sorted(proveedores_global.values(), key=lambda x: x['total'], reverse=True),
             'ordenes': filas,
+        })
+    except Exception as e:
+        return handle_exception(e)
+
+
+def get_concentrado_ventas_handler(event, context):
+    """GET /contabilidad/concentrado-ventas?year=&month=&sucursal_id=
+
+    Concentrado a nivel RENGLÓN: una fila por cada item (refacción o servicio) de cada
+    venta del mes, con su ingreso neto, costo y ganancia/pérdida. Sirve para ver qué
+    piezas/servicios dejan utilidad y cuáles se vendieron por debajo del costo.
+
+    El ingreso neto por línea se reconstruye respetando los flags de IVA de la venta
+    (precio_incluye_iva / iva_exento) y se prorratea el descuento global mediante un
+    factor, de modo que la suma de los renglones coincida con el subtotal de la venta.
+    El costo sale de costo_unitario_snapshot (congelado al momento de vender).
+    """
+    try:
+        claims = _get_claims(event)
+        tenant_id = claims.get('custom:tenant_id')
+        if not tenant_id:
+            return create_response(403, "No autorizado")
+
+        qp = event.get('queryStringParameters') or {}
+        year, month = _parse_year_month(qp)
+        sucursal_id = qp.get('sucursal_id') or qp.get('sucursalId')
+        desde, hasta_excl = _month_range(year, month)
+
+        db = get_tenant_db(tenant_id)
+
+        q_ventas = {
+            "createdAt": {"$gte": desde, "$lt": hasta_excl},
+            "estado": {"$nin": ["CANCELADA", "ANULADA"]},
+        }
+        if sucursal_id:
+            q_ventas['sucursal_id'] = sucursal_id
+        ventas = list(db.ventas.find(q_ventas, {
+            'folio': 1, 'cliente_nombre': 1, 'cliente_id': 1, 'items': 1,
+            'subtotal': 1, 'descuento': 1, 'orden_id': 1, 'sucursal_id': 1,
+            'createdAt': 1, 'estado': 1,
+        }))
+
+        renglones = []
+        tot_ingreso = 0.0
+        tot_costo = 0.0
+        grupos = {
+            'REFACCION': {'ingreso': 0.0, 'costo': 0.0, 'ganancia': 0.0, 'renglones': 0},
+            'SERVICIO':  {'ingreso': 0.0, 'costo': 0.0, 'ganancia': 0.0, 'renglones': 0},
+        }
+        renglones_con_perdida = 0
+
+        for v in ventas:
+            items = v.get('items') or []
+            # 1) base (sin IVA) de cada línea respetando flags; acumular para el factor.
+            lineas_calc = []
+            base_bruta_acum = 0.0
+            for it in items:
+                try:
+                    precio = float(it.get('precio_unitario') or 0)
+                    cant = int(it.get('cantidad') or 0)
+                except (TypeError, ValueError):
+                    precio, cant = 0.0, 0
+                producto = it.get('producto') or {}
+                incluye_iva = it.get('precio_incluye_iva', producto.get('precio_incluye_iva', True))
+                iva_exento = it.get('iva_exento', producto.get('iva_exento', False))
+                line_amount = precio * cant
+                if iva_exento or not bool(incluye_iva):
+                    line_base = line_amount
+                else:
+                    line_base = line_amount / (1 + IVA_RATE)
+                base_bruta_acum += line_base
+                lineas_calc.append((it, producto, precio, cant, line_base))
+
+            # 2) factor de descuento: subtotal real / suma de bases brutas.
+            subtotal_venta = float(v.get('subtotal') or 0)
+            factor = (subtotal_venta / base_bruta_acum) if base_bruta_acum > 0 else 1.0
+
+            fecha_iso = v.get('createdAt')
+            if isinstance(fecha_iso, datetime):
+                fecha_iso = iso_utc(fecha_iso)
+
+            for it, producto, precio, cant, line_base in lineas_calc:
+                ingreso_neto = round(line_base * factor, 2)
+                costo_u = float(it.get('costo_unitario_snapshot') or 0)
+                costo_ln = round(costo_u * cant, 2)
+                ganancia = round(ingreso_neto - costo_ln, 2)
+
+                tipo_raw = (it.get('tipo') or producto.get('tipo') or '').upper()
+                tipo = 'SERVICIO' if tipo_raw == 'SERVICIO' else 'REFACCION'
+
+                tot_ingreso += ingreso_neto
+                tot_costo += costo_ln
+                g = grupos[tipo]
+                g['ingreso'] += ingreso_neto
+                g['costo'] += costo_ln
+                g['ganancia'] += ganancia
+                g['renglones'] += 1
+                if ganancia < 0:
+                    renglones_con_perdida += 1
+
+                renglones.append({
+                    'venta_id': str(v.get('_id')),
+                    'venta_folio': v.get('folio'),
+                    'fecha': fecha_iso,
+                    'cliente': v.get('cliente_nombre') or 'Público general',
+                    'origen': 'OS' if v.get('orden_id') else 'MOSTRADOR',
+                    'tipo': tipo,
+                    'nombre': it.get('nombre') or producto.get('nombre') or 'Sin nombre',
+                    'no_parte': it.get('no_parte') or producto.get('no_parte') or '',
+                    'cantidad': cant,
+                    'precio_unitario': round(precio, 2),
+                    'ingreso_neto': ingreso_neto,
+                    'costo': costo_ln,
+                    'ganancia': ganancia,
+                    'margen_pct': round((ganancia / ingreso_neto * 100), 2) if ingreso_neto > 0 else 0.0,
+                    'es_externo': bool(it.get('es_externo') or producto.get('es_externo')),
+                    'proveedor_nombre': it.get('proveedor_nombre') or producto.get('proveedor_nombre') or '',
+                })
+
+        renglones.sort(key=lambda r: (r.get('fecha') or '', r.get('venta_folio') or ''), reverse=True)
+        ganancia_total = round(tot_ingreso - tot_costo, 2)
+
+        for grp in grupos.values():
+            grp['ingreso'] = round(grp['ingreso'], 2)
+            grp['costo'] = round(grp['costo'], 2)
+            grp['ganancia'] = round(grp['ganancia'], 2)
+
+        return create_response(200, "Concentrado de ventas", {
+            'year': year,
+            'month': month,
+            'sucursal_id': sucursal_id,
+            'rango': {"desde": iso_utc(desde), "hasta": iso_utc(hasta_excl)},
+            'totales': {
+                'ingreso_neto': round(tot_ingreso, 2),
+                'costo': round(tot_costo, 2),
+                'ganancia': ganancia_total,
+                'margen_pct': round((ganancia_total / tot_ingreso * 100), 2) if tot_ingreso > 0 else 0.0,
+                'renglones': len(renglones),
+                'renglones_con_perdida': renglones_con_perdida,
+            },
+            'por_tipo': {
+                'refacciones': grupos['REFACCION'],
+                'servicios': grupos['SERVICIO'],
+            },
+            'renglones': renglones[:2000],
         })
     except Exception as e:
         return handle_exception(e)

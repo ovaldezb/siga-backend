@@ -89,20 +89,24 @@ def add_evidencia_handler(event, context):
         body = json.loads(event.get('body') or '{}')
         s3_key = body.get('s3Key')
         nombre_original = body.get('nombreOriginal')
-        
+        # contentType permite distinguir foto vs video al renderizar. Las evidencias
+        # antiguas no lo tienen; el frontend cae a la extensión del nombre.
+        content_type = body.get('contentType') or ''
+
         if not tenant_id or not orden_id or not s3_key:
             return create_response(400, "Parámetros insuficientes")
-            
+
         logger.info(f"Registrando evidencia para orden {orden_id} (Tenant: {tenant_id})")
         db = get_tenant_db(tenant_id)
-        
+
         # Fecha formateada según solicitud del usuario
         fecha_str = datetime.now().strftime('%d-%m-%Y_%H:%M')
-        
+
         nueva_evidencia = {
             "fecha": fecha_str,
             "s3Key": s3_key,
             "nombreOriginal": nombre_original,
+            "contentType": content_type,
             "createdAt": datetime.utcnow()
         }
         

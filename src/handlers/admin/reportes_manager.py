@@ -29,6 +29,18 @@ def get_kpis_handler(event, context):
         if sucursal_id:
             filter_base["sucursal_id"] = sucursal_id
 
+        # OS ENTREGADAS que NO pasaron por POS (sin venta_id): evita el doble conteo
+        # con la colección `ventas`. Cuando una OS se cobra en Punto de Venta se crea
+        # un registro en `ventas` Y la OS queda ENTREGADO con venta_id; sumar ambas
+        # fuentes duplicaría ingresos, utilidad y ranking de clientes. Aquí sólo se
+        # incluyen las OS entregadas directo (flujo legacy sin venta).
+        # Nota: $in con None también matchea documentos sin el campo venta_id.
+        os_entregada_sin_venta = {
+            **filter_base,
+            "estado": "ENTREGADO",
+            "venta_id": {"$in": [None, ""]},
+        }
+
         # 1. INGRESOS HOY (OS + POS)
         today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
         
@@ -51,7 +63,7 @@ def get_kpis_handler(event, context):
         
         # OS Hoy (Entregadas)
         res_os_hoy = list(db["ordenes_servicio"].aggregate([
-            {"$match": {**filter_base, "estado": "ENTREGADO"}},
+            {"$match": os_entregada_sin_venta},
             {"$addFields": {"__date": match_date_expr}},
             {"$match": {"__date": {"$gte": today}}},
             {"$group": {"_id": None, "total": {"$sum": "$total"}}}
@@ -76,7 +88,7 @@ def get_kpis_handler(event, context):
         ]))
 
         os_por_cliente = list(db["ordenes_servicio"].aggregate([
-            {"$match": {**filter_base, "estado": "ENTREGADO"}},
+            {"$match": os_entregada_sin_venta},
             {"$group": {
                 "_id": "$cliente_snapshot.id",
                 "total_gastado": {"$sum": {"$ifNull": ["$total", 0]}},
@@ -177,7 +189,7 @@ def get_kpis_handler(event, context):
         
         # Agregación mensual de OS
         os_mensuales = list(db["ordenes_servicio"].aggregate([
-            {"$match": {**filter_base, "estado": "ENTREGADO"}},
+            {"$match": os_entregada_sin_venta},
             {"$addFields": {"__date": date_expr}},
             {"$group": {
                 "_id": {"$dateToString": {"format": "%Y-%m", "date": "$__date"}},
@@ -209,7 +221,7 @@ def get_kpis_handler(event, context):
         # Las cortesías (no_cobrar) no generan ingreso: su precioVenta cuenta como 0,
         # de modo que su costo (precioCompra) reste correctamente a la utilidad del taller.
         res_util_os = list(db["ordenes_servicio"].aggregate([
-            {"$match": {**filter_base, "estado": "ENTREGADO"}},
+            {"$match": os_entregada_sin_venta},
             {"$unwind": {"path": "$puntosArreglar", "preserveNullAndEmptyArrays": True}},
             {"$unwind": {"path": "$puntosArreglar.items", "preserveNullAndEmptyArrays": True}},
             {"$group": {
@@ -231,12 +243,19 @@ def get_kpis_handler(event, context):
         utilidad_total = (res_util_ventas[0]['utilidad'] if res_util_ventas else 0) + \
                          (res_util_os[0]['utilidad'] if res_util_os else 0)
         
-        # Ingresos totales para margen
-        ingresos_totales = list(db["ventas"].aggregate([
+        # Ingresos totales para margen. Debe abarcar las mismas dos fuentes que la
+        # utilidad (POS + OS entregadas sin venta), si no el numerador y el denominador
+        # medirían universos distintos y el margen saldría inflado.
+        ingresos_pos_totales = list(db["ventas"].aggregate([
             {"$match": filter_base},
             {"$group": {"_id": None, "total": {"$sum": "$total"}}}
         ]))
-        ingresos_totales_val = (ingresos_totales[0]['total'] if ingresos_totales else 0)
+        ingresos_os_totales = list(db["ordenes_servicio"].aggregate([
+            {"$match": os_entregada_sin_venta},
+            {"$group": {"_id": None, "total": {"$sum": {"$ifNull": ["$total", 0]}}}}
+        ]))
+        ingresos_totales_val = (ingresos_pos_totales[0]['total'] if ingresos_pos_totales else 0) + \
+                               (ingresos_os_totales[0]['total'] if ingresos_os_totales else 0)
         margen = (utilidad_total / ingresos_totales_val * 100) if ingresos_totales_val > 0 else 0
 
         # 6. CITAS PENDIENTES

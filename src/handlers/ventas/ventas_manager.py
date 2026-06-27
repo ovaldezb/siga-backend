@@ -1,5 +1,5 @@
 import json
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.utils.auth_utils import try_parse_id, get_claims
@@ -22,6 +22,24 @@ class StockInsuficienteError(Exception):
         self.mensaje = mensaje
 
 
+def _parse_fecha_cierre(value):
+    """Convierte un ISO del cliente a datetime naive UTC. Devuelve None si es inválido.
+    El frontend manda la fecha/hora local del cierre ya convertida a UTC (toISOString),
+    así queda consistente con datetime.utcnow() del resto de las ventas."""
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        try:
+            dt = datetime.fromisoformat(str(value).strip().replace('Z', '+00:00'))
+        except (ValueError, TypeError):
+            return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
 def create_venta_handler(event, context):
     """POST /ventas — Registra una venta, descuenta inventario y liga OS."""
     try:
@@ -40,6 +58,21 @@ def create_venta_handler(event, context):
         items = body.get('items', [])
         sucursal_id = body.get('sucursal_id') or body.get('sucursalId')
         orden_id = body.get('orden_id')
+
+        # Fecha/hora de cierre. Por defecto = ahora, pero el operador puede capturar una
+        # fecha anterior cuando cierra la venta al día siguiente (la fecha afecta los
+        # reportes contables, que filtran por createdAt).
+        created_at = datetime.utcnow()
+        fecha_cierre_in = body.get('fecha_cierre') or body.get('fecha_venta')
+        if fecha_cierre_in:
+            parsed = _parse_fecha_cierre(fecha_cierre_in)
+            if parsed is None:
+                return create_response(400, "Fecha de cierre inválida.")
+            if parsed > datetime.utcnow() + timedelta(minutes=10):
+                return create_response(400, "La fecha de cierre no puede ser futura.")
+            if parsed < datetime.utcnow() - timedelta(days=730):
+                return create_response(400, "La fecha de cierre es demasiado antigua (máximo 2 años atrás).")
+            created_at = parsed
 
         if not items:
             return create_response(400, "Se requiere al menos un item para la venta.")
@@ -228,7 +261,8 @@ def create_venta_handler(event, context):
             "usuario_id": usuario_id,
             "usuario_nombre": usuario_nombre,
             "tenant_id": tenant_id,
-            "createdAt": datetime.utcnow(),
+            "createdAt": created_at,
+            "fecha_cierre_manual": bool(fecha_cierre_in),
         }
 
         # 3.9 PRE-CÁLCULO DE BACKOFFICE CxP — antes de la transacción para no llamar a
@@ -284,7 +318,7 @@ def create_venta_handler(event, context):
                 "proveedor_id": p_id,
                 "proveedor_snapshot": {"id": p_id, "nombre": prov.get('nombre'), "rfc": prov.get('rfc')},
                 "sucursal_id": sucursal_id,
-                "fecha_factura": iso_utc(),
+                "fecha_factura": iso_utc(created_at),
                 "items": compra_items,
                 "subtotal": subtotal_compra,
                 "iva": iva_total_compra,
@@ -296,7 +330,7 @@ def create_venta_handler(event, context):
                 "notas": f"Generada automáticamente desde OS {body.get('folio_orden', 'N/A')} vinculada a Venta {folio}",
                 "orden_id": orden_id,
                 "tenant_id": tenant_id,
-                "createdAt": datetime.utcnow(),
+                "createdAt": created_at,
             })
 
         # 3.95 PRE-LECTURA DE CAJA ABIERTA — leemos antes para no hacer find dentro de la transacción.

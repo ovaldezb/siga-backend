@@ -1298,6 +1298,17 @@ functions:
           authorizer:
             name: cognitoAuthorizer
 
+  contabilidad_concentrado_ventas:
+    handler: src/handlers/contabilidad/contabilidad_manager.get_concentrado_ventas_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /contabilidad/concentrado-ventas
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
   contabilidad_resumen_por_os:
     handler: src/handlers/contabilidad/contabilidad_manager.get_resumen_por_os_handler
     layers:
