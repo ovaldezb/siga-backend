@@ -358,6 +358,17 @@ functions:
           authorizer:
             name: cognitoAuthorizer
 
+  items_movimientos:
+    handler: src/handlers/inventario/items_manager.list_inventario_movimientos_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /items/movimientos
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
   items_get:
     handler: src/handlers/inventario/items_manager.get_item_handler
     layers:

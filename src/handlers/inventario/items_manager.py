@@ -5,6 +5,7 @@ from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.infrastructure.database import get_tenant_db
 from src.shared.utils.auth_utils import try_parse_id, resolve_sucursal_scope, is_admin, get_claims
 from bson import ObjectId
+from bson.errors import InvalidId
 from src.shared.utils.date_utils import iso_utc
 
 logger = Logger()
@@ -386,10 +387,13 @@ def update_stock_handler(event, context):
             db["inventario_movimientos"].insert_one({
                 "tenant_id": tenant_id,
                 "item_id": item_id,
+                "item_nombre": item.get('nombre'),
                 "sucursal_id": sucursal_id,
                 "cantidad": cantidad,
+                "stock_anterior": item.get('stock', 0),
                 "stock_resultante": result.get('stock', 0),
                 "concepto": body.get('concepto') or ("AJUSTE_MANUAL" if cantidad > 0 else "MERMA"),
+                "motivo": body.get('motivo') or '',
                 "usuario_id": claims.get('sub'),
                 "usuario_nombre": claims.get('name') or claims.get('email'),
                 "createdAt": datetime.utcnow()
@@ -402,6 +406,91 @@ def update_stock_handler(event, context):
         return create_response(200, "Stock actualizado", {
             "nuevo_stock": result['stock'],
             "ajuste": cantidad
+        })
+    except Exception as e:
+        return handle_exception(e)
+
+
+def list_inventario_movimientos_handler(event, context):
+    """GET /items/movimientos — Historial de movimientos de inventario (kardex).
+
+    Lista la bitácora `inventario_movimientos` (ajustes manuales, mermas, compras, etc.)
+    Filtros opcionales por query string: item_id, sucursal_id, concepto, desde, hasta.
+    Paginado con page/limit. Enriquece cada fila con el nombre del item cuando falta.
+    """
+    try:
+        claims = get_claims(event)
+        tenant_id = claims.get('custom:tenant_id')
+        if not tenant_id:
+            return create_response(403, "No se encontró un tenantId asociado.")
+
+        qp = event.get('queryStringParameters') or {}
+        page = max(1, int(qp.get('page', 1) or 1))
+        limit = min(int(qp.get('limit', 50) or 50), 200)
+        skip = (page - 1) * limit
+
+        query = {"tenant_id": tenant_id}
+        if qp.get('item_id'):
+            query['item_id'] = qp['item_id']
+        sucursal_id = qp.get('sucursal_id') or qp.get('sucursalId')
+        if sucursal_id:
+            query['sucursal_id'] = sucursal_id
+        if qp.get('concepto'):
+            query['concepto'] = qp['concepto'].upper()
+
+        # Rango de fechas sobre createdAt (datetime). Acepta YYYY-MM-DD.
+        rango = {}
+        if qp.get('desde'):
+            try:
+                rango['$gte'] = datetime.strptime(qp['desde'][:10], '%Y-%m-%d')
+            except (ValueError, TypeError):
+                pass
+        if qp.get('hasta'):
+            try:
+                # hasta inclusivo: sumamos un día
+                from datetime import timedelta
+                rango['$lt'] = datetime.strptime(qp['hasta'][:10], '%Y-%m-%d') + timedelta(days=1)
+            except (ValueError, TypeError):
+                pass
+        if rango:
+            query['createdAt'] = rango
+
+        db = get_tenant_db(tenant_id)
+        total = db["inventario_movimientos"].count_documents(query)
+        movimientos = list(db["inventario_movimientos"]
+                           .find(query)
+                           .sort("createdAt", -1)
+                           .skip(skip)
+                           .limit(limit))
+
+        # Resolver nombres de items que no traen item_nombre (movimientos antiguos).
+        faltan_nombre = list({m.get('item_id') for m in movimientos
+                              if not m.get('item_nombre') and m.get('item_id')})
+        nombres = {}
+        if faltan_nombre:
+            oids = []
+            for iid in faltan_nombre:
+                try:
+                    oids.append(ObjectId(iid))
+                except (InvalidId, TypeError):
+                    pass
+            if oids:
+                for it in db["items"].find({"_id": {"$in": oids}}, {"nombre": 1}):
+                    nombres[str(it['_id'])] = it.get('nombre')
+
+        for m in movimientos:
+            m['id'] = str(m.pop('_id'))
+            if not m.get('item_nombre'):
+                m['item_nombre'] = nombres.get(m.get('item_id')) or '(item eliminado)'
+            if isinstance(m.get('createdAt'), datetime):
+                m['createdAt'] = iso_utc(m['createdAt'])
+
+        return create_response(200, "Movimientos de inventario", {
+            "items": movimientos,
+            "page": page,
+            "limit": limit,
+            "total": total,
+            "pages": (total + limit - 1) // limit,
         })
     except Exception as e:
         return handle_exception(e)
