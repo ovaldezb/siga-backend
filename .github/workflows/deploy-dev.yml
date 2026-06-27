@@ -1,3 +1,11 @@
+# ##############################################################################
+# CRITICAL: SOLO Node 24. CERO actions que apunten a Node 20 (deprecado).
+# Node 20 dispara warnings de deprecación en el runner. Reglas:
+#   - actions/* y aws-actions/*: usar versiones que ya corran en Node 24 (@v5/@v6).
+#   - Cualquier necesidad de QEMU/binfmt, Docker, etc.: hacerlo con un paso `run:`
+#     (NO con docker/setup-qemu-action, que aún apunta a Node 20).
+# Esta misma regla aplica en el deploy de FRONTEND (sae-app). Mantener ambos iguales.
+# ##############################################################################
 name: Deploy Backend (Dev)
 
 on:
@@ -27,13 +35,16 @@ jobs:
         with:
           python-version: '3.13' # Debe coincidir con provider.runtime en serverless.yml
 
-      # Necesario para que serverless-python-requirements (dockerizePip: true) pueda
-      # construir las wheels nativas del layer para arm64 (aarch64) emulando esa
-      # arquitectura sobre el runner x86. Registra binfmt/QEMU para arm64.
-      - name: Set up QEMU (arm64)
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
+      # Registra QEMU/binfmt para que serverless-python-requirements (dockerizePip:
+      # true) pueda construir las wheels nativas del layer para arm64 (aarch64)
+      # emulando esa arquitectura sobre el runner x86.
+      # OJO (regla de oro de este repo, ver banner arriba): NO usar
+      # docker/setup-qemu-action — esa JS action apunta a Node 20 (deprecado) y
+      # ensucia el log con el warning de Node. Un paso `run` no depende de Node, así
+      # que cumple "solo Node 24 / cero actions Node 20". tonistiigi/binfmt es justo
+      # lo que esa action ejecuta por dentro.
+      - name: Set up QEMU (arm64) for cross-arch layer build
+        run: docker run --rm --privileged tonistiigi/binfmt:latest --install arm64
 
       - name: Install Node dependencies
         run: npm install
