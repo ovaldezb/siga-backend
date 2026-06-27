@@ -3,7 +3,7 @@ import sys
 import json
 from dotenv import load_dotenv
 
-# Asegura import desde la raíz del proyecto
+# Asegura import desde la raíz del proyecto 2
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 load_dotenv()
