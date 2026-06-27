@@ -5,7 +5,7 @@ from datetime import datetime
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.infrastructure.database import get_tenant_db, MongoDBConnection
-from src.shared.utils.auth_utils import try_parse_id, get_claims
+from src.shared.utils.auth_utils import try_parse_id, get_claims, is_admin
 from src.shared.utils.date_utils import iso_utc
 from src.shared.utils.os_events import (
     append_os_event,
@@ -924,6 +924,12 @@ def update_orden_handler(event, context):
             update_doc["$push"] = {"bitacora_estados": bitacora_push}
         db["ordenes_servicio"].update_one({"_id": ObjectId(orden_id)}, update_doc)
 
+        # Sincronizar la cita ligada cuando la OS llega a un estado terminal
+        # (FINALIZADO/ENTREGADO/CANCELADO) para que no quede clavada en "en proceso".
+        if nuevo_estado and nuevo_estado != orden_actual.get('estado'):
+            from src.handlers.citas.citas_manager import sync_cita_estado_por_orden
+            sync_cita_estado_por_orden(db, orden_id, nuevo_estado)
+
         # Sincronizar próximos cambios al vehículo si se actualizaron en la OS.
         if 'proximo_cambio_aceite' in update_data or 'proximo_cambio_bujias' in update_data:
             _sync_mantenimiento_to_vehiculo(
@@ -971,6 +977,129 @@ def update_orden_handler(event, context):
                 vs['updatedAt'] = iso_utc(vs['updatedAt'])
         
         return create_response(200, "Orden actualizada", orden)
+    except Exception as e:
+        return handle_exception(e)
+
+
+def _parse_fecha_iso(value):
+    """Parsea una fecha ISO (con o sin sufijo Z) a datetime UTC. None si inválida/vacía."""
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace('Z', '+00:00'))
+    except (ValueError, TypeError):
+        return None
+
+
+@logger.inject_lambda_context
+def set_fechas_cierre_handler(event, context):
+    """PUT /ordenes/{id}/fechas-cierre — Backoffice ADMIN para fijar/corregir a mano
+    las fechas de FINALIZACIÓN y/o ENTREGA de una OS.
+
+    Resuelve el backlog de OS cobradas antes de que el POS registrara la bitácora:
+    permite que un administrador capture la fecha real de finalización/entrega. Hace
+    upsert sobre la entrada correspondiente en `bitacora_estados` (que es de donde la
+    tabla de OS lee las columnas "F. Finalización" y "F. Entrega").
+
+    Body: { fecha_finalizacion?: ISO, fecha_entrega?: ISO }. Enviar "" o null borra
+    la entrada manual de ese estado.
+    """
+    try:
+        claims = get_claims(event)
+        tenant_id = claims.get('custom:tenant_id')
+        if not tenant_id:
+            return create_response(403, "No se encontró un tenantId asociado.")
+        if not is_admin(claims):
+            return create_response(403, "Solo un administrador puede ajustar las fechas de cierre.")
+
+        orden_id = event['pathParameters']['id']
+        body = json.loads(event.get('body', '{}'))
+
+        # Detectar qué claves vinieron (presencia != valor) para distinguir "no tocar"
+        # de "borrar" (clave presente con "" o null).
+        tocar_fin = 'fecha_finalizacion' in body
+        tocar_ent = 'fecha_entrega' in body
+        if not tocar_fin and not tocar_ent:
+            return create_response(400, "Debe enviar fecha_finalizacion y/o fecha_entrega.")
+
+        db = get_tenant_db(tenant_id)
+        try:
+            orden = db["ordenes_servicio"].find_one({"_id": ObjectId(orden_id), "tenant_id": tenant_id})
+        except (InvalidId, TypeError):
+            return create_response(400, "ID de orden inválido.")
+        if not orden:
+            return create_response(404, "Orden no encontrada.")
+
+        responsable = claims.get('email') or claims.get('name') or claims.get('sub') or 'system'
+        ahora_max = datetime.utcnow().replace(tzinfo=None)
+
+        def normalizar(valor):
+            """Retorna (accion, fecha_iso). accion: 'set' | 'clear' | error(str)."""
+            if valor in (None, ""):
+                return ('clear', None)
+            dt = _parse_fecha_iso(valor)
+            if dt is None:
+                return ('error', None)
+            # No permitir fechas futuras (margen 1 día por zona horaria)
+            dt_naive = dt.replace(tzinfo=None)
+            from datetime import timedelta
+            if dt_naive > ahora_max + timedelta(days=1):
+                return ('future', None)
+            return ('set', valor)
+
+        # Reconstruir bitacora_estados en Python (operación admin, baja frecuencia)
+        bitacora = list(orden.get('bitacora_estados') or [])
+
+        def aplicar(estado, valor):
+            accion, fecha_iso = normalizar(valor)
+            if accion == 'error':
+                return f"Fecha inválida para {estado}."
+            if accion == 'future':
+                return f"La fecha de {estado} no puede ser futura."
+            # Quitar entradas previas de ese estado
+            nonlocal bitacora
+            bitacora = [b for b in bitacora if b.get('estado') != estado]
+            if accion == 'set':
+                bitacora.append({
+                    "estado": estado,
+                    "fecha": fecha_iso,
+                    "usuario_id": responsable,
+                    "ajuste_manual": True,
+                })
+            return None
+
+        if tocar_fin:
+            err = aplicar('FINALIZADO', body.get('fecha_finalizacion'))
+            if err:
+                return create_response(400, err)
+        if tocar_ent:
+            err = aplicar('ENTREGADO', body.get('fecha_entrega'))
+            if err:
+                return create_response(400, err)
+
+        # Reordenar por fecha para mantener coherencia cronológica
+        def _key(b):
+            return _parse_fecha_iso(b.get('fecha')) or datetime.min
+        bitacora.sort(key=_key)
+
+        db["ordenes_servicio"].update_one(
+            {"_id": ObjectId(orden_id)},
+            {"$set": {"bitacora_estados": bitacora, "updatedAt": datetime.utcnow()}}
+        )
+
+        try:
+            append_os_event(
+                db, tenant_id, orden_id, OS_EVENT_ESTADO_CHANGED,
+                payload={"ajuste_manual_fechas": {
+                    "fecha_finalizacion": body.get('fecha_finalizacion') if tocar_fin else None,
+                    "fecha_entrega": body.get('fecha_entrega') if tocar_ent else None,
+                }},
+                claims=claims, event=event,
+            )
+        except Exception as ev_err:
+            logger.warning(f"No se pudo registrar evento de ajuste manual de fechas: {ev_err}")
+
+        return create_response(200, "Fechas de cierre actualizadas", {"bitacora_estados": bitacora})
     except Exception as e:
         return handle_exception(e)
 

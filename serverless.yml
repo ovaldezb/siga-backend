@@ -369,6 +369,17 @@ functions:
           authorizer:
             name: cognitoAuthorizer
 
+  items_inyectar:
+    handler: src/handlers/inventario/items_manager.inyectar_catalogo_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /items/inyectar
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
   items_get:
     handler: src/handlers/inventario/items_manager.get_item_handler
     layers:
@@ -574,6 +585,17 @@ functions:
     events:
       - httpApi:
           path: /ordenes/{id}
+          method: put
+          authorizer:
+            name: cognitoAuthorizer
+
+  ordenes_set_fechas_cierre:
+    handler: src/handlers/ordenes/ordenes_manager.set_fechas_cierre_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /ordenes/{id}/fechas-cierre
           method: put
           authorizer:
             name: cognitoAuthorizer
@@ -788,6 +810,17 @@ functions:
       - httpApi:
           path: /citas
           method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  citas_sync_estados:
+    handler: src/handlers/citas/citas_manager.sync_citas_estados_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /citas/sync-estados
+          method: post
           authorizer:
             name: cognitoAuthorizer
 

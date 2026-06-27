@@ -167,6 +167,97 @@ def create_item_handler(event, context):
     except Exception as e:
         return handle_exception(e)
 
+def inyectar_catalogo_handler(event, context):
+    """POST /items/inyectar — Replica el catálogo de artículos de una sucursal origen
+    hacia una o varias sucursales destino, SIN inventario (stock 0).
+
+    Solo ADMIN. Body: { origen_id, destinos: [sucursal_id, ...] }.
+    Copia únicamente artículos con número de parte. Por cada destino omite los
+    no_parte que ya existan ahí (no toca el artículo existente: conserva precios y
+    stock locales). Mismo criterio que el clon de items en la recepción de traspasos.
+    """
+    try:
+        claims = get_claims(event)
+        tenant_id = claims.get('custom:tenant_id')
+        if not tenant_id:
+            return create_response(403, "No se encontró un tenantId asociado.")
+        if not is_admin(claims):
+            return create_response(403, "Solo un administrador puede inyectar el catálogo entre sucursales.")
+
+        body = json.loads(event.get('body', '{}'))
+        origen_id = body.get('origen_id') or body.get('origenId')
+        destinos = body.get('destinos') or body.get('destinosIds') or []
+        if isinstance(destinos, str):
+            destinos = [destinos]
+        # Normalizar: strings no vacíos, sin el propio origen, sin repetidos
+        destinos = [d for d in {str(d) for d in destinos if d} if d != str(origen_id)]
+
+        if not origen_id:
+            return create_response(400, "Debe indicar la sucursal origen.")
+        if not destinos:
+            return create_response(400, "Debe indicar al menos una sucursal destino distinta del origen.")
+
+        db = get_tenant_db(tenant_id)
+
+        # Solo artículos con número de parte (catálogo de productos identificables)
+        origen_items = list(db["items"].find({
+            "sucursal_id": origen_id,
+            "no_parte": {"$nin": [None, ""]}
+        }))
+        if not origen_items:
+            return create_response(404, "La sucursal origen no tiene artículos con número de parte para inyectar.")
+
+        resumen = []
+        for destino_id in destinos:
+            # no_parte ya presentes en el destino (en minúsculas para comparar sin importar mayúsculas)
+            existentes = set()
+            for d in db["items"].find({"sucursal_id": destino_id}, {"no_parte": 1}):
+                np = (d.get('no_parte') or '').strip().lower()
+                if np:
+                    existentes.add(np)
+
+            nuevos = []
+            for it in origen_items:
+                np = (it.get('no_parte') or '').strip().lower()
+                if not np or np in existentes:
+                    continue
+                existentes.add(np)  # evita duplicar si el origen trae el mismo no_parte repetido
+                clone = {k: v for k, v in it.items() if k != '_id'}
+                clone['sucursal_id'] = destino_id
+                clone['tenant_id'] = tenant_id
+                # Catálogo sin inventario: stock 0 para productos, None para servicios
+                if clone.get('tipo') == 'SERVICIO' or not clone.get('maneja_inventario'):
+                    clone['stock'] = None
+                else:
+                    clone['stock'] = 0
+                clone['createdAt'] = iso_utc()
+                clone['clonado_de'] = str(it['_id'])
+                nuevos.append(clone)
+
+            creados = 0
+            if nuevos:
+                try:
+                    res = db["items"].insert_many(nuevos)
+                    creados = len(res.inserted_ids)
+                except Exception as ins_err:
+                    logger.error(f"Error inyectando catálogo a sucursal {destino_id}: {ins_err}")
+                    return create_response(500, f"No se pudo inyectar el catálogo a la sucursal destino: {ins_err}")
+
+            resumen.append({
+                "sucursal_id": destino_id,
+                "creados": creados,
+                "omitidos": len(origen_items) - creados
+            })
+
+        total_creados = sum(r["creados"] for r in resumen)
+        return create_response(200, f"Catálogo inyectado: {total_creados} artículo(s) creado(s).", {
+            "total_creados": total_creados,
+            "resumen": resumen
+        })
+    except Exception as e:
+        return handle_exception(e)
+
+
 def get_item_handler(event, context):
     try:
         claims =get_claims(event)

@@ -4,7 +4,7 @@ from datetime import datetime
 from bson import ObjectId
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
-from src.shared.utils.auth_utils import parse_object_id, get_tenant_id, try_parse_id, resolve_sucursal_scope, get_claims
+from src.shared.utils.auth_utils import parse_object_id, get_tenant_id, try_parse_id, resolve_sucursal_scope, get_claims, is_admin
 from src.shared.infrastructure.database import get_tenant_db
 from src.shared.utils.os_events import (
     append_os_event,
@@ -28,6 +28,92 @@ VALID_ESTADOS = {"pendiente", "confirmada", "en_proceso", "completada", "cancela
 def _serialize(doc):
     doc['id'] = str(doc.pop('_id'))
     return doc
+
+
+# Mapa: estado terminal de la OS -> estado que debe tomar la cita ligada.
+_OS_ESTADO_A_CITA = {
+    "FINALIZADO": "completada",
+    "ENTREGADO": "completada",
+    "CANCELADO": "cancelada",
+}
+
+
+def sync_cita_estado_por_orden(db, orden_id, os_estado, session=None):
+    """Sincroniza el estado de la cita ligada a una OS cuando la OS llega a un estado
+    terminal. FINALIZADO/ENTREGADO -> 'completada'; CANCELADO -> 'cancelada'.
+
+    Antes la cita quedaba clavada en 'en_proceso' aunque su OS ya se hubiera
+    finalizado/cobrado (el tab de Citas la seguía mostrando "En Proceso"). Esta
+    función la llaman los flujos que cierran una OS (POS, abono, cambio manual).
+
+    Best-effort: no pisa estados terminales de la cita y nunca rompe el flujo
+    llamador (las excepciones se registran y se ignoran).
+    """
+    if not orden_id:
+        return
+    nuevo = _OS_ESTADO_A_CITA.get(os_estado)
+    if not nuevo:
+        return
+    try:
+        db["citas"].update_one(
+            {"orden_id": str(orden_id), "estado": {"$nin": ["completada", "cancelada"]}},
+            {"$set": {"estado": nuevo, "updatedAt": iso_utc()}},
+            session=session,
+        )
+    except Exception as e:
+        logger.warning(f"No se pudo sincronizar estado de cita para OS {orden_id}: {e}")
+
+
+def sync_citas_estados_handler(event, context):
+    """POST /citas/sync-estados — Backoffice ADMIN: reconcilia el estado de las citas
+    cuyo OS ligado ya quedó terminal pero la cita siguió en 'en_proceso' (u otro
+    estado activo). Arregla el backlog histórico de un solo golpe.
+    """
+    try:
+        claims = get_claims(event)
+        tenant_id = claims.get('custom:tenant_id')
+        if not tenant_id:
+            return create_response(403, "No se encontró un tenantId asociado.")
+        if not is_admin(claims):
+            return create_response(403, "Solo un administrador puede sincronizar el estado de las citas.")
+
+        db = get_tenant_db(tenant_id)
+
+        # Citas activas (no terminales) que tienen una OS ligada.
+        citas = list(db.citas.find(
+            {"orden_id": {"$nin": [None, ""]}, "estado": {"$nin": ["completada", "cancelada"]}},
+            {"orden_id": 1, "estado": 1}
+        ))
+
+        # Resolver el estado actual de cada OS ligada en un solo query.
+        oids = []
+        for c in citas:
+            try:
+                oids.append(ObjectId(c['orden_id']))
+            except Exception:
+                pass
+        os_map = {}
+        if oids:
+            for o in db.ordenes_servicio.find({"_id": {"$in": oids}}, {"estado": 1}):
+                os_map[str(o['_id'])] = o.get('estado')
+
+        actualizadas = 0
+        for c in citas:
+            os_estado = os_map.get(str(c.get('orden_id')))
+            nuevo = _OS_ESTADO_A_CITA.get(os_estado)
+            if nuevo and nuevo != c.get('estado'):
+                db.citas.update_one(
+                    {"_id": c['_id']},
+                    {"$set": {"estado": nuevo, "updatedAt": iso_utc()}}
+                )
+                actualizadas += 1
+
+        return create_response(200, f"{actualizadas} cita(s) sincronizada(s).", {
+            "actualizadas": actualizadas,
+            "revisadas": len(citas),
+        })
+    except Exception as e:
+        return handle_exception(e)
 
 
 def list_citas_handler(event, context):

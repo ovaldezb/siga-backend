@@ -6,6 +6,7 @@ from src.shared.utils.auth_utils import try_parse_id, get_claims
 from src.shared.infrastructure.database import get_tenant_db, MongoDBConnection
 from src.shared.utils.indexes import ensure_indexes
 from src.handlers.admin.folios_manager import _get_next_folio_internal
+from src.handlers.citas.citas_manager import sync_cita_estado_por_orden
 from bson import ObjectId
 from bson.errors import InvalidId
 from src.shared.utils.date_utils import iso_utc
@@ -422,11 +423,48 @@ def create_venta_handler(event, context):
                             },
                             "updatedAt": datetime.utcnow(),
                         }
-                        db["ordenes_servicio"].update_one(
+
+                        # Bitácora de estados: el POS estampaba el estado con $set pero NO
+                        # registraba la transición en bitacora_estados → la columna
+                        # "F. Finalización" (que lee bitacora_estados) quedaba vacía en
+                        # toda OS cobrada desde POS. Empujamos las transiciones faltantes
+                        # usando la fecha de cierre (respeta cierres con fecha manual).
+                        responsable_os = claims.get('email') or claims.get('name') or usuario_id
+                        fecha_cierre_iso = iso_utc(created_at)
+                        os_actual = db["ordenes_servicio"].find_one(
                             {"_id": ObjectId(orden_id)},
-                            {"$set": os_update},
+                            {"bitacora_estados.estado": 1},
                             session=session,
                         )
+                        estados_existentes = {
+                            b.get("estado") for b in (os_actual or {}).get("bitacora_estados", [])
+                        }
+                        nuevas_entradas = []
+                        if "FINALIZADO" not in estados_existentes:
+                            nuevas_entradas.append({
+                                "estado": "FINALIZADO",
+                                "fecha": fecha_cierre_iso,
+                                "usuario_id": responsable_os,
+                            })
+                        if monto_credito == 0 and "ENTREGADO" not in estados_existentes:
+                            nuevas_entradas.append({
+                                "estado": "ENTREGADO",
+                                "fecha": fecha_cierre_iso,
+                                "usuario_id": responsable_os,
+                            })
+
+                        os_update_doc = {"$set": os_update}
+                        if nuevas_entradas:
+                            os_update_doc["$push"] = {"bitacora_estados": {"$each": nuevas_entradas}}
+                        db["ordenes_servicio"].update_one(
+                            {"_id": ObjectId(orden_id)},
+                            os_update_doc,
+                            session=session,
+                        )
+
+                        # Sincronizar la cita ligada (si la hay): al cerrar la OS la cita
+                        # debe pasar a 'completada' en lugar de quedarse "en proceso".
+                        sync_cita_estado_por_orden(db, orden_id, os_update["estado"], session=session)
                         for compra_doc in compras_a_insertar:
                             compra_doc["venta_id"] = nueva_venta["id"]
                             db["compras"].insert_one(compra_doc, session=session)
@@ -606,16 +644,35 @@ def registrar_abono_handler(event, context):
                     except (InvalidId, TypeError):
                         orden_oid = None
                     if orden_oid:
-                        db["ordenes_servicio"].update_one(
+                        # Registrar la transición a ENTREGADO en bitacora_estados (si no
+                        # estaba ya) para que la columna "F. Entrega" muestre la fecha.
+                        os_abono = db["ordenes_servicio"].find_one(
                             {"_id": orden_oid},
-                            {"$set": {
-                                "estado": "ENTREGADO",
-                                "pagada": True,
-                                "saldo_pendiente": 0,
-                                "updatedAt": datetime.utcnow(),
-                            }},
+                            {"bitacora_estados.estado": 1},
                             session=session,
                         )
+                        estados_abono = {
+                            b.get("estado") for b in (os_abono or {}).get("bitacora_estados", [])
+                        }
+                        os_abono_update = {"$set": {
+                            "estado": "ENTREGADO",
+                            "pagada": True,
+                            "saldo_pendiente": 0,
+                            "updatedAt": datetime.utcnow(),
+                        }}
+                        if "ENTREGADO" not in estados_abono:
+                            os_abono_update["$push"] = {"bitacora_estados": {
+                                "estado": "ENTREGADO",
+                                "fecha": iso_utc(),
+                                "usuario_id": usuario_nombre,
+                            }}
+                        db["ordenes_servicio"].update_one(
+                            {"_id": orden_oid},
+                            os_abono_update,
+                            session=session,
+                        )
+                        # La cita ligada pasa a 'completada' al liquidar el crédito.
+                        sync_cita_estado_por_orden(db, str(orden_oid), "ENTREGADO", session=session)
 
         venta_actualizada = db["ventas"].find_one({"_id": ObjectId(venta_id)})
         venta_actualizada['id'] = str(venta_actualizada.pop('_id'))
