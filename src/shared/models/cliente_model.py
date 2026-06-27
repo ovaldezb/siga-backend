@@ -6,7 +6,8 @@ class VehiculoResumen(BaseModel):
     placas: str
     marca: str
     modelo: str
-    anio: int = Field(alias="año")
+    # Acepta 'anio' (canónico) y 'año' (legacy) en payloads entrantes
+    anio: int = Field(validation_alias="anio", serialization_alias="anio")
 
     class Config:
         populate_by_name = True
@@ -26,7 +27,7 @@ class VehiculoClienteCreate(BaseModel):
     placas: str
     marca: str
     modelo: str
-    anio: int = Field(alias="año")
+    anio: int = Field(validation_alias="anio", serialization_alias="anio")
     vin: Optional[str] = None
 
     class Config:

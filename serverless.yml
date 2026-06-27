@@ -1,13 +1,34 @@
 service: siga-backend
 useDotenv: true
 
+# El schema de validación de Serverless Framework v3 NO conoce python3.13 (su lista
+# de runtimes topa en python3.11; 3.12/3.13 solo se añadieron al schema en SF v4).
+# Eso provoca el warning "Invalid configuration ... at 'provider.runtime'" aunque
+# AWS/CloudFormation SÍ soportan python3.13 y el deploy funciona. Apagamos la
+# validación de config para silenciar ese falso positivo y conservar 3.13.
+# (Trade-off: SF deja de avisar de typos en este archivo; CloudFormation los caza
+#  igual en deploy. La alternativa "limpia" sería migrar a SF v4.)
+configValidationMode: off
+
 provider:
   name: aws
-  runtime: python3.11
+  # python3.13: intérprete más rápido (faster CPython). El warning de schema de SF v3
+  # queda silenciado con configValidationMode: off (ver arriba).
+  runtime: python3.13
+  # ARM64 (Graviton): ~más rápido y ~20% más barato que x86 para este workload.
+  # IMPORTANTE para el deploy: el layer de dependencias DEBE construirse con wheels
+  # aarch64. serverless-python-requirements lo hace vía Docker (dockerizePip: true);
+  # en CI Linux el runner necesita poder ejecutar contenedores arm64 (binfmt/QEMU).
+  # Si el build de arm64 no es viable en tu CI, revierte esta línea a x86_64.
+  architecture: arm64
   stage: ${opt:stage, 'dev'}
   region: ${opt:region, 'us-east-1'}
-  memorySize: 256
-  timeout: 30
+  # 256MB era bajo; en Lambda más memoria = más CPU, suele bajar la duración tanto
+  # que sale neutro o más barato. 512 es un punto de partida razonable; afinar con
+  # AWS Lambda Power Tuning por familia de funciones.
+  memorySize: 512
+  timeout: 29
+  versionFunctions: false
   iam:
     role:
       statements:
@@ -34,8 +55,16 @@ provider:
             - "s3:PutObjectAcl"
           Resource: 
             - !Sub "arn:aws:s3:::${self:service}-${self:provider.stage}-media/*"
+        - Effect: "Allow"
+          Action:
+            - "s3:PutObject"
+            - "s3:GetObject"
+            - "s3:DeleteObject"
+          Resource:
+            - !Sub "arn:aws:s3:::${self:service}-${self:provider.stage}-evidencia/*"
   environment:
     STAGE: ${self:provider.stage}
+    ENV: ${env:ENV, 'L'}
     MONGO_USER: ${env:MONGO_USER, ''}
     MONGO_PASSWORD: ${env:MONGO_PASSWORD, ''}
     MONGO_HOST: ${env:MONGO_HOST, ''}
@@ -43,18 +72,61 @@ provider:
     COGNITO_USER_POOL_ID: !Ref CognitoUserPool
     COGNITO_CLIENT_ID: !Ref CognitoUserPoolClient
     S3_MEDIA_BUCKET: ${self:service}-${self:provider.stage}-media
+    S3_EVIDENCIA_BUCKET: ${self:service}-${self:provider.stage}-evidencia
+    # Default mock para dev/staging. El GH secret CLIENT_LINK_SECRET sobreescribe este
+    # valor en el pipeline (deploy-dev.yml lo appendea al .env antes de `sls deploy`).
+    # ANTES DE PRODUCCIÓN: setear CLIENT_LINK_SECRET en repo secrets y rotar este default.
+    CLIENT_LINK_SECRET: ${env:CLIENT_LINK_SECRET, 'mock-dev-secret-NOT-FOR-PROD-rotate-via-gh-secret-2026'}
+    CLIENT_LINK_BASE_URL: ${env:CLIENT_LINK_BASE_URL, ''}
+    # Sentry — DSN vacío deja el SDK deshabilitado (sin tráfico ni costo).
+    # Setear SENTRY_DSN en GH Actions secrets para activar reporte de errores 5xx.
+    SENTRY_DSN: ${env:SENTRY_DSN, ''}
+    SENTRY_ENVIRONMENT: ${env:SENTRY_ENVIRONMENT, ''}
+    SENTRY_TRACES_SAMPLE_RATE: ${env:SENTRY_TRACES_SAMPLE_RATE, '0'}
+    CLIP_API_KEY: ${env:CLIP_API_KEY, ''}
+    CLIP_SECRET_KEY: ${env:CLIP_SECRET_KEY, ''}
+  httpApi:
+    payload: '1.0'
+    cors: true
+    authorizers:
+      cognitoAuthorizer:
+        type: jwt
+        identitySource: $request.header.Authorization
+        issuerUrl:
+          Fn::Join:
+            - ""
+            - - "https://cognito-idp."
+              - ${aws:region}
+              - ".amazonaws.com/"
+              - Ref: CognitoUserPool
+        audience:
+          - Ref: CognitoUserPoolClient
 
 plugins:
   - serverless-python-requirements
+  - serverless-plugin-split-stacks
 
 custom:
   pythonRequirements:
-    dockerizePip: non-linux
+    # Dockerizar SIEMPRE: necesario para producir wheels nativas (pymongo, pydantic-core,
+    # Pillow) con la arquitectura correcta (aarch64) y el ABI de python3.13. El plugin
+    # toma la arquitectura de provider.architecture. En CI Linux el runner registra
+    # QEMU/binfmt vía un paso `run` (NO docker/setup-qemu-action, que apunta a Node 20).
+    # Si el build de arm64 no es viable en tu CI, vuelve a 'non-linux' + architecture: x86_64.
+    dockerizePip: true
+    # Adelgaza el paquete (quita .pyc, __pycache__, tests) => cold start más rápido.
+    slim: true
     layer:
       name: ${self:service}-${self:provider.stage}-lib
       description: Python requirements layer
       compatibleRuntimes:
-        - python3.11
+        - python3.13
+  splitStacks:
+    nestedStackTrace: true
+    perFunction: true
+    perType: false
+    perGroupFunction: false
+    nestedStackCount: 20
 
 package:
   individually: true
@@ -72,366 +144,1361 @@ functions:
     layers:
       - !Ref PythonRequirementsLambdaLayer
     events:
-      - http:
-          path: health
+      - httpApi:
+          path: /health
           method: get
-          cors: true
+
+  environment_info:
+    handler: src/handlers/common/environment_info.handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /env
+          method: get
 
   users_list:
     handler: src/handlers/users/user_manager.list_users_handler
     layers:
       - !Ref PythonRequirementsLambdaLayer
     events:
-      - http:
-          path: usuarios
+      - httpApi:
+          path: /usuarios
           method: get
-          cors: true
           authorizer:
             name: cognitoAuthorizer
-            type: COGNITO_USER_POOLS
-            arn: !GetAtt CognitoUserPool.Arn
 
   users_create:
     handler: src/handlers/users/user_manager.create_user_handler
     layers:
       - !Ref PythonRequirementsLambdaLayer
     events:
-      - http:
-          path: usuarios
+      - httpApi:
+          path: /usuarios
           method: post
-          cors: true
           authorizer:
             name: cognitoAuthorizer
-            type: COGNITO_USER_POOLS
-            arn: !GetAtt CognitoUserPool.Arn
 
   users_update:
     handler: src/handlers/users/user_manager.update_user_handler
     layers:
       - !Ref PythonRequirementsLambdaLayer
     events:
-      - http:
-          path: usuarios/{id}
+      - httpApi:
+          path: /usuarios/{id}
           method: put
-          cors: true
           authorizer:
             name: cognitoAuthorizer
-            type: COGNITO_USER_POOLS
-            arn: !GetAtt CognitoUserPool.Arn
+
+  users_me:
+    handler: src/handlers/users/user_manager.get_me_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /usuarios/me
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
 
   talleres_list:
     handler: src/handlers/admin/talleres_manager.list_talleres_handler
     layers:
       - !Ref PythonRequirementsLambdaLayer
     events:
-      - http:
-          path: talleres
+      - httpApi:
+          path: /talleres
           method: get
-          cors: true
 
   talleres_create:
     handler: src/handlers/admin/talleres_manager.create_taller_handler
     layers:
       - !Ref PythonRequirementsLambdaLayer
     events:
-      - http:
-          path: talleres
+      - httpApi:
+          path: /talleres
           method: post
-          cors: true
+
+  pagos_suscripcion:
+    handler: src/handlers/admin/pagos_manager.procesar_pago_suscripcion_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /pagos/suscripcion
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  pagos_historial:
+    handler: src/handlers/admin/pagos_manager.obtener_historial_pagos_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /pagos/suscripcion
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
 
   clientes_list:
     handler: src/handlers/clientes/clientes_manager.list_clientes_handler
     layers:
       - !Ref PythonRequirementsLambdaLayer
     events:
-      - http:
-          path: clientes
+      - httpApi:
+          path: /clientes
           method: get
-          cors: true
           authorizer:
             name: cognitoAuthorizer
-            type: COGNITO_USER_POOLS
-            arn: !GetAtt CognitoUserPool.Arn
 
   clientes_create:
     handler: src/handlers/clientes/clientes_manager.create_cliente_handler
     layers:
       - !Ref PythonRequirementsLambdaLayer
     events:
-      - http:
-          path: clientes
+      - httpApi:
+          path: /clientes
           method: post
-          cors: true
           authorizer:
             name: cognitoAuthorizer
-            type: COGNITO_USER_POOLS
-            arn: !GetAtt CognitoUserPool.Arn
 
   clientes_get:
     handler: src/handlers/clientes/clientes_manager.get_cliente_handler
     layers:
       - !Ref PythonRequirementsLambdaLayer
     events:
-      - http:
-          path: clientes/{id}
+      - httpApi:
+          path: /clientes/{id}
           method: get
-          cors: true
           authorizer:
             name: cognitoAuthorizer
-            type: COGNITO_USER_POOLS
-            arn: !GetAtt CognitoUserPool.Arn
 
   clientes_add_vehiculo:
     handler: src/handlers/clientes/clientes_manager.add_vehiculo_handler
     layers:
       - !Ref PythonRequirementsLambdaLayer
     events:
-      - http:
-          path: clientes/{id}/vehiculos
+      - httpApi:
+          path: /clientes/{id}/vehiculos
           method: post
-          cors: true
           authorizer:
             name: cognitoAuthorizer
-            type: COGNITO_USER_POOLS
-            arn: !GetAtt CognitoUserPool.Arn
+
+  clientes_update:
+    handler: src/handlers/clientes/clientes_manager.update_cliente_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /clientes/{id}
+          method: put
+          authorizer:
+            name: cognitoAuthorizer
+
+  clientes_delete:
+    handler: src/handlers/clientes/clientes_manager.delete_cliente_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /clientes/{id}
+          method: delete
+          authorizer:
+            name: cognitoAuthorizer
+
+  flotillas_list:
+    handler: src/handlers/flotillas/flotillas_manager.list_flotillas_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /flotillas
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  flotillas_get:
+    handler: src/handlers/flotillas/flotillas_manager.get_flotilla_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /flotillas/{id}
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  flotillas_create:
+    handler: src/handlers/flotillas/flotillas_manager.create_flotilla_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /flotillas
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  flotillas_update:
+    handler: src/handlers/flotillas/flotillas_manager.update_flotilla_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /flotillas/{id}
+          method: put
+          authorizer:
+            name: cognitoAuthorizer
+
+  flotillas_delete:
+    handler: src/handlers/flotillas/flotillas_manager.delete_flotilla_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /flotillas/{id}
+          method: delete
+          authorizer:
+            name: cognitoAuthorizer
 
   items_list:
     handler: src/handlers/inventario/items_manager.list_items_handler
     layers:
       - !Ref PythonRequirementsLambdaLayer
     events:
-      - http:
-          path: items
+      - httpApi:
+          path: /items
           method: get
-          cors: true
           authorizer:
             name: cognitoAuthorizer
-            type: COGNITO_USER_POOLS
-            arn: !GetAtt CognitoUserPool.Arn
 
   items_create:
     handler: src/handlers/inventario/items_manager.create_item_handler
     layers:
       - !Ref PythonRequirementsLambdaLayer
     events:
-      - http:
-          path: items
+      - httpApi:
+          path: /items
           method: post
-          cors: true
           authorizer:
             name: cognitoAuthorizer
-            type: COGNITO_USER_POOLS
-            arn: !GetAtt CognitoUserPool.Arn
 
   items_update_stock:
     handler: src/handlers/inventario/items_manager.update_stock_handler
     layers:
       - !Ref PythonRequirementsLambdaLayer
     events:
-      - http:
-          path: items/{id}/stock
+      - httpApi:
+          path: /items/{id}/stock
           method: patch
-          cors: true
           authorizer:
             name: cognitoAuthorizer
-            type: COGNITO_USER_POOLS
-            arn: !GetAtt CognitoUserPool.Arn
+
+  items_movimientos:
+    handler: src/handlers/inventario/items_manager.list_inventario_movimientos_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /items/movimientos
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  items_inyectar:
+    handler: src/handlers/inventario/items_manager.inyectar_catalogo_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /items/inyectar
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  items_get:
+    handler: src/handlers/inventario/items_manager.get_item_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /items/{id}
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  items_update:
+    handler: src/handlers/inventario/items_manager.update_item_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /items/{id}
+          method: put
+          authorizer:
+            name: cognitoAuthorizer
+
+  items_delete:
+    handler: src/handlers/inventario/items_manager.delete_item_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /items/{id}
+          method: delete
+          authorizer:
+            name: cognitoAuthorizer
 
   get_next_folio:
     handler: src/handlers/admin/folios_manager.get_next_folio_handler
     layers:
       - !Ref PythonRequirementsLambdaLayer
     events:
-      - http:
-          path: folios/{tipo}/next
+      - httpApi:
+          path: /folios/{tipo}/next
           method: get
-          cors: true
           authorizer:
             name: cognitoAuthorizer
-            type: COGNITO_USER_POOLS
-            arn: !GetAtt CognitoUserPool.Arn
 
   list_modulos:
     handler: src/handlers/admin/modulos_manager.list_modulos_handler
     layers:
       - !Ref PythonRequirementsLambdaLayer
     events:
-      - http:
-          path: modulos
+      - httpApi:
+          path: /modulos
           method: get
-          cors: true
           authorizer:
             name: cognitoAuthorizer
-            type: COGNITO_USER_POOLS
-            arn: !GetAtt CognitoUserPool.Arn
+
+  reportes_kpis:
+    handler: src/handlers/admin/reportes_manager.get_kpis_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /reportes/kpis
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  reportes_cliente_historial:
+    handler: src/handlers/admin/reportes_manager.get_customer_history_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /reportes/cliente/{id}
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  ventas_create:
+    handler: src/handlers/ventas/ventas_manager.create_venta_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /ventas
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
 
   taller_my_modulos:
     handler: src/handlers/admin/talleres_manager.get_my_modulos_handler
     layers:
       - !Ref PythonRequirementsLambdaLayer
     events:
-      - http:
-          path: talleres/me/modulos
+      - httpApi:
+          path: /talleres/me/modulos
           method: get
-          cors: true
           authorizer:
             name: cognitoAuthorizer
-            type: COGNITO_USER_POOLS
-            arn: !GetAtt CognitoUserPool.Arn
 
   taller_update:
     handler: src/handlers/admin/talleres_manager.update_taller_handler
     layers:
       - !Ref PythonRequirementsLambdaLayer
     events:
-      - http:
-          path: talleres/{id}
+      - httpApi:
+          path: /talleres/{id}
           method: put
-          cors: true
           authorizer:
             name: cognitoAuthorizer
-            type: COGNITO_USER_POOLS
-            arn: !GetAtt CognitoUserPool.Arn
 
   talleres_upload_logo:
     handler: src/handlers/admin/talleres_manager.upload_logo_handler
     layers:
       - !Ref PythonRequirementsLambdaLayer
     events:
-      - http:
-          path: talleres/{id}/logo
+      - httpApi:
+          path: /talleres/{id}/logo
           method: post
-          cors: true
           authorizer:
             name: cognitoAuthorizer
-            type: COGNITO_USER_POOLS
-            arn: !GetAtt CognitoUserPool.Arn
 
   list_marcas:
     handler: src/handlers/catalogos/autos_manager.list_marcas_handler
     layers:
       - !Ref PythonRequirementsLambdaLayer
     events:
-      - http:
-          path: catalogos/autos/marcas
+      - httpApi:
+          path: /catalogos/autos/marcas
           method: get
-          cors: true
           authorizer:
             name: cognitoAuthorizer
-            type: COGNITO_USER_POOLS
-            arn: !GetAtt CognitoUserPool.Arn
+
+  list_marcas_admin:
+    handler: src/handlers/catalogos/autos_manager.list_marcas_admin_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /catalogos/autos/marcas/admin
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  create_marca:
+    handler: src/handlers/catalogos/autos_manager.create_marca_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /catalogos/autos/marcas
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  update_marca:
+    handler: src/handlers/catalogos/autos_manager.update_marca_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /catalogos/autos/marcas/{id}
+          method: put
+          authorizer:
+            name: cognitoAuthorizer
 
   list_modelos:
     handler: src/handlers/catalogos/autos_manager.list_modelos_handler
     layers:
       - !Ref PythonRequirementsLambdaLayer
     events:
-      - http:
-          path: catalogos/autos/modelos
+      - httpApi:
+          path: /catalogos/autos/modelos
           method: get
-          cors: true
           authorizer:
             name: cognitoAuthorizer
-            type: COGNITO_USER_POOLS
-            arn: !GetAtt CognitoUserPool.Arn
 
   ordenes_create:
     handler: src/handlers/ordenes/ordenes_manager.create_orden_handler
     layers:
       - !Ref PythonRequirementsLambdaLayer
     events:
-      - http:
-          path: ordenes
+      - httpApi:
+          path: /ordenes
           method: post
-          cors: true
           authorizer:
             name: cognitoAuthorizer
-            type: COGNITO_USER_POOLS
-            arn: !GetAtt CognitoUserPool.Arn
 
   ordenes_list:
     handler: src/handlers/ordenes/ordenes_manager.list_ordenes_handler
     layers:
       - !Ref PythonRequirementsLambdaLayer
     events:
-      - http:
-          path: ordenes
+      - httpApi:
+          path: /ordenes
           method: get
-          cors: true
           authorizer:
             name: cognitoAuthorizer
-            type: COGNITO_USER_POOLS
-            arn: !GetAtt CognitoUserPool.Arn
 
   ordenes_update:
     handler: src/handlers/ordenes/ordenes_manager.update_orden_handler
     layers:
       - !Ref PythonRequirementsLambdaLayer
     events:
-      - http:
-          path: ordenes/{id}
+      - httpApi:
+          path: /ordenes/{id}
           method: put
-          cors: true
           authorizer:
             name: cognitoAuthorizer
-            type: COGNITO_USER_POOLS
-            arn: !GetAtt CognitoUserPool.Arn
+
+  ordenes_set_fechas_cierre:
+    handler: src/handlers/ordenes/ordenes_manager.set_fechas_cierre_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /ordenes/{id}/fechas-cierre
+          method: put
+          authorizer:
+            name: cognitoAuthorizer
+
+  ordenes_sugerencias_pendientes:
+    handler: src/handlers/ordenes/ordenes_manager.list_sugerencias_pendientes_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /ordenes/sugerencias-pendientes
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  ordenes_get:
+    handler: src/handlers/ordenes/ordenes_manager.get_orden_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /ordenes/{id}
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  ordenes_list_events:
+    handler: src/handlers/ordenes/ordenes_manager.list_orden_events_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /ordenes/{id}/events
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  ordenes_get_upload_url:
+    handler: src/handlers/ordenes/evidencia_manager.get_upload_url_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /ordenes/{id}/evidencia/upload-url
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  ordenes_add_evidencia:
+    handler: src/handlers/ordenes/evidencia_manager.add_evidencia_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /ordenes/{id}/evidencia
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  ordenes_list_evidencia:
+    handler: src/handlers/ordenes/evidencia_manager.list_evidencia_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /ordenes/{id}/evidencia
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  ordenes_delete_evidencia:
+    handler: src/handlers/ordenes/evidencia_manager.delete_evidencia_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /ordenes/{id}/evidencia
+          method: delete
+          authorizer:
+            name: cognitoAuthorizer
+
+  # --- Enlace público al cliente para aprobar/rechazar items de cotización ---
+  cliente_link_create:
+    handler: src/handlers/ordenes/cliente_link_manager.create_cliente_link_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /ordenes/{id}/cliente-link
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  cliente_link_get:
+    handler: src/handlers/ordenes/cliente_link_manager.get_cliente_link_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /ordenes/{id}/cliente-link
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  cliente_link_revoke:
+    handler: src/handlers/ordenes/cliente_link_manager.revoke_cliente_link_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /ordenes/{id}/cliente-link
+          method: delete
+          authorizer:
+            name: cognitoAuthorizer
+
+  public_cotizacion_challenge:
+    handler: src/handlers/ordenes/cliente_link_manager.public_get_challenge_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /public/cotizacion/challenge
+          method: get
+
+  public_cotizacion_verify:
+    handler: src/handlers/ordenes/cliente_link_manager.public_verify_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /public/cotizacion/verify
+          method: post
+
+  public_cotizacion_get:
+    handler: src/handlers/ordenes/cliente_link_manager.public_get_cotizacion_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /public/cotizacion
+          method: get
+
+  public_cotizacion_decidir:
+    handler: src/handlers/ordenes/cliente_link_manager.public_decidir_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /public/cotizacion/decidir
+          method: post
 
   list_vehiculos:
     handler: src/handlers/vehiculos/vehiculos_manager.list_vehiculos_handler
     layers:
       - !Ref PythonRequirementsLambdaLayer
     events:
-      - http:
-          path: vehiculos
+      - httpApi:
+          path: /vehiculos
           method: get
-          cors: true
           authorizer:
             name: cognitoAuthorizer
-            type: COGNITO_USER_POOLS
-            arn: !GetAtt CognitoUserPool.Arn
 
   get_vehiculo:
     handler: src/handlers/vehiculos/vehiculos_manager.get_vehiculo_handler
     layers:
       - !Ref PythonRequirementsLambdaLayer
     events:
-      - http:
-          path: vehiculos/{id}
+      - httpApi:
+          path: /vehiculos/{id}
           method: get
-          cors: true
           authorizer:
             name: cognitoAuthorizer
-            type: COGNITO_USER_POOLS
-            arn: !GetAtt CognitoUserPool.Arn
 
   vehiculos_create:
     handler: src/handlers/vehiculos/vehiculos_manager.create_vehiculo_handler
     layers:
       - !Ref PythonRequirementsLambdaLayer
     events:
-      - http:
-          path: vehiculos
+      - httpApi:
+          path: /vehiculos
           method: post
-          cors: true
           authorizer:
             name: cognitoAuthorizer
-            type: COGNITO_USER_POOLS
-            arn: !GetAtt CognitoUserPool.Arn
 
   vehiculos_update:
     handler: src/handlers/vehiculos/vehiculos_manager.update_vehiculo_handler
     layers:
       - !Ref PythonRequirementsLambdaLayer
     events:
-      - http:
-          path: vehiculos/{id}
+      - httpApi:
+          path: /vehiculos/{id}
           method: put
-          cors: true
           authorizer:
             name: cognitoAuthorizer
-            type: COGNITO_USER_POOLS
-            arn: !GetAtt CognitoUserPool.Arn
+
+  vehiculos_delete:
+    handler: src/handlers/vehiculos/vehiculos_manager.delete_vehiculo_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /vehiculos/{id}
+          method: delete
+          authorizer:
+            name: cognitoAuthorizer
+
+  citas_list:
+    handler: src/handlers/citas/citas_manager.list_citas_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /citas
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  citas_sync_estados:
+    handler: src/handlers/citas/citas_manager.sync_citas_estados_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /citas/sync-estados
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  citas_create:
+    handler: src/handlers/citas/citas_manager.create_cita_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /citas
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  citas_get:
+    handler: src/handlers/citas/citas_manager.get_cita_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /citas/{id}
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  citas_update:
+    handler: src/handlers/citas/citas_manager.update_cita_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /citas/{id}
+          method: put
+          authorizer:
+            name: cognitoAuthorizer
+
+  citas_delete:
+    handler: src/handlers/citas/citas_manager.delete_cita_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /citas/{id}
+          method: delete
+          authorizer:
+            name: cognitoAuthorizer
+
+  # ─── Cotizaciones independientes (no atadas a una OS) ───
+  cotizaciones_list:
+    handler: src/handlers/cotizaciones/cotizaciones_manager.list_cotizaciones_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /cotizaciones
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  cotizaciones_create:
+    handler: src/handlers/cotizaciones/cotizaciones_manager.create_cotizacion_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /cotizaciones
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  cotizaciones_get:
+    handler: src/handlers/cotizaciones/cotizaciones_manager.get_cotizacion_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /cotizaciones/{id}
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  cotizaciones_update:
+    handler: src/handlers/cotizaciones/cotizaciones_manager.update_cotizacion_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /cotizaciones/{id}
+          method: put
+          authorizer:
+            name: cognitoAuthorizer
+
+  cotizaciones_delete:
+    handler: src/handlers/cotizaciones/cotizaciones_manager.delete_cotizacion_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /cotizaciones/{id}
+          method: delete
+          authorizer:
+            name: cognitoAuthorizer
+
+  cotizaciones_convertir_a_os:
+    handler: src/handlers/cotizaciones/cotizaciones_manager.convertir_a_os_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /cotizaciones/{id}/convertir-a-os
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  proveedores_list:
+    handler: src/handlers/proveedores/proveedores_manager.list_proveedores_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /proveedores
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  proveedores_create:
+    handler: src/handlers/proveedores/proveedores_manager.create_proveedor_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /proveedores
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  proveedores_get:
+    handler: src/handlers/proveedores/proveedores_manager.get_proveedor_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /proveedores/{id}
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  proveedores_update:
+    handler: src/handlers/proveedores/proveedores_manager.update_proveedor_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /proveedores/{id}
+          method: put
+          authorizer:
+            name: cognitoAuthorizer
+
+  proveedores_delete:
+    handler: src/handlers/proveedores/proveedores_manager.delete_proveedor_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /proveedores/{id}
+          method: delete
+          authorizer:
+            name: cognitoAuthorizer
+
+  sucursales_list:
+    handler: src/handlers/sucursales/sucursales_manager.list_sucursales_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /sucursales
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  sucursales_create:
+    handler: src/handlers/sucursales/sucursales_manager.create_sucursal_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /sucursales
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  sucursales_update:
+    handler: src/handlers/sucursales/sucursales_manager.update_sucursal_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /sucursales/{id}
+          method: put
+          authorizer:
+            name: cognitoAuthorizer
+
+  sucursales_delete:
+    handler: src/handlers/sucursales/sucursales_manager.delete_sucursal_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /sucursales/{id}
+          method: delete
+          authorizer:
+            name: cognitoAuthorizer
+
+  autorizaciones_create:
+    handler: src/handlers/ventas/autorizaciones_manager.create_autorizacion_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /autorizaciones
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  autorizaciones_list:
+    handler: src/handlers/ventas/autorizaciones_manager.list_autorizaciones_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /autorizaciones
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  autorizaciones_update:
+    handler: src/handlers/ventas/autorizaciones_manager.update_autorizacion_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /autorizaciones/{id}
+          method: put
+          authorizer:
+            name: cognitoAuthorizer
+
+  traspasos_create:
+    handler: src/handlers/inventario/traspasos_manager.create_traspaso_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /inventario/traspasos
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  traspasos_list:
+    handler: src/handlers/inventario/traspasos_manager.list_traspasos_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /inventario/traspasos
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  traspasos_receive:
+    handler: src/handlers/inventario/traspasos_manager.receive_traspaso_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /inventario/traspasos/{id}/recepcion
+          method: put
+          authorizer:
+            name: cognitoAuthorizer
+
+  caja_get_activa:
+    handler: src/handlers/caja/caja_manager.get_active_caja_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /caja/activa
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  caja_apertura:
+    handler: src/handlers/caja/caja_manager.abrir_caja_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /caja/apertura
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  caja_movimiento:
+    handler: src/handlers/caja/caja_manager.registrar_movimiento_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /caja/movimientos
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  caja_cierre:
+    handler: src/handlers/caja/caja_manager.cerrar_caja_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /caja/cierre
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  caja_arqueos:
+    handler: src/handlers/caja/caja_manager.list_arqueos_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /caja/arqueos
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  getConfig:
+    handler: src.handlers.admin.configuracion_manager.get_config_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /configuracion
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  updateConfig:
+    handler: src.handlers.admin.configuracion_manager.update_config_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /configuracion
+          method: put
+          authorizer:
+            name: cognitoAuthorizer
+
+  catalogos_marcas_productos_list:
+    handler: src.handlers.admin.configuracion_manager.list_marcas_productos_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /catalogos/marcas-productos
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  catalogos_marcas_productos_upsert:
+    handler: src.handlers.admin.configuracion_manager.upsert_marcas_productos_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /catalogos/marcas-productos
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  get_ventas:
+    handler: src.handlers.ventas.ventas_manager.list_ventas_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /ventas
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  ventas_cxc:
+    handler: src/handlers/ventas/ventas_manager.list_cxc_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /ventas/cxc
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  ventas_abono:
+    handler: src/handlers/ventas/ventas_manager.registrar_abono_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /ventas/{id}/pagos
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  compras_create:
+    handler: src/handlers/compras/compras_manager.create_compra_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /compras
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  compras_list:
+    handler: src/handlers/compras/compras_manager.list_compras_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /compras
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  compras_get:
+    handler: src/handlers/compras/compras_manager.get_compra_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /compras/{id}
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  compras_cancel:
+    handler: src/handlers/compras/compras_manager.cancel_compra_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /compras/{id}/cancel
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  compras_pago:
+    handler: src/handlers/compras/compras_manager.registrar_pago_proveedor_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /compras/{id}/pagos
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  compras_cxp:
+    handler: src/handlers/compras/compras_manager.list_cxp_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /compras/cxp
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  contabilidad_inventario_valuado:
+    handler: src/handlers/contabilidad/contabilidad_manager.get_inventario_valuado_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /contabilidad/inventario-valuado
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  contabilidad_aging_cxc:
+    handler: src/handlers/contabilidad/contabilidad_manager.get_aging_cxc_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /contabilidad/aging-cxc
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  contabilidad_aging_cxp:
+    handler: src/handlers/contabilidad/contabilidad_manager.get_aging_cxp_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /contabilidad/aging-cxp
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  contabilidad_margen:
+    handler: src/handlers/contabilidad/contabilidad_manager.get_margen_ventas_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /contabilidad/margen
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  contabilidad_resumen_mensual:
+    handler: src/handlers/contabilidad/contabilidad_manager.get_resumen_mensual_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /contabilidad/resumen-mensual
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  contabilidad_iva_mensual:
+    handler: src/handlers/contabilidad/contabilidad_manager.get_iva_mensual_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /contabilidad/iva-mensual
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  contabilidad_concentrado_ventas:
+    handler: src/handlers/contabilidad/contabilidad_manager.get_concentrado_ventas_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /contabilidad/concentrado-ventas
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  contabilidad_resumen_por_os:
+    handler: src/handlers/contabilidad/contabilidad_manager.get_resumen_por_os_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /contabilidad/resumen-os
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  contabilidad_gastos_fijos_list:
+    handler: src/handlers/contabilidad/contabilidad_manager.list_gastos_fijos_mes_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /contabilidad/gastos-fijos
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  contabilidad_gastos_fijos_upsert:
+    handler: src/handlers/contabilidad/contabilidad_manager.upsert_gasto_fijo_mes_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /contabilidad/gastos-fijos
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  contabilidad_gastos_fijos_seed:
+    handler: src/handlers/contabilidad/contabilidad_manager.seed_gastos_fijos_mes_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /contabilidad/gastos-fijos/seed
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  contabilidad_gastos_fijos_delete:
+    handler: src/handlers/contabilidad/contabilidad_manager.delete_gasto_fijo_mes_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /contabilidad/gastos-fijos/{id}
+          method: delete
+          authorizer:
+            name: cognitoAuthorizer
+
+  contabilidad_gastos_variables_list:
+    handler: src/handlers/contabilidad/contabilidad_manager.list_gastos_variables_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /contabilidad/gastos-variables
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  contabilidad_gastos_variables_upsert:
+    handler: src/handlers/contabilidad/contabilidad_manager.upsert_gasto_variable_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /contabilidad/gastos-variables
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  contabilidad_gastos_variables_delete:
+    handler: src/handlers/contabilidad/contabilidad_manager.delete_gasto_variable_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /contabilidad/gastos-variables/{id}
+          method: delete
+          authorizer:
+            name: cognitoAuthorizer
 
 resources:
   Resources:
@@ -462,36 +1529,21 @@ resources:
               Resource: !Sub "arn:aws:s3:::${self:service}-${self:provider.stage}-media/logotipos/*"
               Principal: "*"
 
-    # Bucket para el Frontend (Hosting estático)
-    S3BucketWeb:
+    S3BucketEvidencia:
       Type: AWS::S3::Bucket
       Properties:
-        BucketName: ${self:service}-${self:provider.stage}-frontend
+        BucketName: ${self:service}-${self:provider.stage}-evidencia
         PublicAccessBlockConfiguration:
-          BlockPublicAcls: false
-          BlockPublicPolicy: false
-          IgnorePublicAcls: false
-          RestrictPublicBuckets: false
-        WebsiteConfiguration:
-          IndexDocument: index.html
-          ErrorDocument: index.html
+          BlockPublicAcls: true
+          BlockPublicPolicy: true
+          IgnorePublicAcls: true
+          RestrictPublicBuckets: true
         CorsConfiguration:
           CorsRules:
             - AllowedHeaders: ['*']
-              AllowedMethods: [GET]
+              AllowedMethods: [GET, PUT, POST, DELETE, HEAD]
               AllowedOrigins: ['*']
-
-    S3BucketWebPolicy:
-      Type: AWS::S3::BucketPolicy
-      Properties:
-        Bucket: !Ref S3BucketWeb
-        PolicyDocument:
-          Statement:
-            - Action:
-                - s3:GetObject
-              Effect: Allow
-              Resource: !Sub "arn:aws:s3:::${self:service}-${self:provider.stage}-frontend/*"
-              Principal: "*"
+              MaxAge: 3000
 
     # Cognito User Pool
     CognitoUserPool:
@@ -518,7 +1570,6 @@ resources:
             AttributeDataType: String
             Mutable: true
             Required: false
-
 
     # Cognito User Pool Client
     CognitoUserPoolClient:

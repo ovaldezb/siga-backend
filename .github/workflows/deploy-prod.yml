@@ -1,0 +1,107 @@
+# ##############################################################################
+# CRITICAL: SOLO Node 24. CERO actions que apunten a Node 20 (deprecado).
+# Node 20 dispara warnings de deprecación en el runner. Reglas:
+#   - actions/* y aws-actions/*: usar versiones que ya corran en Node 24 (@v5/@v6).
+#   - Cualquier necesidad de QEMU/binfmt, Docker, etc.: hacerlo con un paso `run:`
+#     (NO con docker/setup-qemu-action, que aún apunta a Node 20).
+# Esta misma regla aplica en el deploy de FRONTEND (sae-app). Mantener ambos iguales.
+# ##############################################################################
+name: Deploy Backend (Prod)
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13' # Debe coincidir con provider.runtime en serverless.yml
+
+      # Registra QEMU/binfmt para que serverless-python-requirements (dockerizePip:
+      # true) pueda construir las wheels nativas del layer para arm64 (aarch64)
+      # emulando esa arquitectura sobre el runner x86.
+      # OJO (regla de oro de este repo, ver banner arriba): NO usar
+      # docker/setup-qemu-action — esa JS action apunta a Node 20 (deprecado) y
+      # ensucia el log con el warning de Node. Un paso `run` no depende de Node, así
+      # que cumple "solo Node 24 / cero actions Node 20". tonistiigi/binfmt es justo
+      # lo que esa action ejecuta por dentro.
+      - name: Set up QEMU (arm64) for cross-arch layer build
+        run: docker run --rm --privileged tonistiigi/binfmt:latest --install arm64
+
+      - name: Install Node dependencies
+        run: npm install
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run Tests
+        env:
+          AWS_DEFAULT_REGION: us-east-1
+          AWS_ACCESS_KEY_ID: testing
+          AWS_SECRET_ACCESS_KEY: testing
+        run: pytest
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-west-1
+
+      - name: Parse and Load .env
+        run: |
+          echo "${{ secrets.ENV_FILE_PROD }}" > .env
+          # Opcional: Inyectar las variables directamente al entorno de GitHub Actions (por si otro script las necesita)
+          while IFS= read -r line || [ -n "$line" ]; do
+            if [[ -n "$line" && "$line" != \#* ]]; then
+              echo "$line" >> $GITHUB_ENV
+            fi
+          done < .env
+
+      - name: Validate Environment Variables
+        run: |
+          python -c '
+          import re, sys, os
+          env_keys = set()
+          if os.path.exists(".env"):
+              with open(".env") as f:
+                  for line in f:
+                      line = line.strip()
+                      if line and not line.startswith("#"):
+                          parts = line.split("=", 1)
+                          if len(parts) >= 1:
+                              env_keys.add(parts[0].strip())
+
+          with open("serverless.yml") as f:
+              content = f.read()
+
+          matches = set(re.findall(r"\$\{env:([A-Za-z0-9_]+)(?:,.*?)?\}", content))
+          missing = [m for m in matches if m not in env_keys]
+          if missing:
+              print("ERROR: Las siguientes variables de ambiente de serverless.yml no estan en el secret ENV_FILE_PROD:")
+              for m in sorted(missing):
+                  print(f"  - {m}")
+              sys.exit(1)
+          print("OK: Todas las variables estan en ENV_FILE_PROD")
+          '
+
+      - name: Serverless Deploy
+        run: npx sls deploy --stage prod --region us-west-1

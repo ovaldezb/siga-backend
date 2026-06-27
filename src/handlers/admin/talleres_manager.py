@@ -1,14 +1,18 @@
+from src.shared.utils.auth_utils import get_claims
 import os
 import json
 import uuid
 import boto3
-from datetime import datetime
+from datetime import datetime, timedelta
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
+from src.shared.utils.date_utils import iso_utc
 from src.shared.infrastructure.database import get_platform_db, get_tenant_db
 
 logger = Logger()
-client = boto3.client('cognito-idp')
+from botocore.config import Config
+client = boto3.client('cognito-idp', config=Config(connect_timeout=5, read_timeout=15))
+s3_client = boto3.client('s3', config=Config(connect_timeout=5, read_timeout=15))
 USER_POOL_ID = os.environ.get('COGNITO_USER_POOL_ID')
 
 # @logger.inject_lambda_context
@@ -26,11 +30,11 @@ def list_talleres_handler(event, context):
             # Convertir todos los objetos datetime a ISO string de forma genérica
             for key, value in taller.items():
                 if isinstance(value, datetime):
-                    taller[key] = value.isoformat()
-            
+                    taller[key] = iso_utc(value)
+
             # Normalización para el frontend
             taller["modulos"] = taller.get("modulos", [])
-                
+
             del taller["_id"]
             talleres_list.append(taller)
             
@@ -43,17 +47,20 @@ def create_taller_handler(event, context):
     try:
         body = json.loads(event.get("body") or "{}")
         required_fields = ["nombreComercial", "adminEmail", "adminNombre", "adminApellido"]
-        
+
         for field in required_fields:
             if field not in body:
                 return create_response(400, f"Campo requerido faltante: {field}")
-                
-        tenant_id = uuid.uuid4().hex
-        fecha_alta = body.get("fechaAlta", datetime.utcnow().isoformat())
-        
-        # 1. Create Cognito Admin User
+
         admin_email = body["adminEmail"]
-        
+        # Validación mínima: presencia de "@" + dominio con punto.
+        if "@" not in admin_email or "." not in admin_email.split("@")[-1]:
+            return create_response(400, "El correo electrónico del administrador no es válido.")
+
+        tenant_id = uuid.uuid4().hex
+        fecha_alta = body.get("fechaAlta", iso_utc())
+
+        # 1. Create Cognito Admin User
         try:
             client.admin_create_user(
                 UserPoolId=USER_POOL_ID,
@@ -80,6 +87,33 @@ def create_taller_handler(event, context):
             logger.error(f"Error creating Cognito user: {str(e)}")
             return create_response(500, "Error al crear el administrador del taller.")
 
+        # Calcular proximaFechaCorte y proximaFechaPago
+        try:
+            if "T" in fecha_alta:
+                clean_str = fecha_alta.replace("Z", "")
+                if "." in clean_str:
+                    clean_str = clean_str.split(".")[0]
+                dt_alta = datetime.strptime(clean_str, "%Y-%m-%dT%H:%M:%S")
+            else:
+                dt_alta = datetime.strptime(fecha_alta[:10], "%Y-%m-%d")
+        except Exception:
+            dt_alta = datetime.utcnow()
+
+        try:
+            month = dt_alta.month - 1 + 1
+            year = dt_alta.year + month // 12
+            month = month % 12 + 1
+            days_in_months = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+            if month == 2 and year % 4 == 0 and (year % 100 != 0 or year % 400 == 0):
+                day = min(dt_alta.day, 29)
+            else:
+                day = min(dt_alta.day, days_in_months[month-1])
+            proxima_corte = datetime(year, month, day, dt_alta.hour, dt_alta.minute, dt_alta.second)
+        except Exception:
+            proxima_corte = dt_alta + timedelta(days=30)
+
+        proxima_pago = proxima_corte + timedelta(days=10)
+
         # 2. Insert into Platform DB
         taller_doc = {
             "tenantId": tenant_id,
@@ -88,6 +122,9 @@ def create_taller_handler(event, context):
             "modulos": body.get("modulos", []),
             "estado": body.get("estado", "ACTIVO"),
             "fechaSuscripcion": fecha_alta,
+            "proximaFechaCorte": proxima_corte,
+            "proximaFechaPago": proxima_pago,
+            "precioSuscripcion": body.get("precioSuscripcion"),
             "adminEmail": admin_email,
             "adminNombre": body["adminNombre"],
             "adminApellido": body["adminApellido"],
@@ -102,16 +139,11 @@ def create_taller_handler(event, context):
         tenant_db = get_tenant_db(tenant_id)
         tenant_db["configuracion"].insert_one({
             "tenantId": tenant_id,
-            "createdAt": datetime.utcnow().isoformat(),
+            "createdAt": iso_utc(),
             "status": "INITIALIZED"
         })
         
-        # 4. Insert initial Admin and Folio counter into Tenant DB
-        tenant_db["folios"].insert_one({
-            "tipo": "os",
-            "secuencia": 1
-        })
-
+        # 4. Insert initial Admin into Tenant DB
         tenant_db["usuarios"].insert_one({
             "id": admin_email, # Will be replaced by Cognito Username if needed, but email is fine for now as it's the username
             "email": admin_email,
@@ -121,12 +153,16 @@ def create_taller_handler(event, context):
             "activo": True,
             "telefono": body.get("adminTelefono", ""),
             "tenantId": tenant_id,
-            "createdAt": datetime.utcnow().isoformat()
+            "createdAt": iso_utc()
         })
-        
+
         taller_doc["id"] = str(result.inserted_id)
         if "createdAt" in taller_doc:
-            taller_doc["createdAt"] = taller_doc["createdAt"].isoformat()
+            taller_doc["createdAt"] = iso_utc(taller_doc["createdAt"])
+        if "proximaFechaCorte" in taller_doc and isinstance(taller_doc["proximaFechaCorte"], datetime):
+            taller_doc["proximaFechaCorte"] = iso_utc(taller_doc["proximaFechaCorte"])
+        if "proximaFechaPago" in taller_doc and isinstance(taller_doc["proximaFechaPago"], datetime):
+            taller_doc["proximaFechaPago"] = iso_utc(taller_doc["proximaFechaPago"])
         del taller_doc["_id"]
         
         return create_response(201, "Taller creado exitosamente", taller_doc)
@@ -142,7 +178,7 @@ def get_my_modulos_handler(event, context):
     Obtiene los módulos habilitados para el taller del usuario logueado.
     """
     try:
-        claims = event.get('requestContext', {}).get('authorizer', {}).get('claims', {})
+        claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
 
         if not tenant_id:
@@ -151,16 +187,53 @@ def get_my_modulos_handler(event, context):
             return create_response(200, "Módulos para admin global", {"modulos": ["*"]})
 
         db = get_platform_db()
-        taller = db["talleres"].find_one({"tenantId": tenant_id}, {"_id": 0, "modulos": 1, "estado": 1, "logoUrl": 1, "nombreComercial": 1})
+        taller = db["talleres"].find_one(
+            {"tenantId": tenant_id}, 
+            {"_id": 0, "modulos": 1, "estado": 1, "logoUrl": 1, "nombreComercial": 1, "direccion": 1, "adminTelefono": 1, "proximaFechaCorte": 1, "proximaFechaPago": 1, "precioSuscripcion": 1}
+        )
 
         if not taller:
             return create_response(404, "Taller no encontrado")
+
+        p_pago_val = taller.get("proximaFechaPago")
+        estado_taller = taller.get("estado", "ACTIVO")
+
+        if estado_taller == "ACTIVO" and p_pago_val:
+            pago_dt = None
+            if isinstance(p_pago_val, str):
+                try:
+                    pago_dt = datetime.fromisoformat(p_pago_val.replace("Z", "+00:00")).replace(tzinfo=None)
+                except ValueError:
+                    pass
+            elif isinstance(p_pago_val, datetime):
+                pago_dt = p_pago_val.replace(tzinfo=None)
+
+            if pago_dt:
+                now = datetime.utcnow() #tener cuidado aqui, esto va a depender de en que region se despliegue la lambda, se podria reemplazar por la fecha del usuario, es decir enviarla como parametro
+                if now >= pago_dt:
+                    db["talleres"].update_one(
+                        {"tenantId": tenant_id},
+                        {"$set": {"estado": "INACTIVO", "updatedAt": now}}
+                    )
+                    taller["estado"] = "INACTIVO"
+
+        p_corte = taller.get("proximaFechaCorte")
+        p_pago = taller.get("proximaFechaPago")
+        if isinstance(p_corte, datetime):
+            p_corte = iso_utc(p_corte)
+        if isinstance(p_pago, datetime):
+            p_pago = iso_utc(p_pago)
 
         return create_response(200, "Configuración recuperada", {
             "modulos": taller.get("modulos", []),
             "estado": taller.get("estado", "ACTIVO"),
             "logoUrl": taller.get("logoUrl"),
-            "nombreTaller": taller.get("nombreComercial", "SIGA")
+            "nombreTaller": taller.get("nombreComercial", "SIGA"),
+            "direccion": taller.get("direccion", "Dirección no especificada"),
+            "adminTelefono": taller.get("adminTelefono", "Teléfono no especificado"),
+            "proximaFechaCorte": p_corte,
+            "proximaFechaPago": p_pago,
+            "precioSuscripcion": taller.get("precioSuscripcion")
         })
 
     except Exception as e:
@@ -188,6 +261,7 @@ def update_taller_handler(event, context):
             "adminApellido": body.get("adminApellido"),
             "adminTelefono": body.get("adminTelefono"),
             "estado": body.get("estado"),
+            "precioSuscripcion": body.get("precioSuscripcion"),
             "updatedAt": datetime.utcnow()
         }
 
@@ -210,7 +284,7 @@ def update_taller_handler(event, context):
         # Normalizar fechas
         for key, value in updated_taller.items():
             if isinstance(value, datetime):
-                updated_taller[key] = value.isoformat()
+                updated_taller[key] = iso_utc(value)
 
         return create_response(200, "Taller actualizado exitosamente", updated_taller)
 
@@ -287,7 +361,7 @@ def upload_logo_handler(event, context):
             return create_response(400, f"Error al procesar la imagen: {str(img_err)}")
 
         # 3. Subir a S3
-        s3 = boto3.client('s3')
+        s3 = s3_client
         bucket = os.environ.get('S3_MEDIA_BUCKET')
         key = f"logotipos/logo_{tenant_id}.{ext}"
 
