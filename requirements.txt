@@ -1,5 +1,5 @@
-# Versiones elegidas para tener wheels precompiladas cp313 + manylinux aarch64
-# (necesario tras pasar a python3.13 + arm64; evita compilar desde fuente en el build).
+# Versiones con wheels precompiladas cp313 + manylinux aarch64 (necesario tras pasar
+# a python3.13 + arm64; evita compilar desde fuente en el build del layer).
 pymongo[srv]==4.10.1
 pydantic==2.10.6
 aws-lambda-powertools==2.43.1

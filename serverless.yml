@@ -1,8 +1,19 @@
 service: siga-backend
 useDotenv: true
 
+# El schema de validación de Serverless Framework v3 NO conoce python3.13 (su lista
+# de runtimes topa en python3.11; 3.12/3.13 solo se añadieron al schema en SF v4).
+# Eso provoca el warning "Invalid configuration ... at 'provider.runtime'" aunque
+# AWS/CloudFormation SÍ soportan python3.13 y el deploy funciona. Apagamos la
+# validación de config para silenciar ese falso positivo y conservar 3.13.
+# (Trade-off: SF deja de avisar de typos en este archivo; CloudFormation los caza
+#  igual en deploy. La alternativa "limpia" sería migrar a SF v4.)
+configValidationMode: off
+
 provider:
   name: aws
+  # python3.13: intérprete más rápido (faster CPython). El warning de schema de SF v3
+  # queda silenciado con configValidationMode: off (ver arriba).
   runtime: python3.13
   # ARM64 (Graviton): ~más rápido y ~20% más barato que x86 para este workload.
   # IMPORTANTE para el deploy: el layer de dependencias DEBE construirse con wheels
@@ -98,9 +109,9 @@ custom:
   pythonRequirements:
     # Dockerizar SIEMPRE: necesario para producir wheels nativas (pymongo, pydantic-core,
     # Pillow) con la arquitectura correcta (aarch64) y el ABI de python3.13. El plugin
-    # toma la arquitectura de provider.architecture. En CI Linux asegúrate de tener
-    # Docker + soporte arm64 (docker/setup-qemu-action). Si no, vuelve a 'non-linux'
-    # junto con architecture: x86_64.
+    # toma la arquitectura de provider.architecture. En CI Linux el runner registra
+    # QEMU/binfmt vía un paso `run` (NO docker/setup-qemu-action, que apunta a Node 20).
+    # Si el build de arm64 no es viable en tu CI, vuelve a 'non-linux' + architecture: x86_64.
     dockerizePip: true
     # Adelgaza el paquete (quita .pyc, __pycache__, tests) => cold start más rápido.
     slim: true
