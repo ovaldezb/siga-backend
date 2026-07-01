@@ -475,7 +475,7 @@ def update_stock_handler(event, context):
 
         # Bitácora de movimientos de inventario (auditoría)
         try:
-            db["inventario_movimientos"].insert_one({
+            mov_doc = {
                 "tenant_id": tenant_id,
                 "item_id": item_id,
                 "item_nombre": item.get('nombre'),
@@ -488,7 +488,13 @@ def update_stock_handler(event, context):
                 "usuario_id": claims.get('sub'),
                 "usuario_nombre": claims.get('name') or claims.get('email'),
                 "createdAt": datetime.utcnow()
-            })
+            }
+            # Referencia opcional a la entidad que originó el movimiento (ej. orden de servicio)
+            if body.get('referencia_folio'):
+                mov_doc['referencia_folio'] = body['referencia_folio']
+            if body.get('referencia_id'):
+                mov_doc['referencia_id'] = body['referencia_id']
+            db["inventario_movimientos"].insert_one(mov_doc)
         except Exception as bit_err:
             logger.warning(f"No se pudo registrar bitácora de inventario: {bit_err}")
 
