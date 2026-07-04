@@ -19,6 +19,13 @@ def list_items_handler(event, context):
         tipo = query_params.get('tipo')
         search = query_params.get('search')
         sucursal_id = query_params.get('sucursalId') or query_params.get('sucursal_id')
+        # POS: cuando se pide soloInventario, se excluyen los productos NO inventariables
+        # (maneja_inventario:false). Éstos son capturas manuales que las Órdenes de Servicio
+        # persisten al catálogo para reuso, pero NO pertenecen al catálogo de venta directa
+        # del Punto de Venta. Los SERVICIOS (mano de obra) sí se conservan.
+        solo_inventario = str(
+            query_params.get('soloInventario') or query_params.get('solo_inventario') or ''
+        ).lower() == 'true'
         page = int(query_params.get('page', 1))
         limit = int(query_params.get('limit', 50))
         skip = (page - 1) * limit
@@ -41,7 +48,15 @@ def list_items_handler(event, context):
             
         if tipo:
             query['tipo'] = tipo
-            
+
+        if solo_inventario:
+            # Conserva servicios y cualquier producto que NO sea explícitamente
+            # maneja_inventario:false. Excluye sólo el "ruido" de capturas manuales de OS.
+            and_conditions.append({'$or': [
+                {'tipo': 'SERVICIO'},
+                {'maneja_inventario': {'$ne': False}}
+            ]})
+
         if search:
             and_conditions.append({'$or': [
                 {"nombre": {"$regex": search, "$options": "i"}},
