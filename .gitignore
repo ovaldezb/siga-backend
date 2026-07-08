@@ -7,3 +7,5 @@ scratch
 __pycache__/
 *.pyc
 .env.*
+migrar_db.sh
+restore_db.sh
