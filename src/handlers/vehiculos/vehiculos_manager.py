@@ -113,6 +113,10 @@ def list_vehiculos_handler(event, context):
                             "proximo_cambio_bujias": 1,
                             "proximo_cambio_aceite_anterior": 1,
                             "proximo_cambio_bujias_anterior": 1,
+                            "proximo_cambio_aceite_fecha": 1,
+                            "proximo_cambio_bujias_fecha": 1,
+                            "proximo_cambio_aceite_fecha_anterior": 1,
+                            "proximo_cambio_bujias_fecha_anterior": 1,
                         }}
                     ],
                     "as": "ultima_os"
@@ -147,6 +151,18 @@ def list_vehiculos_handler(event, context):
                         "if": {"$gt": [{"$ifNull": ["$proximo_cambio_bujias", 0]}, 0]},
                         "then": "$proximo_cambio_bujias",
                         "else": {"$arrayElemAt": ["$ultima_os.proximo_cambio_bujias", 0]}
+                    }},
+                    # Fechas de próximo cambio (strings YYYY-MM): tomar del vehículo si
+                    # existe (no vacío), si no de la última OS. Coexisten con los km.
+                    "proximo_cambio_aceite_fecha": {"$cond": {
+                        "if": {"$gt": [{"$strLenCP": {"$ifNull": ["$proximo_cambio_aceite_fecha", ""]}}, 0]},
+                        "then": "$proximo_cambio_aceite_fecha",
+                        "else": {"$arrayElemAt": ["$ultima_os.proximo_cambio_aceite_fecha", 0]}
+                    }},
+                    "proximo_cambio_bujias_fecha": {"$cond": {
+                        "if": {"$gt": [{"$strLenCP": {"$ifNull": ["$proximo_cambio_bujias_fecha", ""]}}, 0]},
+                        "then": "$proximo_cambio_bujias_fecha",
+                        "else": {"$arrayElemAt": ["$ultima_os.proximo_cambio_bujias_fecha", 0]}
                     }}
                 }
             },
