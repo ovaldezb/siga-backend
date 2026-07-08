@@ -23,12 +23,16 @@ logger = Logger()
 # Mantenimiento preventivo: sincronización bidireccional OS <-> Vehículo
 # ---------------------------------------------------------------------------
 
-def _sync_mantenimiento_to_vehiculo(db, vehiculo_id: str, proximo_cambio_aceite, proximo_cambio_bujias) -> None:
+def _sync_mantenimiento_to_vehiculo(
+    db, vehiculo_id: str, proximo_cambio_aceite, proximo_cambio_bujias,
+    proximo_cambio_aceite_fecha=None, proximo_cambio_bujias_fecha=None,
+) -> None:
     """Persiste los próximos cambios de aceite/bujías en el documento del vehículo.
 
     Se llama cuando la OS se crea o se actualiza para mantener el vehículo con
     los valores frescos. Los valores 0 / None se ignoran para no borrar un dato
-    previo con un campo vacío.
+    previo con un campo vacío. Los campos `_fecha` son strings YYYY-MM opcionales
+    que conviven con los de km; cadenas vacías / None se ignoran igual.
     """
     if not vehiculo_id:
         return
@@ -37,6 +41,10 @@ def _sync_mantenimiento_to_vehiculo(db, vehiculo_id: str, proximo_cambio_aceite,
         update_fields["proximo_cambio_aceite"] = float(proximo_cambio_aceite)
     if proximo_cambio_bujias and float(proximo_cambio_bujias) > 0:
         update_fields["proximo_cambio_bujias"] = float(proximo_cambio_bujias)
+    if proximo_cambio_aceite_fecha:
+        update_fields["proximo_cambio_aceite_fecha"] = proximo_cambio_aceite_fecha
+    if proximo_cambio_bujias_fecha:
+        update_fields["proximo_cambio_bujias_fecha"] = proximo_cambio_bujias_fecha
     if not update_fields:
         return
     try:
@@ -60,13 +68,18 @@ def _get_mantenimiento_previo(db, vehiculo_id: str) -> dict:
     try:
         veh = db["vehiculos"].find_one(
             {"_id": ObjectId(vehiculo_id)},
-            {"proximo_cambio_aceite": 1, "proximo_cambio_bujias": 1}
+            {
+                "proximo_cambio_aceite": 1, "proximo_cambio_bujias": 1,
+                "proximo_cambio_aceite_fecha": 1, "proximo_cambio_bujias_fecha": 1,
+            }
         )
         if not veh:
             return {}
         return {
             "proximo_cambio_aceite_anterior": veh.get("proximo_cambio_aceite") or 0,
             "proximo_cambio_bujias_anterior": veh.get("proximo_cambio_bujias") or 0,
+            "proximo_cambio_aceite_fecha_anterior": veh.get("proximo_cambio_aceite_fecha") or "",
+            "proximo_cambio_bujias_fecha_anterior": veh.get("proximo_cambio_bujias_fecha") or "",
         }
     except Exception:
         return {}
@@ -358,6 +371,8 @@ def create_orden_handler(event, context):
             "inventario": body.get("inventario", []),
             "proximo_cambio_bujias": body.get("proximo_cambio_bujias", 0),
             "proximo_cambio_aceite": body.get("proximo_cambio_aceite", 0),
+            "proximo_cambio_bujias_fecha": body.get("proximo_cambio_bujias_fecha", ""),
+            "proximo_cambio_aceite_fecha": body.get("proximo_cambio_aceite_fecha", ""),
             "aplica_costo_revision": body.get("aplica_costo_revision", False),
             "costo_revision": body.get("costo_revision"),
             "anticipo": body.get("anticipo", 0),
@@ -443,6 +458,8 @@ def create_orden_handler(event, context):
             str(vehiculo_id) if vehiculo_id else "",
             orden_doc.get("proximo_cambio_aceite"),
             orden_doc.get("proximo_cambio_bujias"),
+            orden_doc.get("proximo_cambio_aceite_fecha"),
+            orden_doc.get("proximo_cambio_bujias_fecha"),
         )
 
         # Audit log append-only (item #16) — dual-write con bitacora_estados.
@@ -853,7 +870,8 @@ def update_orden_handler(event, context):
             'estado', 'motivo_cancelacion', 'puntosArreglar',
             'mecanico_id', 'mecanico_nombre', 'falla_reportada', 'diagnostico',
             'kilometraje', 'nivel_tanque', 'testigos_encendidos', 'inventario',
-            'proximo_cambio_bujias', 'proximo_cambio_aceite', 'anticipo',
+            'proximo_cambio_bujias', 'proximo_cambio_aceite',
+            'proximo_cambio_bujias_fecha', 'proximo_cambio_aceite_fecha', 'anticipo',
             'cliente_snapshot', 'vehiculo_snapshot',
             'aplica_costo_revision', 'costo_revision', 'fechaEstimadaEntrega',
             'cita_id', 'sucursal_id', 'precios_incluyen_iva'
@@ -931,12 +949,16 @@ def update_orden_handler(event, context):
             sync_cita_estado_por_orden(db, orden_id, nuevo_estado)
 
         # Sincronizar próximos cambios al vehículo si se actualizaron en la OS.
-        if 'proximo_cambio_aceite' in update_data or 'proximo_cambio_bujias' in update_data:
+        if ('proximo_cambio_aceite' in update_data or 'proximo_cambio_bujias' in update_data
+                or 'proximo_cambio_aceite_fecha' in update_data
+                or 'proximo_cambio_bujias_fecha' in update_data):
             _sync_mantenimiento_to_vehiculo(
                 db,
                 orden_actual.get("vehiculo_id", ""),
                 update_data.get("proximo_cambio_aceite", orden_actual.get("proximo_cambio_aceite")),
                 update_data.get("proximo_cambio_bujias", orden_actual.get("proximo_cambio_bujias")),
+                update_data.get("proximo_cambio_aceite_fecha", orden_actual.get("proximo_cambio_aceite_fecha")),
+                update_data.get("proximo_cambio_bujias_fecha", orden_actual.get("proximo_cambio_bujias_fecha")),
             )
 
         # Audit log append-only (item #16) — espejea el push a bitacora_estados.
