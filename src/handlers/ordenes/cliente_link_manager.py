@@ -426,7 +426,10 @@ def _sanitize_orden(orden: dict, db=None) -> dict:
         try:
             veh_fresco = db['vehiculos'].find_one(
                 {'_id': ObjectId(v_id)},
-                {'proximo_cambio_aceite': 1, 'proximo_cambio_bujias': 1}
+                {
+                    'proximo_cambio_aceite': 1, 'proximo_cambio_bujias': 1,
+                    'proximo_cambio_aceite_fecha': 1, 'proximo_cambio_bujias_fecha': 1,
+                }
             ) or {}
         except Exception:
             veh_fresco = {}
@@ -436,6 +439,13 @@ def _sanitize_orden(orden: dict, db=None) -> dict:
     prox_bujias = (orden.get('proximo_cambio_bujias')
                    or veh_fresco.get('proximo_cambio_bujias')
                    or vehiculo.get('proximo_cambio_bujias'))
+    # Fechas de próximo cambio (strings YYYY-MM opcionales), misma cascada que los km.
+    prox_aceite_fecha = (orden.get('proximo_cambio_aceite_fecha')
+                         or veh_fresco.get('proximo_cambio_aceite_fecha')
+                         or vehiculo.get('proximo_cambio_aceite_fecha'))
+    prox_bujias_fecha = (orden.get('proximo_cambio_bujias_fecha')
+                         or veh_fresco.get('proximo_cambio_bujias_fecha')
+                         or vehiculo.get('proximo_cambio_bujias_fecha'))
 
     return {
         'folio': orden.get('folio'),
@@ -449,10 +459,14 @@ def _sanitize_orden(orden: dict, db=None) -> dict:
             'color': vehiculo.get('color'),
             'proximo_cambio_aceite': prox_aceite,
             'proximo_cambio_bujias': prox_bujias,
+            'proximo_cambio_aceite_fecha': prox_aceite_fecha,
+            'proximo_cambio_bujias_fecha': prox_bujias_fecha,
         },
         'kilometraje': orden.get('kilometraje', 0),
         'proximo_cambio_aceite': prox_aceite,
         'proximo_cambio_bujias': prox_bujias,
+        'proximo_cambio_aceite_fecha': prox_aceite_fecha,
+        'proximo_cambio_bujias_fecha': prox_bujias_fecha,
         'puntosArreglar': puntos_pub,
         'falla_reportada': orden.get('falla_reportada'),
         'diagnostico': orden.get('diagnostico'),

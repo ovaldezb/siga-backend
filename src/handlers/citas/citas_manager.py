@@ -17,7 +17,7 @@ from src.shared.utils.date_utils import iso_utc
 logger = Logger()
 
 ALLOWED_FIELDS = {
-    "clienteId", "clienteNombre", "vehiculoId", "vehiculoDesc",
+    "clienteId", "clienteNombre", "vehiculoId", "vehiculoDesc", "vehiculoAnio",
     "tecnicoId", "tecnicoNombre", "fecha", "horaInicio", "horaFin",
     "servicio", "estado", "notas", "orden_id"
 }
@@ -369,6 +369,8 @@ def create_cita_handler(event, context):
                 vehiculo_id = str(veh_existente["_id"])
                 body['vehiculoId'] = vehiculo_id
                 body['vehiculoDesc'] = f"{veh_existente.get('marca')} {veh_existente.get('modelo')} ({veh_existente.get('placas')})".strip()
+                if veh_existente.get('anio'):
+                    body['vehiculoAnio'] = veh_existente.get('anio')
             else:
                 sucursal_id_v = body.get('sucursal_id')
                 if not sucursal_id_v:
@@ -406,6 +408,7 @@ def create_cita_handler(event, context):
             "clienteNombre": body.get('clienteNombre'),
             "vehiculoId": vehiculo_id,
             "vehiculoDesc": body.get('vehiculoDesc'),
+            "vehiculoAnio": body.get('vehiculoAnio'),
             "tecnicoId": body.get('tecnicoId'),
             "tecnicoNombre": body.get('tecnicoNombre'),
             "fecha": body.get('fecha'),
