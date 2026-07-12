@@ -99,6 +99,12 @@ def create_taller_handler(event, context):
         except Exception:
             dt_alta = datetime.utcnow()
 
+        dias_prueba = body.get("diasPrueba", 0)
+        try:
+            dias_prueba = int(dias_prueba)
+        except (ValueError, TypeError):
+            dias_prueba = 0
+
         try:
             month = dt_alta.month - 1 + 1
             year = dt_alta.year + month // 12
@@ -113,6 +119,10 @@ def create_taller_handler(event, context):
             proxima_corte = dt_alta + timedelta(days=30)
 
         proxima_pago = proxima_corte + timedelta(days=10)
+
+        if dias_prueba > 0:
+            proxima_corte = proxima_corte + timedelta(days=dias_prueba)
+            proxima_pago = proxima_pago + timedelta(days=dias_prueba)
 
         # 2. Insert into Platform DB
         taller_doc = {
