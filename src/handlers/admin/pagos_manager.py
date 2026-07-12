@@ -15,6 +15,17 @@ logger = Logger()
 CLIP_API_KEY = os.environ.get('CLIP_API_KEY', '').strip()
 CLIP_SECRET_KEY = os.environ.get('CLIP_SECRET_KEY', '').strip()
 
+def add_months(source_date, months):
+    month = source_date.month - 1 + months
+    year = source_date.year + month // 12
+    month = month % 12 + 1
+    days_in_months = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    if month == 2 and year % 4 == 0 and (year % 100 != 0 or year % 400 == 0):
+        day = min(source_date.day, 29)
+    else:
+        day = min(source_date.day, days_in_months[month-1])
+    return datetime(year, month, day, source_date.hour, source_date.minute, source_date.second)
+
 # @logger.inject_lambda_context
 def procesar_pago_suscripcion_handler(event, context):
     try:
@@ -149,9 +160,17 @@ def procesar_pago_suscripcion_handler(event, context):
         taller = db["talleres"].find_one({"tenantId": tenant_id})
         corte_actual = None
         pago_actual = None
+        meses_cargo = 1
         if taller:
             corte_actual = taller.get("proximaFechaCorte")
             pago_actual = taller.get("proximaFechaPago")
+            meses_cargo = taller.get("mesesCargo", 1)
+            try:
+                meses_cargo = int(meses_cargo)
+            except (ValueError, TypeError):
+                meses_cargo = 1
+        if meses_cargo < 1 or meses_cargo > 12:
+            meses_cargo = 1
         
         # Parsear proximaFechaCorte a datetime naive
         corte_dt = None
@@ -180,14 +199,14 @@ def procesar_pago_suscripcion_handler(event, context):
         # Determinar nueva corte y pago basados en las reglas de pago a tiempo vs tardío
         if corte_dt and pago_dt:
             if fecha_pago <= pago_dt:
-                # Pago antes o el mismo día límite de pago -> corte + 30 días
-                nueva_corte = corte_dt + timedelta(days=30)
+                # Pago antes o el mismo día límite de pago -> corte + meses_cargo meses calendario
+                nueva_corte = add_months(corte_dt, meses_cargo)
             else:
-                # Pago después del día límite de pago -> fecha actual + 20 días
-                nueva_corte = fecha_pago + timedelta(days=20)
+                # Pago después del día límite de pago -> fecha actual + meses_cargo meses - 10 días
+                nueva_corte = add_months(fecha_pago, meses_cargo) - timedelta(days=10)
         else:
             # Si no hay fechas guardadas previas, inicializar a partir de hoy
-            nueva_corte = fecha_pago + timedelta(days=30)
+            nueva_corte = add_months(fecha_pago, meses_cargo)
 
         nueva_pago = nueva_corte + timedelta(days=10)
 
