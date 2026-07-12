@@ -1166,6 +1166,10 @@ def get_resumen_por_os_handler(event, context):
                     for it_os in (punto.get('items') or []):
                         if not it_os.get('no_cobrar'):
                             continue
+                        # Un item rechazado (no autorizado) nunca entró a la venta:
+                        # su costo no afectó utilidad, así que no debe restarse aquí.
+                        if it_os.get('rechazado'):
+                            continue
                         try:
                             cant = float(it_os.get('piezas') or 0)
                         except (TypeError, ValueError):
