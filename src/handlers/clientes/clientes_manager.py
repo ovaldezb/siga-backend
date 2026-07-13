@@ -130,7 +130,7 @@ def create_cliente_handler(event, context):
 
         # Validación básica manual para no sobrecomplicar el handler por ahora
         # VALIDACIÓN ESTRICTA
-        required = ["nombre", "apellido_paterno", "telefono", "sucursal_id"]
+        required = ["nombre", "apellido_paterno", "sucursal_id"]
         for field in required:
             if not body.get(field):
                 return create_response(400, f"El campo '{field}' es obligatorio.")
@@ -141,7 +141,7 @@ def create_cliente_handler(event, context):
             "nombre": body['nombre'],
             "apellido_paterno": body['apellido_paterno'],
             "apellido_materno": body.get('apellido_materno', ''),
-            "telefono": body['telefono'],
+            "telefono": body.get('telefono', ''),
             "email": body.get('email', ''),
             "rfc": body.get('rfc', 'XAXX010101000'),
             "razon_social": body.get('razon_social', ''),

@@ -16,7 +16,7 @@ class ClienteBase(BaseModel):
     nombre: str
     apellido_paterno: str
     apellido_materno: Optional[str] = None
-    telefono: str
+    telefono: Optional[str] = None
     email: Optional[EmailStr] = None
     direccion: Optional[str] = None
 
