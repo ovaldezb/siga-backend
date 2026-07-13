@@ -55,7 +55,7 @@ def procesar_pago_suscripcion_handler(event, context):
         body = json.loads(event.get("body") or "{}")
         card_token_id = body.get("card_token_id")
         monto = body.get("monto")
-        concepto = body.get("concepto", "Suscripción Mensual SAE")
+        concepto = body.get("concepto", "Suscripción Mensual Mekanics Manager")
 
         if not card_token_id or not monto:
             return create_response(400, "Parámetros card_token_id y monto son requeridos.")
