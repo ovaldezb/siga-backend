@@ -104,7 +104,24 @@ def list_clientes_handler(event, context):
         else:
             for c in clientes:
                 c['cotizaciones_pendientes'] = 0
-            
+
+        # Saldo deudor de CxC por cliente. Mismo criterio que usa
+        # ventas_manager al validar crédito y delete_cliente_handler al
+        # bloquear el borrado: suma de saldo_pendiente de sus ventas abiertas.
+        # La UI de Clientes lo usa para mostrar el crédito disponible real.
+        if client_ids:
+            saldos = list(db["ventas"].aggregate([
+                {"$match": {"cliente_id": {"$in": client_ids}, "saldo_pendiente": {"$gt": 0}}},
+                {"$group": {"_id": "$cliente_id", "saldo": {"$sum": "$saldo_pendiente"}}}
+            ]))
+            saldo_dict = {item['_id']: float(item['saldo']) for item in saldos}
+            for c in clientes:
+                c['saldo_credito'] = round(saldo_dict.get(c['id'], 0.0), 2)
+        else:
+            for c in clientes:
+                c['saldo_credito'] = 0.0
+
+
         return create_response(200, "Clientes obtenidos", {
             "items": clientes,
             "total": total,
