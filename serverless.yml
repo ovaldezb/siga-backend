@@ -107,6 +107,9 @@ plugins:
   - serverless-plugin-split-stacks
 
 custom:
+  appUrls:
+    dev: 'https://mekanicsmanager.co.uk/'
+    prod: 'https://www.mekanicsmanager.com.mx'
   pythonRequirements:
     # Dockerizar SIEMPRE: necesario para producir wheels nativas (pymongo, pydantic-core,
     # Pillow) con la arquitectura correcta (aarch64) y el ABI de python3.13. El plugin
@@ -1552,8 +1555,8 @@ resources:
         UserPoolName: ${self:service}-${self:provider.stage}-user-pool
         AdminCreateUserConfig:
           InviteMessageTemplate:
-            EmailSubject: "Bienvenido a SIGA - Credenciales de Acceso"
-            EmailMessage: "Bienvenido al Sistema Integral de Gestión Automotriz, su usuario es:{username} y su contraseña temporal es: {####}"
+            EmailSubject: "Bienvenido a Mekanics Manager - Credenciales de Acceso"
+            EmailMessage: "Bienvenido a Mekanics Manager, su usuario es:{username} y su contraseña temporal es: {####}, inicie sesión en: ${self:custom.appUrls.${self:provider.stage}}"
         UsernameAttributes:
           - email
         AutoVerifiedAttributes:
