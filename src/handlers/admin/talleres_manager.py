@@ -1,4 +1,4 @@
-from src.shared.utils.auth_utils import get_claims, is_admin, is_super_admin
+from src.shared.utils.auth_utils import get_claims, is_super_admin
 import os
 import json
 import uuid
@@ -257,74 +257,12 @@ def get_my_modulos_handler(event, context):
     except Exception as e:
         return handle_exception(e)
 
-# Campos de identidad del taller: los que salen impresos en el membrete de los PDFs.
-# Es lo único que el ADMIN del taller puede tocar de su propio documento en _platform.
-# El resto (modulos, estado, precioSuscripcion, mesesCargo, diasPrueba) es comercial y
-# solo lo mueve SUPER_ADMIN desde la pantalla Talleres.
-CAMPOS_IDENTIDAD_TALLER = ("nombreComercial", "direccion", "adminTelefono")
-
-
-def update_my_taller_handler(event, context):
-    """
-    PUT /talleres/me — el ADMIN edita los datos de su propio taller (los del membrete
-    de los PDFs) desde Configuración.
-
-    Resuelve el taller por el tenant_id del token, nunca por un id del path: así un
-    admin no puede alcanzar el taller de otro tenant aunque adivine el ObjectId.
-    Solo acepta CAMPOS_IDENTIDAD_TALLER; lo comercial queda fuera del alcance.
-    """
-    try:
-        claims = get_claims(event)
-        tenant_id = claims.get('custom:tenant_id')
-
-        if not is_admin(claims):
-            return create_response(403, "Solo un administrador puede editar los datos del taller.")
-        if not tenant_id:
-            return create_response(403, "No se encontró un tenantId asociado.")
-
-        body = json.loads(event.get("body") or "{}")
-
-        update_data = {}
-        for campo in CAMPOS_IDENTIDAD_TALLER:
-            if campo not in body:
-                continue
-            valor = body.get(campo)
-            valor = valor.strip() if isinstance(valor, str) else valor
-            if not valor:
-                return create_response(400, f"El campo '{campo}' no puede quedar vacío.")
-            update_data[campo] = valor
-
-        if not update_data:
-            return create_response(400, "No se enviaron datos para actualizar.")
-
-        update_data["updatedAt"] = datetime.utcnow()
-
-        db = get_platform_db()
-        result = db["talleres"].update_one({"tenantId": tenant_id}, {"$set": update_data})
-
-        if result.matched_count == 0:
-            return create_response(404, "Taller no encontrado")
-
-        taller = db["talleres"].find_one({"tenantId": tenant_id})
-
-        # Mismo shape que GET /talleres/me/modulos: el front refresca la sesión con esto
-        # y así el membrete y el encabezado toman los datos nuevos sin re-login.
-        return create_response(200, "Datos del taller actualizados", {
-            "nombreTaller": taller.get("nombreComercial"),
-            "direccion": taller.get("direccion"),
-            "adminTelefono": taller.get("adminTelefono"),
-        })
-
-    except Exception as e:
-        logger.error(f"Error in update_my_taller: {str(e)}")
-        return handle_exception(e)
-
-
 def update_taller_handler(event, context):
     """
     Actualiza la información de un taller existente. Exclusivo de SUPER_ADMIN: toca
     datos comerciales (estado, precio de suscripción, módulos) de cualquier tenant.
-    El ADMIN de un taller usa PUT /talleres/me.
+    El ADMIN de un taller edita el domicilio que sale en sus PDFs desde el módulo
+    de Sucursales, que es de donde el membrete toma los datos.
     """
     try:
         if not is_super_admin(get_claims(event)):

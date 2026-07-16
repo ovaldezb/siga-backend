@@ -519,17 +519,6 @@ functions:
           authorizer:
             name: cognitoAuthorizer
 
-  taller_update_me:
-    handler: src/handlers/admin/talleres_manager.update_my_taller_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
-    events:
-      - httpApi:
-          path: /talleres/me
-          method: put
-          authorizer:
-            name: cognitoAuthorizer
-
   taller_update:
     handler: src/handlers/admin/talleres_manager.update_taller_handler
     layers:
