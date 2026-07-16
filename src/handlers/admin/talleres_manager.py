@@ -1,4 +1,4 @@
-from src.shared.utils.auth_utils import get_claims
+from src.shared.utils.auth_utils import get_claims, is_super_admin
 import os
 import json
 import uuid
@@ -259,9 +259,15 @@ def get_my_modulos_handler(event, context):
 
 def update_taller_handler(event, context):
     """
-    Actualiza la información de un taller existente.
+    Actualiza la información de un taller existente. Exclusivo de SUPER_ADMIN: toca
+    datos comerciales (estado, precio de suscripción, módulos) de cualquier tenant.
+    El ADMIN de un taller edita el domicilio que sale en sus PDFs desde el módulo
+    de Sucursales, que es de donde el membrete toma los datos.
     """
     try:
+        if not is_super_admin(get_claims(event)):
+            return create_response(403, "Solo un SUPER_ADMIN puede editar talleres.")
+
         taller_id = event.get('pathParameters', {}).get('id')
         if not taller_id:
             return create_response(400, "ID de taller no proporcionado")
@@ -315,12 +321,16 @@ def update_taller_handler(event, context):
 def upload_logo_handler(event, context):
     """
     Recibe una imagen en base64, la redimensiona y la guarda en S3.
+    Exclusivo de SUPER_ADMIN, igual que el alta del taller.
     """
     try:
         from bson import ObjectId
         from PIL import Image
         import io
         import base64
+
+        if not is_super_admin(get_claims(event)):
+            return create_response(403, "Solo un SUPER_ADMIN puede cambiar el logotipo.")
 
         logger.info("Iniciando carga de logotipo")
         taller_id = event.get('pathParameters', {}).get('id')
