@@ -37,6 +37,25 @@ def try_parse_id(value: Any) -> Any:
 _user_sucursales_cache: Dict[str, Optional[Set[str]]] = {}
 
 
+def get_groups(claims: Dict[str, Any]) -> List[str]:
+    """Grupos de Cognito como lista exacta.
+
+    El claim llega como lista (authorizer REST) o como string (`"[ADMIN ASESOR]"`
+    o `"ADMIN,ASESOR"` según el httpApi JWT authorizer), así que se normalizan
+    ambos. Devuelve nombres exactos: a diferencia de `is_admin`, que hace
+    substring, aquí 'ADMIN' NO matchea 'SUPER_ADMIN'.
+    """
+    grupos = claims.get('cognito:groups') or []
+    if isinstance(grupos, str):
+        grupos = grupos.strip('[]').replace(',', ' ').split()
+    return [str(g).strip() for g in grupos if str(g).strip()]
+
+
+def is_super_admin(claims: Dict[str, Any]) -> bool:
+    """True solo para SUPER_ADMIN (el operador de la plataforma, no el dueño del taller)."""
+    return 'SUPER_ADMIN' in get_groups(claims)
+
+
 def is_admin(claims: Dict[str, Any]) -> bool:
     """True si el usuario es ADMIN o SUPER_ADMIN según claims de Cognito."""
     grupo = claims.get('cognito:groups') or ''
