@@ -759,6 +759,11 @@ def list_sugerencias_pendientes_handler(event, context):
     `aprobado: false` porque los items se crean con aprobado=true por default y el botón
     Rechazar ya setea ambos flags juntos — `aprobado: {$ne: true}` solo agregaría ruido de
     items nunca tocados en OS abandonadas.
+
+    Un item rechazado deja de sugerirse cuando una OS posterior del mismo vehículo/cliente
+    ya lo incluye sin rechazar (el cliente terminó aceptándolo). El item original conserva
+    `rechazado: true` para siempre — es historia de esa visita, no se reescribe —, así que
+    la señal de "ya atendido" se deriva aquí comparando contra las OS posteriores.
     """
     try:
         claims =get_claims(event)
@@ -776,12 +781,14 @@ def list_sugerencias_pendientes_handler(event, context):
 
         db = get_tenant_db(tenant_id)
 
-        match: dict = {"estado": {"$ne": "CANCELADO"}}
+        base_match: dict = {"estado": {"$ne": "CANCELADO"}}
         if vehiculo_id:
-            match["vehiculo_id"] = vehiculo_id
+            base_match["vehiculo_id"] = vehiculo_id
         if cliente_id:
             # cliente_snapshot.id es como se persiste en create_orden_handler
-            match["cliente_snapshot.id"] = cliente_id
+            base_match["cliente_snapshot.id"] = cliente_id
+
+        match: dict = dict(base_match)
         if exclude_orden_id:
             try:
                 match["_id"] = {"$ne": ObjectId(exclude_orden_id)}
@@ -822,17 +829,69 @@ def list_sugerencias_pendientes_handler(event, context):
 
         results = list(db["ordenes_servicio"].aggregate(pipeline))
 
-        # Serializar fechas + aplanar item al nivel superior para que el front lo importe fácil
+        # Última fecha en que cada item fue aceptado (aparece sin rechazar) en alguna OS del
+        # mismo vehículo/cliente. La OS actual NO se excluye: si ya se importó ahí, tampoco
+        # debe volver a sugerirse al reabrirla.
+        atendidos_pipeline = [
+            {"$match": base_match},
+            {"$sort": {"createdAt": -1}},
+            {"$limit": 50},
+            {"$project": {"createdAt": 1, "puntosArreglar": 1}},
+            {"$unwind": {"path": "$puntosArreglar", "preserveNullAndEmptyArrays": False}},
+            {"$unwind": {"path": "$puntosArreglar.items", "preserveNullAndEmptyArrays": False}},
+            {"$match": {
+                "puntosArreglar.items.rechazado": {"$ne": True},
+                "puntosArreglar.items.nombre": {"$exists": True, "$nin": [None, ""]},
+            }},
+            {"$group": {
+                "_id": "$puntosArreglar.items.nombre",
+                "ultima_fecha": {"$max": "$createdAt"},
+            }},
+        ]
+
+        def normalizar(nombre) -> str:
+            return (nombre or '').strip().lower()
+
+        # El nombre se normaliza aquí y no en el $group: los asesores lo recapturan a mano
+        # entre visitas y "Horquillas" / " horquillas " son el mismo trabajo.
+        atendidos: dict = {}
+        for r in db["ordenes_servicio"].aggregate(atendidos_pipeline):
+            clave = normalizar(r.get("_id"))
+            fecha = r.get("ultima_fecha")
+            if not clave or not isinstance(fecha, datetime):
+                continue
+            if clave not in atendidos or fecha > atendidos[clave]:
+                atendidos[clave] = fecha
+
+        def ya_atendido(nombre, fecha_origen) -> bool:
+            """El item se aceptó en una OS igual o posterior a la que lo rechazó."""
+            aceptado_en = atendidos.get(normalizar(nombre))
+            if not aceptado_en or not isinstance(fecha_origen, datetime):
+                return False
+            return aceptado_en >= fecha_origen
+
+        # Serializar fechas + aplanar item al nivel superior para que el front lo importe fácil.
+        # Si el mismo item se rechazó en varias visitas, solo se sugiere la más reciente
+        # (el pipeline ya viene ordenado por createdAt desc).
         sugerencias = []
+        vistos = set()
         for r in results:
-            fecha = r.get('fecha_origen')
-            if isinstance(fecha, datetime):
-                fecha = iso_utc(fecha)
             item = r.get('item') or {}
+            nombre = item.get('nombre')
+            fecha = r.get('fecha_origen')
+
+            if ya_atendido(nombre, fecha):
+                continue
+
+            clave = normalizar(nombre)
+            if clave in vistos:
+                continue
+            vistos.add(clave)
+
             sugerencias.append({
                 **item,
                 "folio_origen": r.get('folio_origen'),
-                "fecha_origen": fecha,
+                "fecha_origen": iso_utc(fecha) if isinstance(fecha, datetime) else fecha,
                 "orden_id": r.get('orden_id'),
                 "vehiculo_id": r.get('vehiculo_id'),
                 "punto_nombre": r.get('punto_nombre'),
