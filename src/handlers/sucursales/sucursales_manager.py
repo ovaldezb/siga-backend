@@ -48,6 +48,11 @@ def create_sucursal_handler(event, context):
             "telefono": body.get("telefono"),
             "responsable": body.get("responsable"),
             "activa": body.get("activa", True),
+            "id_certificado": body.get("id_certificado"),
+            "serie": body.get("serie"),
+            "regimen_fiscal": body.get("regimen_fiscal"),
+            "codigo_postal": body.get("codigo_postal"),
+            "codigo_sucursal": body.get("codigo_sucursal"),
             "tenant_id": tenant_id,
             "createdAt": datetime.utcnow(),
             "updatedAt": datetime.utcnow()
