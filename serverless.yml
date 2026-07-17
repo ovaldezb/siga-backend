@@ -85,6 +85,9 @@ provider:
     SENTRY_TRACES_SAMPLE_RATE: ${env:SENTRY_TRACES_SAMPLE_RATE, '0'}
     CLIP_API_KEY: ${env:CLIP_API_KEY, ''}
     CLIP_SECRET_KEY: ${env:CLIP_SECRET_KEY, ''}
+    SW_USER_NAME: ${env:SW_USER_NAME, ''}
+    SW_USER_PASSWORD: ${env:SW_USER_PASSWORD, ''}
+    SW_URL: ${env:SW_URL, ''}
   httpApi:
     payload: '1.0'
     cors: true
@@ -241,6 +244,50 @@ functions:
       - httpApi:
           path: /pagos/suscripcion
           method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  certificados_create:
+    handler: src/handlers/facturacion/certificates_manager.create_certificate_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /certificados
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  certificados_list:
+    handler: src/handlers/facturacion/certificates_manager.get_certificates_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /certificados
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  certificados_update:
+    handler: src/handlers/facturacion/certificates_manager.update_certificate_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /certificados/{id}
+          method: put
+          authorizer:
+            name: cognitoAuthorizer
+
+  certificados_delete:
+    handler: src/handlers/facturacion/certificates_manager.delete_certificate_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /certificados/{id}
+          method: delete
           authorizer:
             name: cognitoAuthorizer
 
