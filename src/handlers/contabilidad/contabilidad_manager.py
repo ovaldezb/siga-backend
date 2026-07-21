@@ -1115,9 +1115,18 @@ def get_resumen_por_os_handler(event, context):
             ingreso_neto = float(v.get('subtotal') or 0)
             costo_inv = 0.0
             costo_ext = 0.0
+            costo_reg = 0.0
+            regalados_detalle = []
             proveedores_os = {}  # proveedor_id -> {nombre, total, items}
 
             # Costo de la venta: leer items[] tal cual quedaron snapshotted.
+            # Cada item aporta su costo UNA sola vez, clasificado en un único bucket
+            # (regalado / externo / inventario). `venta.items` es la fuente única y
+            # completa del costo — todos los items (incluidas cortesías) llevan
+            # costo_unitario_snapshot desde create_venta_handler, igual que usa el
+            # resumen-mensual. Antes se sumaba ADEMÁS un escaneo de la OS por items
+            # no_cobrar, lo que duplicaba el costo de las cortesías que también
+            # quedaban en la venta con su costo snapshotteado.
             for it in v.get('items') or []:
                 try:
                     cant = int(it.get('cantidad') or 0)
@@ -1126,9 +1135,22 @@ def get_resumen_por_os_handler(event, context):
                 costo_u = float(it.get('costo_unitario_snapshot') or 0)
                 producto = it.get('producto') or {}
                 es_externo = bool(it.get('es_externo') or producto.get('es_externo'))
+                es_cortesia = (str(it.get('tipo_precio') or '').lower() == 'cortesia'
+                               or bool(it.get('no_cobrar')))
                 linea = round(costo_u * cant, 2)
 
-                if es_externo:
+                if es_cortesia:
+                    # Cortesía/regalo: el cliente no la paga pero el taller sí absorbió
+                    # su costo. Se cuenta una sola vez aquí, desde el snapshot de la venta.
+                    costo_reg += linea
+                    regalados_detalle.append({
+                        'nombre': producto.get('nombre') or it.get('nombre'),
+                        'cantidad': cant,
+                        'costo_unitario': round(costo_u, 2),
+                        'total': linea,
+                        'es_externo': es_externo,
+                    })
+                elif es_externo:
                     costo_ext += linea
                     prov_id = it.get('proveedor_id') or producto.get('proveedor_id') or 'sin-proveedor'
                     prov_nombre = (it.get('proveedor_nombre')
@@ -1155,40 +1177,10 @@ def get_resumen_por_os_handler(event, context):
                 else:
                     costo_inv += linea
 
-            # Regalos: leer la OS original para detectar items con no_cobrar (su costo SÍ
-            # afectó utilidad porque se descontó stock / se pagó al proveedor, pero el
-            # cliente no los pagó).
-            costo_reg = 0.0
-            regalados_detalle = []
+            # OS original solo para datos de display (vehículo, cliente, mecánico, folio).
+            # El costo de las cortesías ya se contabilizó arriba desde venta.items, así
+            # que aquí NO se vuelve a escanear la OS (evita el doble conteo histórico).
             orden_doc = ordenes_map.get(v.get('orden_id'))
-            if orden_doc:
-                for punto in (orden_doc.get('puntosArreglar') or []):
-                    for it_os in (punto.get('items') or []):
-                        if not it_os.get('no_cobrar'):
-                            continue
-                        # Un item rechazado (no autorizado) nunca entró a la venta:
-                        # su costo no afectó utilidad, así que no debe restarse aquí.
-                        if it_os.get('rechazado'):
-                            continue
-                        try:
-                            cant = float(it_os.get('piezas') or 0)
-                        except (TypeError, ValueError):
-                            cant = 0
-                        # Usa costo_proveedor si es externo, si no precioCompra.
-                        if it_os.get('es_externo'):
-                            costo_u = float(it_os.get('costo_proveedor') or it_os.get('precioCompra') or 0)
-                        else:
-                            costo_u = float(it_os.get('precioCompra') or 0)
-                        linea_reg = round(costo_u * cant, 2)
-                        costo_reg += linea_reg
-                        regalados_detalle.append({
-                            'nombre': it_os.get('nombre'),
-                            'cantidad': cant,
-                            'costo_unitario': round(costo_u, 2),
-                            'total': linea_reg,
-                            'punto': punto.get('nombre'),
-                            'es_externo': bool(it_os.get('es_externo')),
-                        })
 
             utilidad_neta = round(ingreso_neto - costo_inv - costo_ext - costo_reg, 2)
             tot_ingreso += ingreso_neto

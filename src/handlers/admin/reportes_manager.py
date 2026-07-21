@@ -10,6 +10,8 @@ from src.shared.utils.date_utils import iso_utc
 
 logger = Logger()
 
+IVA_RATE = 0.16  # Tasa IVA México (mismo valor que ventas/OS/contabilidad)
+
 @logger.inject_lambda_context
 def get_kpis_handler(event, context):
     """GET /reportes/kpis — Obtiene métricas consolidadas (OS + POS)."""
@@ -206,20 +208,48 @@ def get_kpis_handler(event, context):
                     h['total'] += res['total']
                     h['count'] += res['count']
 
-        # 5. UTILIDAD Y MARGEN (Consolidado)
-        # Utility from Sales (POS)
+        # 5. UTILIDAD Y MARGEN (Consolidado) — en términos NETOS (sin IVA), igual que el
+        # módulo de Contabilidad. La utilidad de una venta es su subtotal (base sin IVA)
+        # menos el costo snapshotteado de sus items. NO se usa precio_unitario (que
+        # incluye IVA) ni producto.precio_compra: eso inflaba la utilidad con el impuesto
+        # que va al SAT y desalineaba el dashboard del P&L contable.
+        _iva_factor = 1 + IVA_RATE
         res_util_ventas = list(db["ventas"].aggregate([
-            {"$match": filter_base},
-            {"$unwind": "$items"},
-            {"$group": {
-                "_id": None,
-                "utilidad": {"$sum": {"$multiply": [{"$subtract": ["$items.precio_unitario", {"$ifNull": ["$items.producto.precio_compra", 0]}]}, "$items.cantidad"]}}
-            }}
+            {"$match": {**filter_base, "estado": {"$nin": ["CANCELADA", "ANULADA"]}}},
+            {"$project": {
+                "neto": {"$ifNull": ["$subtotal", 0]},
+                "costo": {"$reduce": {
+                    "input": {"$ifNull": ["$items", []]},
+                    "initialValue": 0,
+                    "in": {"$add": ["$$value", {"$multiply": [
+                        {"$ifNull": ["$$this.costo_unitario_snapshot", 0]},
+                        {"$ifNull": ["$$this.cantidad", 0]},
+                    ]}]},
+                }},
+            }},
+            {"$group": {"_id": None, "utilidad": {"$sum": {"$subtract": ["$neto", "$costo"]}}}}
         ]))
-        
-        # Utility from OS
-        # Las cortesías (no_cobrar) no generan ingreso: su precioVenta cuenta como 0,
-        # de modo que su costo (precioCompra) reste correctamente a la utilidad del taller.
+
+        # Utilidad de OS entregadas directo (sin pasar por POS). El lado ingreso se
+        # convierte a NETO respetando precio_incluye_iva/iva_exento por item (misma
+        # convención que _calcular_totales_orden). Las cortesías (no_cobrar) no generan
+        # ingreso: su precioVenta cuenta como 0, de modo que su costo (precioCompra) reste
+        # correctamente a la utilidad del taller.
+        _net_precio_venta_os = {
+            "$cond": [
+                {"$eq": [{"$ifNull": ["$puntosArreglar.items.no_cobrar", False]}, True]},
+                0,
+                {"$cond": [
+                    {"$eq": [{"$ifNull": ["$puntosArreglar.items.iva_exento", False]}, True]},
+                    {"$ifNull": ["$puntosArreglar.items.precioVenta", 0]},
+                    {"$cond": [
+                        {"$eq": [{"$ifNull": ["$puntosArreglar.items.precio_incluye_iva", True]}, True]},
+                        {"$divide": [{"$ifNull": ["$puntosArreglar.items.precioVenta", 0]}, _iva_factor]},
+                        {"$ifNull": ["$puntosArreglar.items.precioVenta", 0]},
+                    ]},
+                ]},
+            ]
+        }
         res_util_os = list(db["ordenes_servicio"].aggregate([
             {"$match": os_entregada_sin_venta},
             {"$unwind": {"path": "$puntosArreglar", "preserveNullAndEmptyArrays": True}},
@@ -228,31 +258,31 @@ def get_kpis_handler(event, context):
                 "_id": None,
                 "utilidad": {"$sum": {"$multiply": [
                     {"$subtract": [
-                        {"$cond": [
-                            {"$eq": [{"$ifNull": ["$puntosArreglar.items.no_cobrar", False]}, True]},
-                            0,
-                            {"$ifNull": ["$puntosArreglar.items.precioVenta", 0]}
-                        ]},
+                        _net_precio_venta_os,
                         {"$ifNull": ["$puntosArreglar.items.precioCompra", 0]}
                     ]},
                     {"$ifNull": ["$puntosArreglar.items.piezas", 0]}
                 ]}}
             }}
         ]))
-        
+
         utilidad_total = (res_util_ventas[0]['utilidad'] if res_util_ventas else 0) + \
                          (res_util_os[0]['utilidad'] if res_util_os else 0)
-        
-        # Ingresos totales para margen. Debe abarcar las mismas dos fuentes que la
-        # utilidad (POS + OS entregadas sin venta), si no el numerador y el denominador
-        # medirían universos distintos y el margen saldría inflado.
+
+        # Ingresos totales para margen — también NETOS, para que numerador y denominador
+        # midan el mismo universo (si no, un numerador neto sobre un denominador con IVA
+        # deprime el margen). Ventas: subtotal. OS: subtotal si existe, si no total/1.16.
+        # Nota: ventas_hoy/ventas_mensuales SÍ siguen mostrando el total con IVA (es lo
+        # que el usuario espera ver como "ventas"); esto solo aplica al margen.
         ingresos_pos_totales = list(db["ventas"].aggregate([
-            {"$match": filter_base},
-            {"$group": {"_id": None, "total": {"$sum": "$total"}}}
+            {"$match": {**filter_base, "estado": {"$nin": ["CANCELADA", "ANULADA"]}}},
+            {"$group": {"_id": None, "total": {"$sum": {"$ifNull": ["$subtotal", 0]}}}}
         ]))
         ingresos_os_totales = list(db["ordenes_servicio"].aggregate([
             {"$match": os_entregada_sin_venta},
-            {"$group": {"_id": None, "total": {"$sum": {"$ifNull": ["$total", 0]}}}}
+            {"$group": {"_id": None, "total": {"$sum": {"$ifNull": [
+                "$subtotal", {"$divide": [{"$ifNull": ["$total", 0]}, _iva_factor]}
+            ]}}}}
         ]))
         ingresos_totales_val = (ingresos_pos_totales[0]['total'] if ingresos_pos_totales else 0) + \
                                (ingresos_os_totales[0]['total'] if ingresos_os_totales else 0)
