@@ -13,7 +13,10 @@ from src.shared.utils.date_utils import iso_utc
 
 logger = Logger()
 
-IVA_RATE = 0.16  # Tasa de IVA en México
+# Tasa de IVA en México. Ya NO se usa para calcular la venta (la operación va sin IVA);
+# solo para las compras auto-generadas a proveedor por items externos, donde la factura
+# del proveedor sí trae IVA acreditable.
+IVA_RATE = 0.16
 
 
 class StockInsuficienteError(Exception):
@@ -81,10 +84,12 @@ def create_venta_handler(event, context):
         if not sucursal_id:
             return create_response(400, "Se requiere sucursal_id para registrar la venta.")
 
-        # 2. CALCULAR TOTALES EN SERVIDOR — respetar flag precio_incluye_iva e iva_exento por línea
-        #    Convención SIGA: si no viene el flag, asumimos precio_incluye_iva=True (precios capturados YA con IVA).
-        base_acum = 0.0   # subtotal (base imponible)
-        iva_acum = 0.0
+        # 2. CALCULAR TOTALES EN SERVIDOR — SIN IVA (operación libre de impuesto)
+        #    Convención SIGA: el precio capturado ES el monto a cobrar. La venta no
+        #    desglosa IVA; `iva` queda en 0 y subtotal == total. El tratamiento fiscal
+        #    (precio_incluye_iva / iva_exento del item) se conserva como metadato en el
+        #    catálogo para el futuro módulo de facturación, pero NO afecta los totales:
+        #    desglosar aquí era lo que descuadraba ingresos, utilidad y contabilidad.
         gross_acum = 0.0  # lo que ve el usuario en el ticket antes de descuento
         for item in items:
             try:
@@ -94,27 +99,7 @@ def create_venta_handler(event, context):
                 continue
             if precio < 0 or cantidad <= 0:
                 continue
-            producto = item.get('producto') or {}
-            incluye_iva = item.get('precio_incluye_iva',
-                                   producto.get('precio_incluye_iva', True))
-            iva_exento = item.get('iva_exento',
-                                  producto.get('iva_exento', False))
-            line_amount = precio * cantidad
-            if iva_exento:
-                line_base = line_amount
-                line_iva = 0.0
-                line_gross = line_amount
-            elif bool(incluye_iva):
-                line_base = line_amount / (1 + IVA_RATE)
-                line_iva = line_amount - line_base
-                line_gross = line_amount
-            else:
-                line_base = line_amount
-                line_iva = line_amount * IVA_RATE
-                line_gross = line_amount + line_iva
-            base_acum += line_base
-            iva_acum += line_iva
-            gross_acum += line_gross
+            gross_acum += precio * cantidad
 
         try:
             descuento = float(body.get('descuento', 0))
@@ -123,16 +108,9 @@ def create_venta_handler(event, context):
         if descuento < 0:
             descuento = 0.0
 
-        # Aplicar descuento al total bruto; rebajar base e IVA proporcionalmente
-        total_bruto = max(0.0, gross_acum - descuento)
-        if gross_acum > 0:
-            factor = total_bruto / gross_acum
-            subtotal_calculado = round(base_acum * factor, 2)
-            iva_calculado = round(iva_acum * factor, 2)
-        else:
-            subtotal_calculado = 0.0
-            iva_calculado = 0.0
-        total_calculado = round(subtotal_calculado + iva_calculado, 2)
+        total_calculado = round(max(0.0, gross_acum - descuento), 2)
+        subtotal_calculado = total_calculado
+        iva_calculado = 0.0
 
         # 3. FOLIO SECUENCIAL (MongoDB atómico, no UUID)
         folio = _get_next_folio_internal(tenant_id, "venta", sucursal_id)

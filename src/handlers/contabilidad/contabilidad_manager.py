@@ -15,7 +15,9 @@ from src.shared.utils.date_utils import iso_utc
 
 logger = Logger()
 
-IVA_RATE = 0.16  # Tasa de IVA en México (mismo valor que ventas/compras)
+# Tasa de IVA en México. La operación (ventas/OS/cotizaciones) va SIN IVA; sólo las
+# compras a proveedor manejan IVA acreditable, y ese cálculo vive en compras_manager.
+IVA_RATE = 0.16
 
 
 def _get_claims(event):
@@ -289,7 +291,9 @@ def get_margen_ventas_handler(event, context):
         costos = 0.0
         detalle = []
         for v in ventas:
-            ingreso_neto = float(v.get('subtotal', 0) or 0)  # ya sin IVA
+            # Operación sin IVA: el ingreso es el `total` cobrado. Fallback a subtotal
+            # sólo si el documento no trae total.
+            ingreso_neto = float(v.get('total') or v.get('subtotal') or 0)
             costo_total = 0.0
             for it in v.get('items', []):
                 try:
@@ -839,9 +843,10 @@ def get_resumen_mensual_handler(event, context):
             'orden_id': 1, 'sucursal_id': 1, 'createdAt': 1, 'estado': 1,
         }))
 
-        ingresos_brutos = 0.0   # total con IVA
-        ingresos_netos = 0.0    # subtotal sin IVA
-        iva_cobrado = 0.0
+        # Operación SIN IVA: el ingreso de una venta es su `total` (lo cobrado). brutos y
+        # netos son el mismo número; se mantienen ambas llaves para no romper el front.
+        ingresos_brutos = 0.0
+        ingresos_netos = 0.0
         costo_venta = 0.0
         ventas_detalle = []
         os_detalle = []
@@ -849,12 +854,10 @@ def get_resumen_mensual_handler(event, context):
         for v in ventas:
             if not _is_venta_valida(v):
                 continue
-            sub = float(v.get('subtotal') or 0)
-            iva_v = float(v.get('iva') or 0)
-            tot = float(v.get('total') or (sub + iva_v))
+            tot = float(v.get('total') or v.get('subtotal') or 0)
+            sub = tot
             ingresos_brutos += tot
-            ingresos_netos += sub
-            iva_cobrado += iva_v
+            ingresos_netos += tot
 
             costo_v = 0.0
             for it in v.get('items') or []:
@@ -877,7 +880,6 @@ def get_resumen_mensual_handler(event, context):
                 'cliente_id': v.get('cliente_id'),
                 'orden_id': v.get('orden_id'),
                 'ingreso_neto': round(sub, 2),
-                'iva': round(iva_v, 2),
                 'ingreso_bruto': round(tot, 2),
                 'costo': round(costo_v, 2),
                 'margen': round(margen, 2),
@@ -1010,7 +1012,6 @@ def get_resumen_mensual_handler(event, context):
             "ingresos": {
                 "brutos": round(ingresos_brutos, 2),
                 "netos": round(ingresos_netos, 2),
-                "iva_cobrado": round(iva_cobrado, 2),
                 "ventas_count": len(ventas_detalle),
                 "os_count": len(os_detalle),
             },
@@ -1028,11 +1029,10 @@ def get_resumen_mensual_handler(event, context):
             "utilidad_neta": round(utilidad_neta, 2),
             "margen_bruto_pct": round(margen_bruto_pct, 2),
             "margen_neto_pct": round(margen_neto_pct, 2),
-            "iva": {
-                "cobrado": round(iva_cobrado, 2),
-                "acreditable": round(iva_acreditable, 2),
-                "saldo": round(iva_cobrado - iva_acreditable, 2),
-            },
+            # IVA de compras: la factura del proveedor sí trae IVA acreditable. Las ventas
+            # no generan IVA trasladado mientras no exista el módulo de facturación, por
+            # eso no se publica un "saldo" (sería un falso saldo a favor).
+            "iva_acreditable_compras": round(iva_acreditable, 2),
             "detalle": {
                 "ventas": ventas_detalle[:500],
                 "ordenes_servicio": os_detalle[:500],
@@ -1049,7 +1049,7 @@ def get_resumen_por_os_handler(event, context):
     """GET /contabilidad/resumen-os?year=&month=&sucursal_id=
 
     Devuelve una fila por OS facturada en el mes con:
-      - ingresos_netos (subtotal de la venta)
+      - ingresos_netos (total cobrado de la venta — la operación va sin IVA)
       - costo_inventario  (líneas de items propios — costo_unitario_snapshot × cantidad)
       - costo_externo     (líneas con es_externo=True — costo proveedor × cantidad)
       - costo_regalado    (líneas con no_cobrar/cortesía en la OS original — costo × cantidad)
@@ -1112,7 +1112,9 @@ def get_resumen_por_os_handler(event, context):
         proveedores_global = {}
 
         for v in ventas:
-            ingreso_neto = float(v.get('subtotal') or 0)
+            # Operación sin IVA: el ingreso es el `total` cobrado (mismo criterio que
+            # resumen-mensual y el dashboard; cuadra también las ventas históricas).
+            ingreso_neto = float(v.get('total') or v.get('subtotal') or 0)
             costo_inv = 0.0
             costo_ext = 0.0
             costo_reg = 0.0
@@ -1259,9 +1261,9 @@ def get_concentrado_ventas_handler(event, context):
     venta del mes, con su ingreso neto, costo y ganancia/pérdida. Sirve para ver qué
     piezas/servicios dejan utilidad y cuáles se vendieron por debajo del costo.
 
-    El ingreso neto por línea se reconstruye respetando los flags de IVA de la venta
-    (precio_incluye_iva / iva_exento) y se prorratea el descuento global mediante un
-    factor, de modo que la suma de los renglones coincida con el subtotal de la venta.
+    La operación va SIN IVA: el ingreso de una línea es precio_unitario × cantidad. El
+    descuento global se prorratea mediante un factor, de modo que la suma de los
+    renglones coincida con el total cobrado de la venta.
     El costo sale de costo_unitario_snapshot (congelado al momento de vender).
     """
     try:
@@ -1284,7 +1286,7 @@ def get_concentrado_ventas_handler(event, context):
             q_ventas['sucursal_id'] = sucursal_id
         ventas = list(db.ventas.find(q_ventas, {
             'folio': 1, 'cliente_nombre': 1, 'cliente_id': 1, 'items': 1,
-            'subtotal': 1, 'descuento': 1, 'orden_id': 1, 'sucursal_id': 1,
+            'subtotal': 1, 'total': 1, 'descuento': 1, 'orden_id': 1, 'sucursal_id': 1,
             'createdAt': 1, 'estado': 1,
         }))
 
@@ -1299,7 +1301,7 @@ def get_concentrado_ventas_handler(event, context):
 
         for v in ventas:
             items = v.get('items') or []
-            # 1) base (sin IVA) de cada línea respetando flags; acumular para el factor.
+            # 1) importe de cada línea = precio × cantidad (sin IVA); acumular para el factor.
             lineas_calc = []
             base_bruta_acum = 0.0
             for it in items:
@@ -1309,19 +1311,15 @@ def get_concentrado_ventas_handler(event, context):
                 except (TypeError, ValueError):
                     precio, cant = 0.0, 0
                 producto = it.get('producto') or {}
-                incluye_iva = it.get('precio_incluye_iva', producto.get('precio_incluye_iva', True))
-                iva_exento = it.get('iva_exento', producto.get('iva_exento', False))
-                line_amount = precio * cant
-                if iva_exento or not bool(incluye_iva):
-                    line_base = line_amount
-                else:
-                    line_base = line_amount / (1 + IVA_RATE)
+                line_base = precio * cant
                 base_bruta_acum += line_base
                 lineas_calc.append((it, producto, precio, cant, line_base))
 
-            # 2) factor de descuento: subtotal real / suma de bases brutas.
-            subtotal_venta = float(v.get('subtotal') or 0)
-            factor = (subtotal_venta / base_bruta_acum) if base_bruta_acum > 0 else 1.0
+            # 2) factor de descuento: total cobrado / suma de importes de línea. En ventas
+            #    históricas el total incluía IVA, así que el factor lo absorbe y la suma de
+            #    renglones sigue cuadrando contra el total de la venta.
+            total_venta = float(v.get('total') or v.get('subtotal') or 0)
+            factor = (total_venta / base_bruta_acum) if base_bruta_acum > 0 else 1.0
 
             fecha_iso = v.get('createdAt')
             if isinstance(fecha_iso, datetime):
@@ -1399,7 +1397,13 @@ def get_concentrado_ventas_handler(event, context):
 
 def get_iva_mensual_handler(event, context):
     """GET /contabilidad/iva-mensual?year=&month=&sucursal_id=
-    IVA trasladado (ventas) vs IVA acreditable (compras) del mes."""
+    IVA trasladado (ventas) vs IVA acreditable (compras) del mes.
+
+    OJO: la operación va SIN IVA hasta que exista el módulo de facturación, así que las
+    ventas nuevas traen iva=0 y este endpoint sólo refleja IVA acreditable real (compras).
+    Por eso la pestaña "Impuestos" está oculta en el front: mostraría un saldo a favor
+    ficticio. Se conserva el endpoint para cuando facturación entre en operación.
+    """
     try:
         claims = _get_claims(event)
         tenant_id = claims.get('custom:tenant_id')

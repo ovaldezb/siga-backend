@@ -85,41 +85,27 @@ def _get_mantenimiento_previo(db, vehiculo_id: str) -> dict:
         return {}
 
 
-IVA_RATE = 0.16  # Tasa IVA México
-
-
 def _calcular_totales_orden(puntos_arreglar) -> dict:
-    """Calcula subtotal (base), iva y total respetando precio_incluye_iva e iva_exento por item.
+    """Calcula subtotal y total de la OS SIN IVA (operación libre de impuesto).
 
-    Convención SIGA (igual que ventas_manager):
-    - precio_incluye_iva=True (default): precioVenta YA CONTIENE IVA -> se extrae la base.
-    - precio_incluye_iva=False: precioVenta es base -> se le suma el 16%.
-    - iva_exento=True: sin IVA en ninguna dirección.
+    Convención SIGA (igual que ventas_manager): `precioVenta` ES el monto a cobrar.
+    No se desglosa IVA en ninguna dirección, así que subtotal == total e `iva` = 0.
+    El tratamiento fiscal del catálogo (precio_incluye_iva / iva_exento) se conserva
+    como metadato para el futuro módulo de facturación, pero no altera estos totales.
 
     El cliente no puede mandar `total` manipulado: siempre se recalcula aquí.
     """
-    base_acum = 0.0
-    iva_acum  = 0.0
+    total_acum = 0.0
     for punto in puntos_arreglar or []:
         for item in (punto.get("items") or []):
             if item.get("no_cobrar") or item.get("rechazado") or item.get("decision") == "rechazado":
                 continue
             try:
-                linea = float(item.get("piezas") or 0) * float(item.get("precioVenta") or 0)
+                total_acum += float(item.get("piezas") or 0) * float(item.get("precioVenta") or 0)
             except (TypeError, ValueError):
                 continue
-            if item.get("iva_exento"):
-                base_acum += linea
-            elif item.get("precio_incluye_iva", True):  # default True: backward-compat
-                base = linea / (1 + IVA_RATE)
-                base_acum += base
-                iva_acum  += linea - base
-            else:
-                base_acum += linea
-                iva_acum  += linea * IVA_RATE
-    subtotal = round(base_acum, 2)
-    iva      = round(iva_acum, 2)
-    return {"subtotal": subtotal, "iva": iva, "total": round(subtotal + iva, 2)}
+    total = round(total_acum, 2)
+    return {"subtotal": total, "iva": 0.0, "total": total}
 
 
 def _calcular_total_orden(puntos_arreglar) -> float:
@@ -376,14 +362,14 @@ def create_orden_handler(event, context):
             "aplica_costo_revision": body.get("aplica_costo_revision", False),
             "costo_revision": body.get("costo_revision"),
             "anticipo": body.get("anticipo", 0),
-            # precios_incluyen_iva=True indica que precioVenta en items YA CONTIENE IVA.
-            # El PDF/frontend debe tomar total como el monto final (NO sumar IVA de nuevo).
+            # Metadato fiscal para el futuro módulo de facturación. La operación va SIN
+            # IVA: `total` es el monto final a cobrar y el PDF/frontend nunca suma IVA.
             "precios_incluyen_iva": body.get("precios_incluyen_iva", True),
             "fechaEstimadaEntrega": body.get("fechaEstimadaEntrega"),
             "createdAt": datetime.utcnow(),
             "updatedAt": datetime.utcnow()
         }
-        # Calcular subtotal/iva/total server-side respetando precio_incluye_iva por item
+        # Calcular subtotal/total server-side (sin IVA; `iva` siempre 0)
         _totales = _calcular_totales_orden(orden_doc.get("puntosArreglar", []))
         orden_doc["subtotal"] = _totales["subtotal"]
         orden_doc["iva"]      = _totales["iva"]
