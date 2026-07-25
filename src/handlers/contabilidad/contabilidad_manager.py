@@ -45,6 +45,156 @@ def _bucket_age(days):
     return '90+'
 
 
+# ----------------------------------------------------------------------------
+# Contexto operativo de una venta (para que el contador/asesor ubique el
+# movimiento sin salir de Contabilidad): vehículo, OS, cotización, cita, quién
+# cobró y con qué. Todo se resuelve en batch (4 queries fijas) para no hacer N+1.
+# ----------------------------------------------------------------------------
+
+def _oid(valor):
+    """ObjectId tolerante: devuelve None si el valor no es un id válido."""
+    try:
+        return ObjectId(valor)
+    except (InvalidId, TypeError):
+        return None
+
+
+def _nombre_cliente_snapshot(snap):
+    if not snap:
+        return None
+    partes = [snap.get('nombre'), snap.get('apellido_paterno'), snap.get('apellido_materno')]
+    nombre = ' '.join([p for p in partes if p]).strip()
+    return nombre or None
+
+
+def _resumen_items(items, limite=6):
+    """Lista corta de conceptos para el tooltip del renglón."""
+    resumen = []
+    for it in (items or [])[:limite]:
+        producto = it.get('producto') or {}
+        resumen.append({
+            'nombre': it.get('nombre') or producto.get('nombre') or 'Sin nombre',
+            'cantidad': it.get('cantidad') or it.get('piezas') or 0,
+            'tipo': (it.get('tipo') or producto.get('tipo') or 'PRODUCTO').upper(),
+            'es_externo': bool(it.get('es_externo') or producto.get('es_externo')),
+            'cortesia': (str(it.get('tipo_precio') or '').lower() == 'cortesia'
+                         or bool(it.get('no_cobrar'))),
+        })
+    return resumen
+
+
+def _construir_contexto_ventas(db, ventas):
+    """Devuelve {venta_id: contexto} con los datos de ubicación de cada venta.
+
+    Resuelve en batch: órdenes de servicio asociadas, cotización de origen de esas
+    OS, teléfono del cliente (cuando la venta no viene de una OS con snapshot) y
+    nombre de sucursal. Pensado para reusarse en resumen-mensual, resumen-por-os y
+    concentrado, de modo que los tres muestren exactamente la misma información.
+    """
+    # 1) Órdenes de servicio de las ventas que traen orden_id.
+    orden_oids = []
+    for v in ventas:
+        oid = _oid(v.get('orden_id'))
+        if oid:
+            orden_oids.append(oid)
+
+    ordenes_map = {}
+    if orden_oids:
+        for o in db.ordenes_servicio.find(
+            {"_id": {"$in": orden_oids}},
+            {'folio': 1, 'estado': 1, 'vehiculo_snapshot': 1, 'cliente_snapshot': 1,
+             'mecanico_nombre': 1, 'cita_id': 1, 'cotizacion_origen_id': 1,
+             'kilometraje': 1, 'falla_reportada': 1, 'puntosArreglar': 1,
+             'fechaEstimadaEntrega': 1, 'createdAt': 1},
+        ):
+            ordenes_map[str(o['_id'])] = o
+
+    # 2) Cotización que originó cada OS (para el link "viene de cotización X").
+    cot_oids = []
+    for o in ordenes_map.values():
+        oid = _oid(o.get('cotizacion_origen_id'))
+        if oid:
+            cot_oids.append(oid)
+    cotizaciones_map = {}
+    if cot_oids:
+        for c in db.cotizaciones.find({"_id": {"$in": cot_oids}},
+                                      {'folio': 1, 'status': 1, 'tipo': 1}):
+            cotizaciones_map[str(c['_id'])] = c
+
+    # 3) Teléfono del cliente: primero del snapshot de la OS; si la venta es de
+    #    mostrador, se busca en el catálogo (una sola query con los ids faltantes).
+    telefonos = {}
+    faltantes = []
+    for v in ventas:
+        cid = v.get('cliente_id')
+        if not cid or cid == 'PUBLICO_GENERAL':
+            continue
+        orden = ordenes_map.get(v.get('orden_id') or '')
+        snap = (orden or {}).get('cliente_snapshot') or {}
+        tel = snap.get('telefono') or snap.get('celular')
+        if tel:
+            telefonos[cid] = tel
+        else:
+            oid = _oid(cid)
+            if oid:
+                faltantes.append(oid)
+    if faltantes:
+        for cl in db.clientes.find({"_id": {"$in": faltantes}},
+                                   {'telefono': 1, 'celular': 1, 'email': 1, 'rfc': 1}):
+            telefonos[str(cl['_id'])] = cl.get('telefono') or cl.get('celular')
+
+    # 4) Nombre de sucursal (pocas por taller: se traen todas de una vez).
+    sucursales_map = {}
+    for s in db.sucursales.find({}, {'nombre': 1, 'nombreComercial': 1}):
+        sucursales_map[str(s['_id'])] = s.get('nombre') or s.get('nombreComercial')
+
+    contexto = {}
+    for v in ventas:
+        venta_id = str(v.get('_id'))
+        orden = ordenes_map.get(v.get('orden_id') or '')
+        veh = v.get('vehiculo_snapshot') or (orden or {}).get('vehiculo_snapshot') or {}
+        cot = cotizaciones_map.get((orden or {}).get('cotizacion_origen_id') or '')
+        cid = v.get('cliente_id')
+
+        # Métodos de pago realmente usados (pagos[] es la fuente fina; metodo_pago
+        # es el legacy de un solo método).
+        metodos = [str(p.get('metodo') or '').upper() for p in (v.get('pagos') or []) if p.get('metodo')]
+        if not metodos and v.get('metodo_pago'):
+            metodos = [str(v.get('metodo_pago')).upper()]
+
+        contexto[venta_id] = {
+            'orden_id': v.get('orden_id'),
+            'orden_folio': (orden or {}).get('folio'),
+            'orden_estado': (orden or {}).get('estado'),
+            'falla_reportada': (orden or {}).get('falla_reportada'),
+            'mecanico': (orden or {}).get('mecanico_nombre'),
+            'cita_id': (orden or {}).get('cita_id'),
+            'cotizacion_id': (orden or {}).get('cotizacion_origen_id'),
+            'cotizacion_folio': (cot or {}).get('folio'),
+            'vehiculo': {
+                'placas': veh.get('placas'),
+                'marca': veh.get('marca'),
+                'modelo': veh.get('modelo'),
+                'anio': veh.get('anio') or veh.get('año'),
+                'color': veh.get('color'),
+                'vin': veh.get('vin'),
+                'kilometraje': veh.get('kilometraje') or (orden or {}).get('kilometraje'),
+            },
+            'cliente_nombre': (v.get('cliente_nombre')
+                               or _nombre_cliente_snapshot((orden or {}).get('cliente_snapshot'))
+                               or 'Público general'),
+            'cliente_telefono': telefonos.get(cid),
+            'metodos_pago': metodos,
+            'saldo_pendiente': round(float(v.get('saldo_pendiente') or 0), 2),
+            'descuento': round(float(v.get('descuento') or 0), 2),
+            'cobro_usuario': v.get('usuario_nombre'),
+            'sucursal_nombre': sucursales_map.get(v.get('sucursal_id') or ''),
+            'items_count': len(v.get('items') or []),
+            'items_resumen': _resumen_items(v.get('items')),
+        }
+    return contexto
+
+
 def get_inventario_valuado_handler(event, context):
     """GET /contabilidad/inventario-valuado?sucursal_id=..&page=..&limit=..
        Valor total = stock * costo_promedio, agrupado por item y por sucursal."""
@@ -841,7 +991,13 @@ def get_resumen_mensual_handler(event, context):
             'folio': 1, 'cliente_nombre': 1, 'cliente_id': 1,
             'items': 1, 'subtotal': 1, 'iva': 1, 'total': 1, 'descuento': 1,
             'orden_id': 1, 'sucursal_id': 1, 'createdAt': 1, 'estado': 1,
+            'vehiculo_snapshot': 1, 'metodo_pago': 1, 'pagos': 1,
+            'saldo_pendiente': 1, 'usuario_nombre': 1,
         }))
+
+        # Contexto operativo (vehículo, OS, cotización, cita, pago) para que el
+        # contador ubique cada renglón sin salir de Contabilidad.
+        ctx_ventas = _construir_contexto_ventas(db, [v for v in ventas if _is_venta_valida(v)])
 
         # Operación SIN IVA: el ingreso de una venta es su `total` (lo cobrado). brutos y
         # netos son el mismo número; se mantienen ambas llaves para no romper el front.
@@ -873,17 +1029,26 @@ def get_resumen_mensual_handler(event, context):
             fecha_iso = v.get('createdAt')
             if isinstance(fecha_iso, datetime):
                 fecha_iso = iso_utc(fecha_iso)
+            ctx = ctx_ventas.get(str(v.get('_id')), {})
             row = {
                 'venta_id': str(v.get('_id')),
                 'folio': v.get('folio'),
-                'cliente': v.get('cliente_nombre'),
+                'cliente': ctx.get('cliente_nombre') or v.get('cliente_nombre'),
                 'cliente_id': v.get('cliente_id'),
                 'orden_id': v.get('orden_id'),
                 'ingreso_neto': round(sub, 2),
                 'ingreso_bruto': round(tot, 2),
                 'costo': round(costo_v, 2),
                 'margen': round(margen, 2),
+                'margen_pct': round((margen / sub * 100), 2) if sub > 0 else 0.0,
                 'fecha': fecha_iso,
+                # Contexto de ubicación (vehículo, OS/cotización/cita, pago, quién cobró)
+                **{k: ctx.get(k) for k in (
+                    'orden_folio', 'orden_estado', 'falla_reportada', 'mecanico',
+                    'cita_id', 'cotizacion_id', 'cotizacion_folio', 'vehiculo',
+                    'cliente_telefono', 'metodos_pago', 'saldo_pendiente', 'descuento',
+                    'cobro_usuario', 'sucursal_nombre', 'items_count', 'items_resumen',
+                )},
             }
             ventas_detalle.append(row)
             if v.get('orden_id'):
@@ -900,7 +1065,8 @@ def get_resumen_mensual_handler(event, context):
             'folio': 1, 'proveedor_snapshot': 1, 'proveedor_id': 1,
             'items': 1, 'subtotal': 1, 'iva': 1, 'total': 1,
             'sucursal_id': 1, 'createdAt': 1, 'fecha_factura': 1, 'estado': 1,
-            'notas': 1,
+            'notas': 1, 'referencia_proveedor': 1, 'metodo_pago': 1,
+            'saldo_pendiente': 1, 'usuario_nombre': 1,
         }))
 
         gastos_variables = 0.0       # subtotal (base sin IVA) de líneas sin inventario
@@ -919,10 +1085,14 @@ def get_resumen_mensual_handler(event, context):
                     fecha_iso = c.get('createdAt')
                     if isinstance(fecha_iso, datetime):
                         fecha_iso = iso_utc(fecha_iso)
+                    fecha_factura = c.get('fecha_factura')
+                    if isinstance(fecha_factura, datetime):
+                        fecha_factura = iso_utc(fecha_factura)
+                    prov_snap = c.get('proveedor_snapshot') or {}
                     gastos_variables_detalle.append({
                         'compra_id': str(c.get('_id')),
                         'folio': c.get('folio'),
-                        'proveedor': (c.get('proveedor_snapshot') or {}).get('nombre'),
+                        'proveedor': prov_snap.get('nombre'),
                         'proveedor_id': c.get('proveedor_id'),
                         'concepto': ln.get('nombre') or 'Gasto',
                         'cantidad': ln.get('cantidad'),
@@ -930,6 +1100,20 @@ def get_resumen_mensual_handler(event, context):
                         'iva': round(iva_ln, 2),
                         'total': round(base_ln + iva_ln, 2),
                         'fecha': fecha_iso,
+                        # Contexto para ubicar la compra: qué factura del proveedor es,
+                        # cómo se pagó, si quedó saldo y quién la capturó.
+                        'fecha_factura': fecha_factura,
+                        'referencia_proveedor': c.get('referencia_proveedor'),
+                        'proveedor_telefono': prov_snap.get('telefono') or prov_snap.get('celular'),
+                        'proveedor_categoria': prov_snap.get('categoria'),
+                        'metodo_pago': (str(c.get('metodo_pago') or '').upper() or None),
+                        'saldo_pendiente': round(float(c.get('saldo_pendiente') or 0), 2),
+                        'compra_total': round(float(c.get('total') or 0), 2),
+                        'compra_items_count': len(c.get('items') or []),
+                        'notas': c.get('notas'),
+                        'captura_usuario': c.get('usuario_nombre'),
+                        'no_parte': ln.get('no_parte'),
+                        'costo_unitario': round(float(ln.get('costo_unitario') or 0), 2),
                     })
                 else:
                     compras_inventario_base += base_ln
@@ -1085,24 +1269,13 @@ def get_resumen_por_os_handler(event, context):
             'folio': 1, 'cliente_nombre': 1, 'cliente_id': 1,
             'items': 1, 'subtotal': 1, 'iva': 1, 'total': 1, 'descuento': 1,
             'orden_id': 1, 'sucursal_id': 1, 'createdAt': 1, 'estado': 1,
-            'vehiculo_snapshot': 1,
+            'vehiculo_snapshot': 1, 'metodo_pago': 1, 'pagos': 1,
+            'saldo_pendiente': 1, 'usuario_nombre': 1,
         }))
 
-        # Pre-cargar las OS de un golpe para no hacer N+1.
-        orden_ids = []
-        for v in ventas:
-            oid = v.get('orden_id')
-            if oid:
-                try:
-                    orden_ids.append(ObjectId(oid))
-                except (InvalidId, TypeError):
-                    pass
-        ordenes_map = {}
-        if orden_ids:
-            for o in db.ordenes_servicio.find({"_id": {"$in": orden_ids}},
-                                              {'folio': 1, 'puntosArreglar': 1, 'cliente_snapshot': 1,
-                                               'vehiculo_snapshot': 1, 'mecanico_nombre': 1}):
-                ordenes_map[str(o['_id'])] = o
+        # Contexto de ubicación (OS, cotización, cita, vehículo completo, pago). Resuelve
+        # también las OS en batch, así que no hace falta un segundo find aquí.
+        ctx_ventas = _construir_contexto_ventas(db, ventas)
 
         filas = []
         tot_ingreso = 0.0
@@ -1179,17 +1352,16 @@ def get_resumen_por_os_handler(event, context):
                 else:
                     costo_inv += linea
 
-            # OS original solo para datos de display (vehículo, cliente, mecánico, folio).
             # El costo de las cortesías ya se contabilizó arriba desde venta.items, así
             # que aquí NO se vuelve a escanear la OS (evita el doble conteo histórico).
-            orden_doc = ordenes_map.get(v.get('orden_id'))
+            ctx = ctx_ventas.get(str(v.get('_id')), {})
 
             utilidad_neta = round(ingreso_neto - costo_inv - costo_ext - costo_reg, 2)
             tot_ingreso += ingreso_neto
             tot_costo_inv += costo_inv
             tot_costo_ext += costo_ext
             tot_costo_reg += costo_reg
-            if orden_doc:
+            if ctx.get('orden_folio'):
                 # contar OS distintas (los proveedores_os los acumulamos a nivel OS)
                 for pid in proveedores_os:
                     proveedores_global[pid]['os_count'] += 1
@@ -1198,25 +1370,11 @@ def get_resumen_por_os_handler(event, context):
             if isinstance(fecha_iso, datetime):
                 fecha_iso = iso_utc(fecha_iso)
 
-            vehiculo = v.get('vehiculo_snapshot') or (orden_doc.get('vehiculo_snapshot') if orden_doc else None) or {}
-            cliente_snap = orden_doc.get('cliente_snapshot') if orden_doc else None
-            cliente_nombre = v.get('cliente_nombre') or (
-                f"{cliente_snap.get('nombre','')} {cliente_snap.get('apellido_paterno','')}".strip()
-                if cliente_snap else 'Sin cliente'
-            )
-
             filas.append({
                 'venta_id': str(v.get('_id')),
                 'venta_folio': v.get('folio'),
                 'orden_id': v.get('orden_id'),
-                'orden_folio': orden_doc.get('folio') if orden_doc else None,
-                'cliente': cliente_nombre,
-                'vehiculo': {
-                    'placas': vehiculo.get('placas'),
-                    'marca': vehiculo.get('marca'),
-                    'modelo': vehiculo.get('modelo'),
-                },
-                'mecanico': orden_doc.get('mecanico_nombre') if orden_doc else None,
+                'cliente': ctx.get('cliente_nombre') or 'Sin cliente',
                 'fecha': fecha_iso,
                 'ingreso_neto': round(ingreso_neto, 2),
                 'costo_inventario': round(costo_inv, 2),
@@ -1226,6 +1384,14 @@ def get_resumen_por_os_handler(event, context):
                 'margen_pct': round((utilidad_neta / ingreso_neto * 100), 2) if ingreso_neto > 0 else 0.0,
                 'proveedores': list(proveedores_os.values()),
                 'regalados': regalados_detalle,
+                # Contexto de ubicación: vehículo completo (marca/modelo/año/color/placas),
+                # folios de OS y cotización de origen, cita, pago y quién cobró.
+                **{k: ctx.get(k) for k in (
+                    'orden_folio', 'orden_estado', 'falla_reportada', 'mecanico',
+                    'cita_id', 'cotizacion_id', 'cotizacion_folio', 'vehiculo',
+                    'cliente_telefono', 'metodos_pago', 'saldo_pendiente', 'descuento',
+                    'cobro_usuario', 'sucursal_nombre', 'items_count', 'items_resumen',
+                )},
             })
 
         filas.sort(key=lambda r: r.get('fecha') or '', reverse=True)
@@ -1287,8 +1453,12 @@ def get_concentrado_ventas_handler(event, context):
         ventas = list(db.ventas.find(q_ventas, {
             'folio': 1, 'cliente_nombre': 1, 'cliente_id': 1, 'items': 1,
             'subtotal': 1, 'total': 1, 'descuento': 1, 'orden_id': 1, 'sucursal_id': 1,
-            'createdAt': 1, 'estado': 1,
+            'createdAt': 1, 'estado': 1, 'vehiculo_snapshot': 1, 'metodo_pago': 1,
+            'pagos': 1, 'saldo_pendiente': 1, 'usuario_nombre': 1,
         }))
+
+        # Mismo contexto de ubicación que las otras pestañas (vehículo, OS, cotización).
+        ctx_ventas = _construir_contexto_ventas(db, ventas)
 
         renglones = []
         tot_ingreso = 0.0
@@ -1325,6 +1495,7 @@ def get_concentrado_ventas_handler(event, context):
             if isinstance(fecha_iso, datetime):
                 fecha_iso = iso_utc(fecha_iso)
 
+            ctx = ctx_ventas.get(str(v.get('_id')), {})
             for it, producto, precio, cant, line_base in lineas_calc:
                 ingreso_neto = round(line_base * factor, 2)
                 costo_u = float(it.get('costo_unitario_snapshot') or 0)
@@ -1348,7 +1519,7 @@ def get_concentrado_ventas_handler(event, context):
                     'venta_id': str(v.get('_id')),
                     'venta_folio': v.get('folio'),
                     'fecha': fecha_iso,
-                    'cliente': v.get('cliente_nombre') or 'Público general',
+                    'cliente': ctx.get('cliente_nombre') or 'Público general',
                     'origen': 'OS' if v.get('orden_id') else 'MOSTRADOR',
                     'tipo': tipo,
                     'nombre': it.get('nombre') or producto.get('nombre') or 'Sin nombre',
@@ -1361,6 +1532,15 @@ def get_concentrado_ventas_handler(event, context):
                     'margen_pct': round((ganancia / ingreso_neto * 100), 2) if ingreso_neto > 0 else 0.0,
                     'es_externo': bool(it.get('es_externo') or producto.get('es_externo')),
                     'proveedor_nombre': it.get('proveedor_nombre') or producto.get('proveedor_nombre') or '',
+                    'cortesia': (str(it.get('tipo_precio') or '').lower() == 'cortesia'
+                                 or bool(it.get('no_cobrar'))),
+                    # Contexto de la venta a la que pertenece el renglón.
+                    'orden_id': v.get('orden_id'),
+                    **{k: ctx.get(k) for k in (
+                        'orden_folio', 'orden_estado', 'cotizacion_id', 'cotizacion_folio',
+                        'cita_id', 'vehiculo', 'mecanico', 'cliente_telefono',
+                        'metodos_pago', 'cobro_usuario', 'sucursal_nombre',
+                    )},
                 })
 
         renglones.sort(key=lambda r: (r.get('fecha') or '', r.get('venta_folio') or ''), reverse=True)

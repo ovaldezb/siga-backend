@@ -166,11 +166,14 @@ def create_compra_handler(event, context):
 
         folio = _get_next_folio_internal(tenant_id, "compra", sucursal_id)
 
-        # Snapshot proveedor
+        # Snapshot proveedor. Incluye contacto y giro para que Contabilidad pueda
+        # identificar y localizar la factura sin ir al catálogo de proveedores.
         proveedor_snapshot = {
             "id": str(proveedor['_id']),
             "nombre": proveedor.get('nombre'),
             "rfc": proveedor.get('rfc'),
+            "telefono": proveedor.get('telefono') or proveedor.get('celular'),
+            "categoria": proveedor.get('categoria'),
         }
 
         nueva_compra = {

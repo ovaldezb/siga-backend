@@ -726,10 +726,29 @@ def list_ventas_handler(event, context):
             query["cliente_id"] = cliente_id
 
         ventas = list(db["ventas"].find(query).sort("createdAt", -1).limit(100))
-        
+
+        # Folio y estado de la OS asociada, resueltos en batch: la cobranza necesita
+        # poder ubicar la venta por su orden de servicio, no sólo por el folio de venta.
+        orden_oids = []
+        for v in ventas:
+            try:
+                if v.get('orden_id'):
+                    orden_oids.append(ObjectId(v['orden_id']))
+            except (InvalidId, TypeError):
+                pass
+        ordenes_map = {}
+        if orden_oids:
+            for o in db["ordenes_servicio"].find({"_id": {"$in": orden_oids}},
+                                                 {'folio': 1, 'estado': 1}):
+                ordenes_map[str(o['_id'])] = o
+
         for v in ventas:
             v["id"] = str(v["_id"])
             del v["_id"]
+            orden = ordenes_map.get(v.get('orden_id') or '')
+            if orden:
+                v["orden_folio"] = orden.get('folio')
+                v["orden_estado"] = orden.get('estado')
 
         return create_response(200, "Lista de ventas obtenida", ventas)
 
