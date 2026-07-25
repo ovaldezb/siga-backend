@@ -49,7 +49,12 @@ def _venta_event(item_id, *, sucursal_id=SUCURSAL_A, cantidad=1, precio=116.0,
 
 
 def test_venta_pos_happy_path_descuenta_stock(mock_db):
-    """Venta de mostrador sin OS: descuenta stock, calcula IVA y devuelve folio."""
+    """Venta de mostrador sin OS: descuenta stock, cobra el precio tal cual y da folio.
+
+    La operación va SIN IVA: el precio capturado ES el monto a cobrar, así que
+    subtotal == total e iva = 0. El tratamiento fiscal del item (precio_incluye_iva /
+    iva_exento) se conserva como metadato para facturación, pero no altera totales.
+    """
     db = mock_db[f"t_{TENANT}"]
     item_id = _seed_item(db, stock=10)
 
@@ -59,8 +64,8 @@ def test_venta_pos_happy_path_descuenta_stock(mock_db):
     data = json.loads(resp["body"])["data"]
     assert data["folio"].startswith("V-")
     assert data["total"] == 232.0
-    assert abs(data["subtotal"] - 200.0) < 0.01  # precio_incluye_iva=True → base = 200
-    assert abs(data["iva"] - 32.0) < 0.01
+    assert abs(data["subtotal"] - 232.0) < 0.01  # sin IVA: subtotal == total
+    assert data["iva"] == 0
 
     item = db["items"].find_one({"_id": ObjectId(item_id)})
     assert item["stock"] == 8
