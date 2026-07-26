@@ -6,6 +6,9 @@ aws-lambda-powertools==2.43.1
 python-dotenv==1.0.1
 Pillow==11.1.0
 sentry-sdk==2.18.0
+requests
+requests-toolbelt
+cryptography
 
 # Para habilitar Lambda SnapStart (activa el hook afterRestore de database.py), descomenta:
 # snapshot-restore-py==1.0.0

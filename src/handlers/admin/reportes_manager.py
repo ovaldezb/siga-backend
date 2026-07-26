@@ -206,20 +206,39 @@ def get_kpis_handler(event, context):
                     h['total'] += res['total']
                     h['count'] += res['count']
 
-        # 5. UTILIDAD Y MARGEN (Consolidado)
-        # Utility from Sales (POS)
+        # 5. UTILIDAD Y MARGEN (Consolidado) — la operación va SIN IVA. El ingreso de una
+        # venta es su `total` (lo realmente cobrado), que es el mismo número que muestran
+        # ventas_hoy/ventas_mensuales y la caja: así el dashboard y el P&L contable no
+        # pueden discrepar. Usar `total` además cuadra las ventas históricas, donde
+        # subtotal quedó neto e iva aparte. El costo sale de costo_unitario_snapshot
+        # (fuente de verdad congelada), NO de producto.precio_compra.
         res_util_ventas = list(db["ventas"].aggregate([
-            {"$match": filter_base},
-            {"$unwind": "$items"},
-            {"$group": {
-                "_id": None,
-                "utilidad": {"$sum": {"$multiply": [{"$subtract": ["$items.precio_unitario", {"$ifNull": ["$items.producto.precio_compra", 0]}]}, "$items.cantidad"]}}
-            }}
+            {"$match": {**filter_base, "estado": {"$nin": ["CANCELADA", "ANULADA"]}}},
+            {"$project": {
+                "neto": {"$ifNull": ["$total", {"$ifNull": ["$subtotal", 0]}]},
+                "costo": {"$reduce": {
+                    "input": {"$ifNull": ["$items", []]},
+                    "initialValue": 0,
+                    "in": {"$add": ["$$value", {"$multiply": [
+                        {"$ifNull": ["$$this.costo_unitario_snapshot", 0]},
+                        {"$ifNull": ["$$this.cantidad", 0]},
+                    ]}]},
+                }},
+            }},
+            {"$group": {"_id": None, "utilidad": {"$sum": {"$subtract": ["$neto", "$costo"]}}}}
         ]))
-        
-        # Utility from OS
-        # Las cortesías (no_cobrar) no generan ingreso: su precioVenta cuenta como 0,
-        # de modo que su costo (precioCompra) reste correctamente a la utilidad del taller.
+
+        # Utilidad de OS entregadas directo (sin pasar por POS). `precioVenta` ya es el
+        # ingreso final (operación sin IVA), así que no se le aplica ninguna conversión.
+        # Las cortesías (no_cobrar) no generan ingreso: su precioVenta cuenta como 0, de
+        # modo que su costo (precioCompra) reste correctamente a la utilidad del taller.
+        _net_precio_venta_os = {
+            "$cond": [
+                {"$eq": [{"$ifNull": ["$puntosArreglar.items.no_cobrar", False]}, True]},
+                0,
+                {"$ifNull": ["$puntosArreglar.items.precioVenta", 0]},
+            ]
+        }
         res_util_os = list(db["ordenes_servicio"].aggregate([
             {"$match": os_entregada_sin_venta},
             {"$unwind": {"path": "$puntosArreglar", "preserveNullAndEmptyArrays": True}},
@@ -228,27 +247,22 @@ def get_kpis_handler(event, context):
                 "_id": None,
                 "utilidad": {"$sum": {"$multiply": [
                     {"$subtract": [
-                        {"$cond": [
-                            {"$eq": [{"$ifNull": ["$puntosArreglar.items.no_cobrar", False]}, True]},
-                            0,
-                            {"$ifNull": ["$puntosArreglar.items.precioVenta", 0]}
-                        ]},
+                        _net_precio_venta_os,
                         {"$ifNull": ["$puntosArreglar.items.precioCompra", 0]}
                     ]},
                     {"$ifNull": ["$puntosArreglar.items.piezas", 0]}
                 ]}}
             }}
         ]))
-        
+
         utilidad_total = (res_util_ventas[0]['utilidad'] if res_util_ventas else 0) + \
                          (res_util_os[0]['utilidad'] if res_util_os else 0)
-        
-        # Ingresos totales para margen. Debe abarcar las mismas dos fuentes que la
-        # utilidad (POS + OS entregadas sin venta), si no el numerador y el denominador
-        # medirían universos distintos y el margen saldría inflado.
+
+        # Ingresos totales para margen — mismo criterio que la utilidad: el `total` del
+        # documento. Numerador y denominador miden el mismo universo sin conversiones.
         ingresos_pos_totales = list(db["ventas"].aggregate([
-            {"$match": filter_base},
-            {"$group": {"_id": None, "total": {"$sum": "$total"}}}
+            {"$match": {**filter_base, "estado": {"$nin": ["CANCELADA", "ANULADA"]}}},
+            {"$group": {"_id": None, "total": {"$sum": {"$ifNull": ["$total", {"$ifNull": ["$subtotal", 0]}]}}}}
         ]))
         ingresos_os_totales = list(db["ordenes_servicio"].aggregate([
             {"$match": os_entregada_sin_venta},
