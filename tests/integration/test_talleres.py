@@ -24,6 +24,34 @@ def test_create_taller_success(mock_db):
     assert data['nombreComercial'] == "Auto Service Pro"
     assert data['adminEmail'] == "admin@test.com"
     assert "tenantId" in data
+    assert "proximaFechaCorte" in data
+    assert "proximaFechaPago" in data
+
+def test_create_taller_prepago_configs(mock_db):
+    """Verifica que el cálculo de fechas de pre-pago responda a mesesCargo y diasPrueba."""
+    # Caso 1: 15 días de prueba, 12 meses de cargo (Anual)
+    event = {
+        "body": json.dumps({
+            "nombreComercial": "Auto Service Pro Annual",
+            "adminEmail": "admin_annual@test.com",
+            "adminNombre": "Juan",
+            "adminApellido": "Perez",
+            "diasPrueba": 15,
+            "mesesCargo": 12,
+            "fechaAlta": "2026-01-01T00:00:00Z"
+        })
+    }
+    
+    with patch('src.handlers.admin.talleres_manager.client') as mock_cognito:
+        response = create_taller_handler(event, None)
+        assert response['statusCode'] == 201
+    
+    data = json.loads(response['body'])['data']
+    # 2026-01-01 + 15 días de prueba = 2026-01-16 (inicio periodo activo)
+    # proximaFechaPago = 2026-01-16 + 10 días = 2026-01-26
+    # proximaFechaCorte = 2026-01-16 + 12 meses = 2027-01-16
+    assert data['proximaFechaPago'].startswith("2026-01-26")
+    assert data['proximaFechaCorte'].startswith("2027-01-16")
 
 def test_list_talleres_isolation(mock_db):
     """Verifica que el listado de talleres devuelva los registros de la DB de plataforma."""

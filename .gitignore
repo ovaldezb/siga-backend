@@ -9,3 +9,6 @@ __pycache__/
 .env.*
 migrar_db.sh
 restore_db.sh
+migrar_cotizaciones.py
+migrar_db_ordenes.py
+migrar_cotizaciones.sh
