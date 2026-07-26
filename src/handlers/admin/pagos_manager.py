@@ -196,19 +196,28 @@ def procesar_pago_suscripcion_handler(event, context):
 
         fecha_pago = datetime.utcnow()
 
-        # Determinar nueva corte y pago basados en las reglas de pago a tiempo vs tardío
+        # Determinar nueva corte y pago para modelo Pre-pago
         if corte_dt and pago_dt:
-            if fecha_pago <= pago_dt:
-                # Pago antes o el mismo día límite de pago -> corte + meses_cargo meses calendario
-                nueva_corte = add_months(corte_dt, meses_cargo)
+            if fecha_pago <= corte_dt:
+                # El pago se realiza dentro del periodo activo actual
+                if pago_dt < corte_dt:
+                    # Caso Especial: Primer pago (pago inicial con 10 días de gracia)
+                    # El pago valida el periodo actual, por lo que la fecha de corte no avanza.
+                    # El siguiente pago será requerido al finalizar el periodo actual (fecha de corte).
+                    nueva_corte = corte_dt
+                    nueva_pago = corte_dt
+                else:
+                    # Pago recurrente a tiempo (se paga antes de que venza el periodo actual)
+                    nueva_corte = add_months(corte_dt, meses_cargo)
+                    nueva_pago = nueva_corte
             else:
-                # Pago después del día límite de pago -> fecha actual + meses_cargo meses - 10 días
-                nueva_corte = add_months(fecha_pago, meses_cargo) - timedelta(days=10)
+                # Pago tardío (fuera del periodo activo -> se reactiva a partir de hoy)
+                nueva_corte = add_months(fecha_pago, meses_cargo)
+                nueva_pago = nueva_corte
         else:
             # Si no hay fechas guardadas previas, inicializar a partir de hoy
             nueva_corte = add_months(fecha_pago, meses_cargo)
-
-        nueva_pago = nueva_corte + timedelta(days=10)
+            nueva_pago = nueva_corte
 
         db["talleres"].update_one(
             {"tenantId": tenant_id},

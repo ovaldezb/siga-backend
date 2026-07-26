@@ -87,7 +87,7 @@ def create_taller_handler(event, context):
             logger.error(f"Error creating Cognito user: {str(e)}")
             return create_response(500, "Error al crear el administrador del taller.")
 
-        # Calcular proximaFechaCorte y proximaFechaPago
+        # Calcular proximaFechaCorte y proximaFechaPago (Modelo Pre-pago)
         try:
             if "T" in fecha_alta:
                 clean_str = fecha_alta.replace("Z", "")
@@ -105,24 +105,34 @@ def create_taller_handler(event, context):
         except (ValueError, TypeError):
             dias_prueba = 0
 
+        meses_cargo = body.get("mesesCargo", 1)
         try:
-            month = dt_alta.month - 1 + 1
-            year = dt_alta.year + month // 12
+            meses_cargo = int(meses_cargo)
+        except (ValueError, TypeError):
+            meses_cargo = 1
+        if meses_cargo < 1 or meses_cargo > 12:
+            meses_cargo = 1
+
+        # En pre-pago, el periodo activo empieza en dt_alta + dias_prueba
+        base_date = dt_alta
+        if dias_prueba > 0:
+            base_date = base_date + timedelta(days=dias_prueba)
+
+        try:
+            month = base_date.month - 1 + meses_cargo
+            year = base_date.year + month // 12
             month = month % 12 + 1
             days_in_months = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
             if month == 2 and year % 4 == 0 and (year % 100 != 0 or year % 400 == 0):
-                day = min(dt_alta.day, 29)
+                day = min(base_date.day, 29)
             else:
-                day = min(dt_alta.day, days_in_months[month-1])
-            proxima_corte = datetime(year, month, day, dt_alta.hour, dt_alta.minute, dt_alta.second)
+                day = min(base_date.day, days_in_months[month-1])
+            proxima_corte = datetime(year, month, day, base_date.hour, base_date.minute, base_date.second)
         except Exception:
-            proxima_corte = dt_alta + timedelta(days=30)
+            proxima_corte = base_date + timedelta(days=30 * meses_cargo)
 
-        proxima_pago = proxima_corte + timedelta(days=10)
-
-        if dias_prueba > 0:
-            proxima_corte = proxima_corte + timedelta(days=dias_prueba)
-            proxima_pago = proxima_pago + timedelta(days=dias_prueba)
+        # En pre-pago, el primer pago vence 10 días después de iniciar el periodo activo
+        proxima_pago = base_date + timedelta(days=10)
 
         # 2. Insert into Platform DB
         taller_doc = {
