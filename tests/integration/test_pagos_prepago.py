@@ -22,6 +22,7 @@ def test_procesar_pago_prepago_inicial(mock_db):
 
     # Mock de la respuesta de Clip API
     mock_response = MagicMock()
+    mock_response.__enter__.return_value = mock_response
     mock_response.read.return_value = json.dumps({
         "status": "APPROVED",
         "id": "clip-folio-123",
@@ -86,6 +87,7 @@ def test_procesar_pago_prepago_recurrente(mock_db):
     db_platform.talleres.insert_one(taller_doc)
 
     mock_response = MagicMock()
+    mock_response.__enter__.return_value = mock_response
     mock_response.read.return_value = json.dumps({
         "status": "APPROVED",
         "id": "clip-folio-456",
@@ -144,6 +146,7 @@ def test_procesar_pago_prepago_tardio(mock_db):
     db_platform.talleres.insert_one(taller_doc)
 
     mock_response = MagicMock()
+    mock_response.__enter__.return_value = mock_response
     mock_response.read.return_value = json.dumps({
         "status": "APPROVED",
         "id": "clip-folio-789",
