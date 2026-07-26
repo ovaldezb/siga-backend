@@ -3,6 +3,17 @@ from datetime import datetime, timedelta
 from unittest.mock import patch, MagicMock
 from src.handlers.admin.pagos_manager import procesar_pago_suscripcion_handler
 
+class MetaDatetime(type):
+    def __instancecheck__(cls, inst):
+        return isinstance(inst, datetime)
+
+class FakeDatetime(datetime, metaclass=MetaDatetime):
+    _mock_utcnow = None
+    
+    @classmethod
+    def utcnow(cls):
+        return cls._mock_utcnow or datetime.utcnow()
+
 def test_procesar_pago_prepago_inicial(mock_db):
     """Verifica que el primer pago de pre-pago (con gracia) no avance el corte, pero sí la fecha de pago."""
     db_platform = mock_db["_platform"]
@@ -51,13 +62,9 @@ def test_procesar_pago_prepago_inicial(mock_db):
     }
 
     # Fijar la fecha actual de pago a 2026-01-05 (dentro del periodo de gracia)
+    FakeDatetime._mock_utcnow = datetime(2026, 1, 5)
     with patch('urllib.request.urlopen', return_value=mock_response), \
-         patch('src.handlers.admin.pagos_manager.datetime') as mock_datetime:
-        
-        # Simular que "hoy" es 2026-01-05
-        mock_datetime.utcnow.return_value = datetime(2026, 1, 5)
-        # Asegurarse de que datetime() normal funcione
-        mock_datetime.side_effect = lambda *args, **kw: datetime(*args, **kw)
+         patch('src.handlers.admin.pagos_manager.datetime', FakeDatetime):
         
         response = procesar_pago_suscripcion_handler(event, None)
         assert response['statusCode'] == 200
@@ -114,11 +121,9 @@ def test_procesar_pago_prepago_recurrente(mock_db):
     }
 
     # Pagar a tiempo el 2026-02-01 (mismo día de corte/pago)
+    FakeDatetime._mock_utcnow = datetime(2026, 2, 1)
     with patch('urllib.request.urlopen', return_value=mock_response), \
-         patch('src.handlers.admin.pagos_manager.datetime') as mock_datetime:
-        
-        mock_datetime.utcnow.return_value = datetime(2026, 2, 1)
-        mock_datetime.side_effect = lambda *args, **kw: datetime(*args, **kw)
+         patch('src.handlers.admin.pagos_manager.datetime', FakeDatetime):
         
         response = procesar_pago_suscripcion_handler(event, None)
         assert response['statusCode'] == 200
@@ -173,11 +178,9 @@ def test_procesar_pago_prepago_tardio(mock_db):
     }
 
     # Pagar tarde el 2026-02-15 (después del vencimiento 2026-02-01)
+    FakeDatetime._mock_utcnow = datetime(2026, 2, 15)
     with patch('urllib.request.urlopen', return_value=mock_response), \
-         patch('src.handlers.admin.pagos_manager.datetime') as mock_datetime:
-        
-        mock_datetime.utcnow.return_value = datetime(2026, 2, 15)
-        mock_datetime.side_effect = lambda *args, **kw: datetime(*args, **kw)
+         patch('src.handlers.admin.pagos_manager.datetime', FakeDatetime):
         
         response = procesar_pago_suscripcion_handler(event, None)
         assert response['statusCode'] == 200
