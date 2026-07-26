@@ -889,6 +889,17 @@ functions:
           authorizer:
             name: cognitoAuthorizer
 
+  vehiculos_decode_vin:
+    handler: src/handlers/vehiculos/vehiculos_manager.decode_vin_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /vehiculos/decode-vin/{vin}
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
   citas_list:
     handler: src/handlers/citas/citas_manager.list_citas_handler
     layers:
