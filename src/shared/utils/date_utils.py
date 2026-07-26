@@ -1,7 +1,7 @@
 from datetime import datetime
+from typing import Optional
 
-
-def iso_utc(dt: datetime | None = None) -> str:
+def iso_utc(dt: Optional[datetime] = None) -> str:
     """ISO 8601 UTC con sufijo Z explícito.
 
     Usa esta función para todas las fechas que se escriben en Mongo o se
