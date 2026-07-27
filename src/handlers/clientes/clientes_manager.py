@@ -204,6 +204,16 @@ def get_cliente_handler(event, context):
         cliente['id'] = str(cliente.pop('_id'))
         if 'sucursal_id' in cliente:
             cliente['sucursalId'] = cliente.pop('sucursal_id')
+
+        # Saldo deudor de CxC, mismo criterio que el listado y que ventas_manager
+        # al autorizar crédito. El POS consulta este endpoint al cargar una OS
+        # para conocer el crédito disponible real (`limite_credito - saldo_credito`).
+        saldos = list(db["ventas"].aggregate([
+            {"$match": {"cliente_id": cliente['id'], "saldo_pendiente": {"$gt": 0}}},
+            {"$group": {"_id": None, "saldo": {"$sum": "$saldo_pendiente"}}}
+        ]))
+        cliente['saldo_credito'] = round(float(saldos[0]['saldo']), 2) if saldos else 0.0
+
         return create_response(200, "Detalle del cliente", cliente)
     except Exception as e:
         return handle_exception(e)

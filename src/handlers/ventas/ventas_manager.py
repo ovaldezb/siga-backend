@@ -395,7 +395,10 @@ def create_venta_handler(event, context):
                             "venta_folio": folio,
                             "saldo_pendiente": round(monto_credito, 2),
                             "pago_info": {
-                                "fecha": iso_utc(),
+                                # Fecha del cierre de la venta (respeta la captura
+                                # manual): es la que muestra la Nota de Servicio en
+                                # "Pagado el…" y el fallback de F. Finalización.
+                                "fecha": iso_utc(created_at),
                                 "metodo": metodo_nota,
                                 "venta_folio": folio,
                             },
@@ -470,7 +473,10 @@ def create_venta_handler(event, context):
                                 "venta_id": nueva_venta["id"],
                                 "venta_folio": folio,
                                 "referencia": p.get('referencia', ''),
-                                "fecha": iso_utc(),
+                                # Misma fecha que la venta para que el detalle de la
+                                # sesión de caja coincida con el folio (el importe
+                                # sigue entrando a la sesión abierta actual).
+                                "fecha": iso_utc(created_at),
                                 "usuario_id": usuario_id,
                                 "usuario_nombre": usuario_nombre,
                             })
@@ -485,7 +491,7 @@ def create_venta_handler(event, context):
                                 "concepto": f"Venta {folio} ({metodo_pago})",
                                 "venta_id": nueva_venta["id"],
                                 "venta_folio": folio,
-                                "fecha": iso_utc(),
+                                "fecha": iso_utc(created_at),
                                 "usuario_id": usuario_id,
                                 "usuario_nombre": usuario_nombre,
                             })
