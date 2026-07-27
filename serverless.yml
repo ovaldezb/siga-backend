@@ -579,6 +579,10 @@ functions:
 
   talleres_upload_logo:
     handler: src/handlers/admin/talleres_manager.upload_logo_handler
+    # CPU-bound: hace resize de imagen con Pillow. En Lambda la CPU escala con la
+    # memoria, así que 1024MB (~⅔ vCPU vs ~⅓ a 512) ~duplica la velocidad del resize.
+    # Es un handler poco frecuente => el impacto en costo es despreciable.
+    memorySize: 1024
     layers:
       - !Ref PythonRequirementsLambdaLayer
     events:
@@ -886,6 +890,17 @@ functions:
       - httpApi:
           path: /vehiculos/{id}
           method: delete
+          authorizer:
+            name: cognitoAuthorizer
+
+  vehiculos_decode_vin:
+    handler: src/handlers/vehiculos/vehiculos_manager.decode_vin_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /vehiculos/decode-vin/{vin}
+          method: get
           authorizer:
             name: cognitoAuthorizer
 

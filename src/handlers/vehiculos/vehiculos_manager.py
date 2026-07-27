@@ -571,3 +571,41 @@ def update_vehiculo_handler(event, context):
 
     except Exception as e:
         return handle_exception(e)
+
+@logger.inject_lambda_context
+def decode_vin_handler(event, context):
+    """GET /vehiculos/decode-vin/{vin} — Decodifica un VIN usando la API de la NHTSA."""
+    try:
+        claims = get_claims(event)
+        tenant_id = claims.get('custom:tenant_id')
+
+        if not tenant_id:
+            return create_response(403, "No se encontró un tenantId asociado.")
+
+        vin = event.get('pathParameters', {}).get('vin', '').strip()
+        if not vin or len(vin) != 17:
+            return create_response(400, "El VIN debe tener exactamente 17 caracteres.")
+
+        import urllib.request
+        import urllib.error
+        
+        url = f"https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVinValues/{vin}?format=json"
+        
+        req = urllib.request.Request(
+            url=url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            }
+        )
+        
+        try:
+            with urllib.request.urlopen(req, timeout=10) as response:
+                res_body = response.read().decode('utf-8')
+                data = json.loads(res_body)
+                return create_response(200, "VIN decodificado exitosamente", data)
+        except urllib.error.URLError as url_err:
+            logger.error(f"Error de red al consultar la API de la NHTSA: {url_err}")
+            return create_response(502, "Error al conectar con el servicio externo de la NHTSA.")
+            
+    except Exception as e:
+        return handle_exception(e)
