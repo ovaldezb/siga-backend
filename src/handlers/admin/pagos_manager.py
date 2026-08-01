@@ -213,15 +213,17 @@ def procesar_pago_suscripcion_handler(event, context):
                     nueva_corte = add_months(corte_dt, meses_cargo)
             else:
                 # Pago tardío (fuera de la fecha límite de pago -> pago atrasado)
-                # Opción C: convertimos meses_cargo a días y restamos 10 para sumarlo a la fecha de corte.
-                # Para meses_cargo = 1, sumamos 20 días al corte anterior.
-                dias_cargo = meses_cargo * 30
-                nueva_corte = corte_dt + timedelta(days=dias_cargo - 10)
+                # Fórmula: nueva_fecha_corte = Fecha_Corte + meses_cargo - 10 días - (fecha_realmente_pago - fecha_pago)
+                retraso = fecha_pago - pago_dt
+                retraso_dias = timedelta(days=retraso.days)
+                
+                base_corte = add_months(corte_dt, meses_cargo)
+                nueva_corte = base_corte - timedelta(days=10) - retraso_dias
                 
             # Si la fecha de corte calculada ya venció respecto a la fecha del pago (ej. retraso extremo),
-            # seguimos avanzando en incrementos de meses_cargo * 30 días.
+            # seguimos advancing en incrementos de meses_cargo.
             while nueva_corte <= fecha_pago:
-                nueva_corte += timedelta(days=meses_cargo * 30)
+                nueva_corte = add_months(nueva_corte, meses_cargo)
                 
             # La fecha límite de pago es siempre 10 días posterior al corte
             nueva_pago = nueva_corte + timedelta(days=10)
