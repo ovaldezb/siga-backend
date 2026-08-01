@@ -544,7 +544,10 @@ def list_ordenes_handler(event, context):
             and_conditions.append({'$or': [
                 {"folio": regex},
                 {"cliente_snapshot.nombre": regex},
-                {"cliente_snapshot.apellido_paterno": regex}
+                {"cliente_snapshot.apellido_paterno": regex},
+                {"vehiculo_snapshot.marca": regex},
+                {"vehiculo_snapshot.modelo": regex},
+                {"vehiculo_snapshot.placas": regex}
             ]})
 
         if and_conditions:
