@@ -198,26 +198,30 @@ def procesar_pago_suscripcion_handler(event, context):
 
         # Determinar nueva corte y pago para modelo Pre-pago
         if corte_dt and pago_dt:
-            if fecha_pago <= corte_dt:
-                # El pago se realiza dentro del periodo activo actual
-                if pago_dt < corte_dt:
-                    # Caso Especial: Primer pago (pago inicial con 10 días de gracia)
-                    # El pago valida el periodo actual, por lo que la fecha de corte no avanza.
-                    # El siguiente pago será requerido al finalizar el periodo actual (fecha de corte).
+            # Determinar si es el primer pago de todos (el primer pago inicial con gracia)
+            # En el primer pago, corte_dt (fin de ciclo) y pago_dt (límite de pago) están distanciados por ~20 días.
+            # En los subsecuentes, la fecha de pago es 10 días posterior a la fecha de corte (corte es inicio de ciclo).
+            es_primer_pago = (corte_dt - pago_dt) > timedelta(days=15)
+
+            if fecha_pago <= pago_dt:
+                # Pago a tiempo (antes o en la fecha límite de pago)
+                if es_primer_pago:
+                    # El primer pago valida el ciclo actual, no avanzamos la corte por defecto
                     nueva_corte = corte_dt
-                    nueva_pago = corte_dt
                 else:
-                    # Pago recurrente a tiempo (se paga antes de que venza el periodo actual)
+                    # Ciclos subsecuentes: avanzamos la fecha de corte
                     nueva_corte = add_months(corte_dt, meses_cargo)
-                    nueva_pago = nueva_corte
             else:
-                # Pago tardío (fuera del periodo activo -> se reactiva a partir de hoy)
-                nueva_corte = add_months(fecha_pago, meses_cargo)
-                nueva_pago = nueva_corte
+                # Pago tardío (fuera de la fecha límite de pago -> pago atrasado)
+                # Opción A: nueva_fecha_corte = fecha_realmente_pago + meses_cargo - 10 días
+                nueva_corte = add_months(fecha_pago, meses_cargo) - timedelta(days=10)
+                
+            # La fecha límite de pago es siempre 10 días posterior al corte
+            nueva_pago = nueva_corte + timedelta(days=10)
         else:
             # Si no hay fechas guardadas previas, inicializar a partir de hoy
             nueva_corte = add_months(fecha_pago, meses_cargo)
-            nueva_pago = nueva_corte
+            nueva_pago = nueva_corte + timedelta(days=10)
 
         db["talleres"].update_one(
             {"tenantId": tenant_id},
