@@ -73,21 +73,21 @@ def test_procesar_pago_prepago_inicial(mock_db):
     updated_taller = db_platform.talleres.find_one({"tenantId": tenant_id})
     # Al ser el primer pago y estar a tiempo (pago_dt < corte_dt):
     # - nueva_corte debe quedarse en 2026-02-01
-    # - nueva_pago debe actualizarse a 2026-02-01
+    # - nueva_pago debe ser 10 días después del corte (2026-02-11)
     assert updated_taller["proximaFechaCorte"] == datetime(2026, 2, 1)
-    assert updated_taller["proximaFechaPago"] == datetime(2026, 2, 1)
+    assert updated_taller["proximaFechaPago"] == datetime(2026, 2, 11)
 
 def test_procesar_pago_prepago_recurrente(mock_db):
     """Verifica que un pago recurrente avance tanto el corte como la fecha de pago por los mesesCargo."""
     db_platform = mock_db["_platform"]
     
-    # 1. Insertar un taller listo para renovación recurrente (pago == corte)
+    # 1. Insertar un taller listo para renovación recurrente
     tenant_id = "test-tenant-456"
     taller_doc = {
         "tenantId": tenant_id,
         "nombreComercial": "Taller Test Recurrente",
         "proximaFechaCorte": datetime(2026, 2, 1),
-        "proximaFechaPago": datetime(2026, 2, 1),
+        "proximaFechaPago": datetime(2026, 2, 11),
         "mesesCargo": 3, # Trimestral
         "estado": "ACTIVO"
     }
@@ -120,7 +120,7 @@ def test_procesar_pago_prepago_recurrente(mock_db):
         })
     }
 
-    # Pagar a tiempo el 2026-02-01 (mismo día de corte/pago)
+    # Pagar a tiempo el 2026-02-01 (antes del vencimiento 2026-02-11)
     FakeDatetime._mock_utcnow = datetime(2026, 2, 1)
     with patch('urllib.request.urlopen', return_value=mock_response), \
          patch('src.handlers.admin.pagos_manager.datetime', FakeDatetime):
@@ -131,9 +131,9 @@ def test_procesar_pago_prepago_recurrente(mock_db):
     updated_taller = db_platform.talleres.find_one({"tenantId": tenant_id})
     # Al ser recurrente y a tiempo:
     # - nueva_corte = 2026-02-01 + 3 meses = 2026-05-01
-    # - nueva_pago = 2026-05-01
+    # - nueva_pago = 2026-05-01 + 10 días = 2026-05-11
     assert updated_taller["proximaFechaCorte"] == datetime(2026, 5, 1)
-    assert updated_taller["proximaFechaPago"] == datetime(2026, 5, 1)
+    assert updated_taller["proximaFechaPago"] == datetime(2026, 5, 11)
 
 def test_procesar_pago_prepago_tardio(mock_db):
     """Verifica que un pago tardío reactive la suscripción a partir de la fecha de pago."""
@@ -144,7 +144,7 @@ def test_procesar_pago_prepago_tardio(mock_db):
         "tenantId": tenant_id,
         "nombreComercial": "Taller Test Tardio",
         "proximaFechaCorte": datetime(2026, 2, 1),
-        "proximaFechaPago": datetime(2026, 2, 1),
+        "proximaFechaPago": datetime(2026, 2, 11),
         "mesesCargo": 1,
         "estado": "ACTIVO"
     }
@@ -177,7 +177,7 @@ def test_procesar_pago_prepago_tardio(mock_db):
         })
     }
 
-    # Pagar tarde el 2026-02-15 (después del vencimiento 2026-02-01)
+    # Pagar tarde el 2026-02-15 (después del vencimiento 2026-02-11)
     FakeDatetime._mock_utcnow = datetime(2026, 2, 15)
     with patch('urllib.request.urlopen', return_value=mock_response), \
          patch('src.handlers.admin.pagos_manager.datetime', FakeDatetime):
@@ -186,8 +186,9 @@ def test_procesar_pago_prepago_tardio(mock_db):
         assert response['statusCode'] == 200
 
     updated_taller = db_platform.talleres.find_one({"tenantId": tenant_id})
-    # Al ser tardío (fecha_pago > corte_dt):
-    # - nueva_corte = 2026-02-15 + 1 mes = 2026-03-15
-    # - nueva_pago = 2026-03-15
-    assert updated_taller["proximaFechaCorte"] == datetime(2026, 3, 15)
+    # Al ser tardío (fecha_pago > pago_dt, en este caso 2026-02-15 > 2026-02-11):
+    # - corte inicial = 2026-02-01
+    # - nueva_corte = fecha_real_pago + 1 mes - 10 días = Feb 15 + 1 mes - 10 días = Mar 5
+    # - nueva_pago = Mar 5 + 10 días = Mar 15
+    assert updated_taller["proximaFechaCorte"] == datetime(2026, 3, 5)
     assert updated_taller["proximaFechaPago"] == datetime(2026, 3, 15)
