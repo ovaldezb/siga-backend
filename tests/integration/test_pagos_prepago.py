@@ -188,10 +188,7 @@ def test_procesar_pago_prepago_tardio(mock_db):
     updated_taller = db_platform.talleres.find_one({"tenantId": tenant_id})
     # Al ser tardío (fecha_pago > pago_dt, en este caso 2026-02-15 > 2026-02-11):
     # - corte inicial = 2026-02-01
-    # - retraso = 4 días (15 - 11)
-    # - base_corte = Feb 1 + 1 mes = Mar 1
-    # - nueva_corte_pre = Mar 1 - 10 días - 4 días = Feb 15
-    # - Como Feb 15 <= Feb 15, el loop avanza: add_months(Feb 15, 1) = Mar 15
-    # - nueva_pago = Mar 15 + 10 días = Mar 25
-    assert updated_taller["proximaFechaCorte"] == datetime(2026, 3, 15)
-    assert updated_taller["proximaFechaPago"] == datetime(2026, 3, 25)
+    # - nueva_corte = corte_dt + 1 mes - 10 días = Mar 1 - 10 días = Feb 19
+    # - nueva_pago = Feb 19 + 10 días = Mar 1
+    assert updated_taller["proximaFechaCorte"] == datetime(2026, 2, 19)
+    assert updated_taller["proximaFechaPago"] == datetime(2026, 3, 1)
