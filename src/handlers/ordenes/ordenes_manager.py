@@ -366,6 +366,7 @@ def create_orden_handler(event, context):
             # IVA: `total` es el monto final a cobrar y el PDF/frontend nunca suma IVA.
             "precios_incluyen_iva": body.get("precios_incluyen_iva", True),
             "fechaEstimadaEntrega": body.get("fechaEstimadaEntrega"),
+            "decodedVin": body.get("decodedVin"),
             "createdAt": datetime.utcnow(),
             "updatedAt": datetime.utcnow()
         }
@@ -922,7 +923,7 @@ def update_orden_handler(event, context):
             'proximo_cambio_bujias_fecha', 'proximo_cambio_aceite_fecha', 'anticipo',
             'cliente_snapshot', 'vehiculo_snapshot',
             'aplica_costo_revision', 'costo_revision', 'fechaEstimadaEntrega',
-            'cita_id', 'sucursal_id', 'precios_incluyen_iva'
+            'cita_id', 'sucursal_id', 'precios_incluyen_iva', 'decodedVin'
         ]
 
         # Mapear sucursalId a sucursal_id
