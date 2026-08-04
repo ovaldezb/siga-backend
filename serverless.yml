@@ -127,12 +127,20 @@ custom:
       description: Python requirements layer
       compatibleRuntimes:
         - python3.13
+  # Reparte los ~680 recursos del servicio en nested stacks para no topar el límite
+  # de 500 recursos por stack de CloudFormation. Las reglas finas (Integrations,
+  # Routes y Permissions de HTTP API) están en ./stacks-map.js — ver ahí el detalle
+  # de por qué unas se migran con `force` y otras no.
   splitStacks:
     nestedStackTrace: true
+    # Un nested stack por lambda (Function + LogGroup). Cada uno cuesta 1 recurso
+    # en el root, de ahí que el resto (integraciones, rutas, permisos) también deba
+    # salir del root vía stacks-map.js.
     perFunction: true
     perType: false
     perGroupFunction: false
-    nestedStackCount: 20
+    # nestedStackCount se removió: solo tiene efecto con perGroupFunction: true.
+    # Estando en false era configuración muerta que sugería un límite inexistente.
 
 package:
   individually: true
