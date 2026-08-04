@@ -485,6 +485,57 @@ def create_orden_handler(event, context):
                 logger.error(f"Error en rollback del vehículo: {rb_error}")
         return handle_exception(e)
 
+def _periodo_condition(anio_raw, mes_raw):
+    """Condición Mongo para acotar OS a un año (y opcionalmente un mes) por `createdAt`.
+
+    `createdAt` convive en dos formatos: datetime (OS creadas por el backend) y
+    string ISO-8601 (datos migrados/seed), así que el rango se aplica a ambos —
+    en ISO-8601 el orden lexicográfico coincide con el cronológico.
+
+    Devuelve (condicion, None) o (None, mensaje_error).
+    """
+    try:
+        anio = int(anio_raw)
+        mes = int(mes_raw) if mes_raw else None
+    except (TypeError, ValueError):
+        return None, "Los filtros 'anio' y 'mes' deben ser numéricos."
+
+    if anio < 1970 or anio > 9999:
+        return None, "El filtro 'anio' está fuera de rango."
+    if mes is not None and not 1 <= mes <= 12:
+        return None, "El filtro 'mes' debe estar entre 1 y 12."
+
+    if mes:
+        inicio = datetime(anio, mes, 1)
+        fin = datetime(anio + 1, 1, 1) if mes == 12 else datetime(anio, mes + 1, 1)
+    else:
+        inicio = datetime(anio, 1, 1)
+        fin = datetime(anio + 1, 1, 1)
+
+    return {'$or': [
+        {'createdAt': {'$gte': inicio, '$lt': fin}},
+        {'createdAt': {'$gte': inicio.isoformat(), '$lt': fin.isoformat()}},
+    ]}, None
+
+
+def _anios_con_ordenes(db):
+    """Años (desc) en los que el taller tiene al menos una OS.
+
+    Alimenta el selector de periodo del front. Se calcula sólo cuando el front lo
+    pide (`incluir_anios=1`, una vez al entrar al módulo) porque recorre la
+    colección: se proyecta únicamente `createdAt` para que sea un index/collection
+    scan barato. Tolera los dos formatos de fecha, igual que `_periodo_condition`.
+    """
+    anios = set()
+    for doc in db["ordenes_servicio"].find({}, {"createdAt": 1, "_id": 0}):
+        valor = doc.get("createdAt")
+        if isinstance(valor, datetime):
+            anios.add(valor.year)
+        elif isinstance(valor, str) and valor[:4].isdigit():
+            anios.add(int(valor[:4]))
+    return sorted(anios, reverse=True)
+
+
 @logger.inject_lambda_context
 def list_ordenes_handler(event, context):
     try:
@@ -537,6 +588,15 @@ def list_ordenes_handler(event, context):
             and_conditions.append({'$or': [{'pagada': True}, {'estado': 'ENTREGADO'}]})
         elif tab == 'canceladas':
             and_conditions.append({'estado': 'CANCELADO'})
+
+        # Periodo (año / mes) sobre la fecha de ingreso.
+        anio_filter = query_params.get('anio')
+        mes_filter = query_params.get('mes')
+        if anio_filter:
+            periodo_cond, periodo_err = _periodo_condition(anio_filter, mes_filter)
+            if periodo_err:
+                return create_response(400, periodo_err)
+            and_conditions.append(periodo_cond)
 
         search_query = query_params.get('q')
         if search_query:
@@ -673,7 +733,10 @@ def list_ordenes_handler(event, context):
             "limit": limit,
             "totalPages": (total + limit - 1) // limit
         }
-        
+
+        if str(query_params.get('incluir_anios', '')).lower() in ('1', 'true'):
+            response_data["anios"] = _anios_con_ordenes(db)
+
         return create_response(200, "Órdenes recuperadas", response_data)
     except Exception as e:
         return handle_exception(e)
