@@ -207,6 +207,40 @@ functions:
           authorizer:
             name: cognitoAuthorizer
 
+  # Control de sesiones concurrentes (máx. 2 por usuario)
+  auth_sesiones_registrar:
+    handler: src/handlers/auth/sesiones_manager.registrar_sesion_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /auth/sesiones
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  auth_sesiones_estado:
+    handler: src/handlers/auth/sesiones_manager.estado_sesion_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /auth/sesiones
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  auth_sesiones_cerrar:
+    handler: src/handlers/auth/sesiones_manager.cerrar_sesion_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /auth/sesiones
+          method: delete
+          authorizer:
+            name: cognitoAuthorizer
+
   talleres_list:
     handler: src/handlers/admin/talleres_manager.list_talleres_handler
     layers:
