@@ -5,8 +5,11 @@ unidades de medida (colección `unidad`) utilizando la descripción.
 """
 
 import json
+from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.infrastructure.database import MongoDBConnection
+
+logger = Logger()
 
 
 def _platform_db():
@@ -34,6 +37,8 @@ def search_sat_catalogos_handler(event, context):
         query_params = event.get('queryStringParameters') or {}
         q = (query_params.get('q') or '').strip()
 
+        logger.info(f"SAT Search query: q='{q}', tipo_busqueda='{tipo_busqueda}'")
+
         if not q or len(q) < 2:
             return create_response(200, "Búsqueda vacía", [])
 
@@ -55,6 +60,8 @@ def search_sat_catalogos_handler(event, context):
                 "clave": doc.get("clave"),
                 "descripcion": doc.get("descripcion")
             })
+
+        logger.info(f"SAT Search returned {len(results)} results")
 
         return create_response(200, "Resultados de búsqueda SAT", results)
 
