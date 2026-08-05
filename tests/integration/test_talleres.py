@@ -79,7 +79,9 @@ def test_update_taller_dates(mock_db):
         "tenantId": "T_TEST",
         "proximaFechaCorte": datetime(2026, 1, 1),
         "proximaFechaPago": datetime(2026, 1, 11),
-        "vendedor": "Pedro"
+        "vendedor": "Pedro",
+        "usuarios": 5,
+        "sucursales": 2
     }).inserted_id
 
     event = {
@@ -87,7 +89,9 @@ def test_update_taller_dates(mock_db):
         "body": json.dumps({
             "proximaFechaCorte": "2026-05-15T00:00:00Z",
             "proximaFechaPago": "2026-05-25T00:00:00Z",
-            "vendedor": "Pedro Picapiedra"
+            "vendedor": "Pedro Picapiedra",
+            "usuarios": 10,
+            "sucursales": 5
         }),
         "requestContext": {
             "authorizer": {
@@ -104,9 +108,13 @@ def test_update_taller_dates(mock_db):
     assert data['proximaFechaCorte'].startswith("2026-05-15")
     assert data['proximaFechaPago'].startswith("2026-05-25")
     assert data['vendedor'] == "Pedro Picapiedra"
+    assert data['usuarios'] == 10
+    assert data['sucursales'] == 5
 
     # Verificar en la DB
     updated = db_platform.talleres.find_one({"_id": ObjectId(taller_id)})
     assert updated["proximaFechaCorte"] == datetime(2026, 5, 15)
     assert updated["proximaFechaPago"] == datetime(2026, 5, 25)
     assert updated["vendedor"] == "Pedro Picapiedra"
+    assert updated["usuarios"] == 10
+    assert updated["sucursales"] == 5
