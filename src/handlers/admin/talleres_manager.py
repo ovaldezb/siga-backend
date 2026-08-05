@@ -150,8 +150,9 @@ def create_taller_handler(event, context):
             "adminEmail": admin_email,
             "adminNombre": body["adminNombre"],
             "adminApellido": body["adminApellido"],
-            "adminTelefono": body.get("adminTelefono"),
             "vendedor": body.get("vendedor"),
+            "usuarios": body.get("usuarios"),
+            "sucursales": body.get("sucursales"),
             "createdAt": datetime.utcnow()
         }
         
@@ -300,6 +301,8 @@ def update_taller_handler(event, context):
             "mesesCargo": body.get("mesesCargo"),
             "diasPrueba": body.get("diasPrueba"),
             "vendedor": body.get("vendedor"),
+            "usuarios": body.get("usuarios"),
+            "sucursales": body.get("sucursales"),
             "updatedAt": datetime.utcnow()
         }
 
