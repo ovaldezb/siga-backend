@@ -213,7 +213,7 @@ def get_my_modulos_handler(event, context):
         db = get_platform_db()
         taller = db["talleres"].find_one(
             {"tenantId": tenant_id}, 
-            {"_id": 0, "modulos": 1, "estado": 1, "logoUrl": 1, "nombreComercial": 1, "direccion": 1, "adminTelefono": 1, "proximaFechaCorte": 1, "proximaFechaPago": 1, "precioSuscripcion": 1, "mesesCargo": 1, "diasPrueba": 1, "fechaSuscripcion": 1}
+            {"_id": 0, "modulos": 1, "estado": 1, "logoUrl": 1, "nombreComercial": 1, "direccion": 1, "adminTelefono": 1, "proximaFechaCorte": 1, "proximaFechaPago": 1, "precioSuscripcion": 1, "mesesCargo": 1, "diasPrueba": 1, "fechaSuscripcion": 1, "usuarios": 1, "sucursales": 1}
         )
 
         if not taller:
@@ -263,7 +263,9 @@ def get_my_modulos_handler(event, context):
             "precioSuscripcion": taller.get("precioSuscripcion"),
             "mesesCargo": taller.get("mesesCargo"),
             "diasPrueba": taller.get("diasPrueba"),
-            "fechaSuscripcion": f_suscripcion
+            "fechaSuscripcion": f_suscripcion,
+            "usuarios": taller.get("usuarios"),
+            "sucursales": taller.get("sucursales")
         })
 
     except Exception as e:
