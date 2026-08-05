@@ -634,6 +634,17 @@ functions:
           authorizer:
             name: cognitoAuthorizer
 
+  search_sat_catalogos:
+    handler: src/handlers/catalogos/sat_manager.search_sat_catalogos_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /catalogos/sat/{tipoBusqueda}
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
   list_marcas:
     handler: src/handlers/catalogos/autos_manager.list_marcas_handler
     layers:
