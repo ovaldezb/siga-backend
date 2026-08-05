@@ -150,7 +150,6 @@ def create_taller_handler(event, context):
             "adminEmail": admin_email,
             "adminNombre": body["adminNombre"],
             "adminApellido": body["adminApellido"],
-            "adminTelefono": body.get("adminTelefono"),
             "vendedor": body.get("vendedor"),
             "usuarios": body.get("usuarios"),
             "sucursales": body.get("sucursales"),

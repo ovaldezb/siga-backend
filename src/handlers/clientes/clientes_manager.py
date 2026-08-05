@@ -330,7 +330,8 @@ def add_vehiculo_handler(event, context):
 
         nuevo_vehiculo = {
             "cliente_id": cliente_id,
-            "placas": body['placas'],
+            # Placas opcionales: la unidad puede llegar sin placa (nueva o en trámite).
+            "placas": body.get('placas', ''),
             "marca": body['marca'],
             "modelo": body['modelo'],
             "anio": body.get('anio') or body.get('año'),  # snake-case sin tilde, consistente con vehiculos_manager
