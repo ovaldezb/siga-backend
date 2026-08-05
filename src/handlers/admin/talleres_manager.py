@@ -151,6 +151,7 @@ def create_taller_handler(event, context):
             "adminNombre": body["adminNombre"],
             "adminApellido": body["adminApellido"],
             "adminTelefono": body.get("adminTelefono"),
+            "vendedor": body.get("vendedor"),
             "createdAt": datetime.utcnow()
         }
         
@@ -298,8 +299,26 @@ def update_taller_handler(event, context):
             "precioSuscripcion": body.get("precioSuscripcion"),
             "mesesCargo": body.get("mesesCargo"),
             "diasPrueba": body.get("diasPrueba"),
+            "vendedor": body.get("vendedor"),
             "updatedAt": datetime.utcnow()
         }
+
+        # Helper to parse dates from frontend
+        def parse_date(val):
+            if not val:
+                return None
+            try:
+                cleaned = val.replace("Z", "+00:00")
+                if len(cleaned) == 10:
+                    cleaned += "T00:00:00+00:00"
+                return datetime.fromisoformat(cleaned).replace(tzinfo=None)
+            except Exception:
+                return None
+
+        if "proximaFechaCorte" in body:
+            update_data["proximaFechaCorte"] = parse_date(body["proximaFechaCorte"])
+        if "proximaFechaPago" in body:
+            update_data["proximaFechaPago"] = parse_date(body["proximaFechaPago"])
 
         # Eliminar Nones para no sobreescribir con vacío si no se enviaron
         update_data = {k: v for k, v in update_data.items() if v is not None}
