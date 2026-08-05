@@ -2,7 +2,8 @@ import json
 from src.handlers.clientes.clientes_manager import (
     create_cliente_handler, 
     list_clientes_handler, 
-    add_vehiculo_handler
+    add_vehiculo_handler,
+    update_cliente_handler
 )
 
 def test_create_cliente_with_apellidos(mock_db):
@@ -75,3 +76,36 @@ def test_add_vehiculo_to_cliente_and_summary(mock_db):
     vehiculo_global = db.vehiculos.find_one({"placas": "ABC-123"})
     assert vehiculo_global is not None
     assert vehiculo_global['cliente_id'] == cliente_id
+
+def test_create_and_update_cliente_with_uso_cfdi(mock_db):
+    """Verifica la persistencia y actualización del campo uso_cfdi en clientes."""
+    # 1. Crear
+    event = {
+        "body": json.dumps({
+            "sucursal_id": "sucursal123",
+            "nombre": "Pedro",
+            "apellido_paterno": "Pica",
+            "uso_cfdi": "G03"
+        }),
+        "requestContext": {"authorizer": {"claims": {"custom:tenant_id": "tallertest"}}}
+    }
+    response = create_cliente_handler(event, None)
+    assert response['statusCode'] == 201
+    
+    data = json.loads(response['body'])['data']
+    assert data['uso_cfdi'] == "G03"
+    cliente_id = data['id']
+
+    # 2. Actualizar
+    event_update = {
+        "pathParameters": {"id": cliente_id},
+        "body": json.dumps({
+            "uso_cfdi": "I08"
+        }),
+        "requestContext": {"authorizer": {"claims": {"custom:tenant_id": "tallertest"}}}
+    }
+    response_update = update_cliente_handler(event_update, None)
+    assert response_update['statusCode'] == 200
+    
+    data_update = json.loads(response_update['body'])['data']
+    assert data_update['uso_cfdi'] == "I08"

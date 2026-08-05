@@ -14,7 +14,7 @@ logger = Logger()
 
 ALLOWED_UPDATE_FIELDS = {
     "nombre", "apellido_paterno", "apellido_materno", "telefono", "email",
-    "rfc", "razon_social", "regimen_fiscal", "codigo_postal", "tipo_persona",
+    "rfc", "razon_social", "regimen_fiscal", "uso_cfdi", "codigo_postal", "tipo_persona",
     "limite_credito", "dias_credito", "nivel_precio", "sucursal_id",
     "flotilla_id",
 }
@@ -163,6 +163,7 @@ def create_cliente_handler(event, context):
             "rfc": body.get('rfc', 'XAXX010101000'),
             "razon_social": body.get('razon_social', ''),
             "regimen_fiscal": body.get('regimen_fiscal', '612'), # Personas Físicas con Actividades Empresariales por defecto
+            "uso_cfdi": body.get('uso_cfdi', ''),
             "codigo_postal": body.get('codigo_postal', ''),
             "tipo_persona": body.get('tipo_persona', 'FISICA'),
             "limite_credito": float(body.get('limite_credito', 0)),
