@@ -19,7 +19,7 @@ def _platform_db():
 def search_sat_catalogos_handler(event, context):
     """GET /catalogos/sat/{tipoBusqueda}
     Búsqueda en catálogos SAT.
-    tipoBusqueda puede ser 'unidad' o 'clavesat'.
+    tipoBusqueda puede ser 'unidad', 'clavesat', 'regimenfiscal' o 'usocfdi'.
     Parámetros de consulta:
       q: término de búsqueda (descripción).
     """
@@ -33,15 +33,17 @@ def search_sat_catalogos_handler(event, context):
             collection_name = 'catprodserv'
         elif tipo_busqueda == 'regimenfiscal':
             collection_name = 'regimen_fiscal'
+        elif tipo_busqueda == 'usocfdi':
+            collection_name = 'usocfdi'
         else:
-            return create_response(400, "Tipo de búsqueda inválido. Debe ser 'unidad', 'clavesat' o 'regimenfiscal'.")
+            return create_response(400, "Tipo de búsqueda inválido. Debe ser 'unidad', 'clavesat', 'regimenfiscal' o 'usocfdi'.")
 
         query_params = event.get('queryStringParameters') or {}
         q = (query_params.get('q') or '').strip()
 
         logger.info(f"SAT Search query: q='{q}', tipo_busqueda='{tipo_busqueda}'")
 
-        if tipo_busqueda != 'regimenfiscal' and (not q or len(q) < 2):
+        if tipo_busqueda not in ['regimenfiscal', 'usocfdi'] and (not q or len(q) < 2):
             return create_response(200, "Búsqueda vacía", [])
 
         db = _platform_db()
@@ -53,6 +55,14 @@ def search_sat_catalogos_handler(event, context):
             cursor = db[collection_name].find(
                 query,
                 {"_id": 0, "regimenfiscal": 1, "descripcion": 1, "fisica": 1, "moral": 1}
+            ).limit(100)
+        elif tipo_busqueda == 'usocfdi':
+            query = {}
+            if q:
+                query["descripcion"] = {"$regex": q, "$options": "i"}
+            cursor = db[collection_name].find(
+                query,
+                {"_id": 0, "usoCfdi": 1, "descripcion": 1, "regfiscalreceptor": 1, "fisica": 1, "moral": 1}
             ).limit(100)
         else:
             # Búsqueda insensible a mayúsculas/minúsculas únicamente en el campo de descripción
@@ -70,6 +80,14 @@ def search_sat_catalogos_handler(event, context):
                 results.append({
                     "clave": doc.get("regimenfiscal"),
                     "descripcion": doc.get("descripcion"),
+                    "fisica": doc.get("fisica"),
+                    "moral": doc.get("moral")
+                })
+            elif tipo_busqueda == 'usocfdi':
+                results.append({
+                    "clave": doc.get("usoCfdi"),
+                    "descripcion": doc.get("descripcion"),
+                    "regfiscalreceptor": doc.get("regfiscalreceptor"),
                     "fisica": doc.get("fisica"),
                     "moral": doc.get("moral")
                 })
