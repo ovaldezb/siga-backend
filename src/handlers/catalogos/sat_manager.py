@@ -19,7 +19,7 @@ def _platform_db():
 def search_sat_catalogos_handler(event, context):
     """GET /catalogos/sat/{tipoBusqueda}
     Búsqueda en catálogos SAT.
-    tipoBusqueda puede ser 'unidad' o 'clavesat'.
+    tipoBusqueda puede ser 'unidad', 'clavesat', 'regimenfiscal' o 'usocfdi'.
     Parámetros de consulta:
       q: término de búsqueda (descripción).
     """
