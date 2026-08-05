@@ -89,3 +89,39 @@ def test_search_sat_empty_or_short_query(mock_db):
     assert response['statusCode'] == 200
     data = json.loads(response['body'])['data']
     assert len(data) == 0
+
+def test_search_sat_regimenfiscal(mock_db):
+    db = mock_db["_platform"]
+    db.regimen_fiscal.insert_many([
+        {"regimenfiscal": "601", "descripcion": "General de Ley Personas Morales", "fisica": False, "moral": True},
+        {"regimenfiscal": "612", "descripcion": "Personas Físicas con Actividades Empresariales", "fisica": True, "moral": False}
+    ])
+
+    # Test query without parameter (should return all)
+    event = {
+        "pathParameters": {"tipoBusqueda": "regimenfiscal"},
+        "queryStringParameters": {},
+        "requestContext": {
+            "authorizer": {
+                "claims": {"custom:tenant_id": "taller_test"}
+            }
+        }
+    }
+
+    response = search_sat_catalogos_handler(event, None)
+    assert response['statusCode'] == 200
+    data = json.loads(response['body'])['data']
+    assert len(data) == 2
+    assert data[0]['clave'] == "601"
+    assert data[0]['descripcion'] == "General de Ley Personas Morales"
+    assert data[0]['fisica'] is False
+    assert data[0]['moral'] is True
+    assert data[1]['clave'] == "612"
+
+    # Test query with description filter
+    event["queryStringParameters"] = {"q": "Físicas"}
+    response = search_sat_catalogos_handler(event, None)
+    assert response['statusCode'] == 200
+    data = json.loads(response['body'])['data']
+    assert len(data) == 1
+    assert data[0]['clave'] == "612"
