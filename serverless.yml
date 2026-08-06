@@ -122,6 +122,7 @@ custom:
     dockerizePip: true
     # Adelgaza el paquete (quita .pyc, __pycache__, tests) => cold start más rápido.
     slim: true
+    cacheLocation: .serverless-cache
     layer:
       name: ${self:service}-${self:provider.stage}-lib
       description: Python requirements layer
