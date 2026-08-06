@@ -19,6 +19,13 @@ def test_timbrar_factura_success(mock_db, monkeypatch):
         "codigo_postal": "12345",
         "tenant_id": TENANT
     }).inserted_id
+
+    # Seed venta
+    venta_id = db["ventas"].insert_one({
+        "folio": "V-2026-0001",
+        "venta_facturada": False,
+        "tenant_id": TENANT
+    }).inserted_id
     
     # Payload for the lambda
     event = {
@@ -86,3 +93,7 @@ def test_timbrar_factura_success(mock_db, monkeypatch):
         saved_factura = db["facturasemitidas"].find_one({"uuid": "uuid-123-456"})
         assert saved_factura is not None
         assert saved_factura["ticket"] == "V-2026-0001"
+
+        # Verify sale is marked as facturada
+        updated_venta = db["ventas"].find_one({"_id": venta_id})
+        assert updated_venta["venta_facturada"] is True

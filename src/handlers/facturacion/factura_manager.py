@@ -116,6 +116,19 @@ def timbrar_factura_handler(event, context):
         }
         db["facturasemitidas"].insert_one(factura_doc)
 
+        # Actualizar estado de facturación en la venta
+        venta_id = body.get("ventaId")
+        if venta_id:
+            db["ventas"].update_one(
+                {"_id": ObjectId(venta_id)},
+                {"$set": {"venta_facturada": True}}
+            )
+        else:
+            db["ventas"].update_one(
+                {"folio": ticket},
+                {"$set": {"venta_facturada": True}}
+            )
+
         # 8. Retornar respuesta
         res_payload = {
             "cfdi": pretty_xml,

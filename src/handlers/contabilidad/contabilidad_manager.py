@@ -992,7 +992,7 @@ def get_resumen_mensual_handler(event, context):
             'items': 1, 'subtotal': 1, 'iva': 1, 'total': 1, 'descuento': 1,
             'orden_id': 1, 'sucursal_id': 1, 'createdAt': 1, 'estado': 1,
             'vehiculo_snapshot': 1, 'metodo_pago': 1, 'pagos': 1,
-            'saldo_pendiente': 1, 'usuario_nombre': 1,
+            'saldo_pendiente': 1, 'usuario_nombre': 1, 'venta_facturada': 1,
         }))
 
         # Contexto operativo (vehículo, OS, cotización, cita, pago) para que el
@@ -1042,6 +1042,7 @@ def get_resumen_mensual_handler(event, context):
                 'margen': round(margen, 2),
                 'margen_pct': round((margen / sub * 100), 2) if sub > 0 else 0.0,
                 'fecha': fecha_iso,
+                'venta_facturada': bool(v.get('venta_facturada', False)),
                 # Contexto de ubicación (vehículo, OS/cotización/cita, pago, quién cobró)
                 **{k: ctx.get(k) for k in (
                     'orden_folio', 'orden_estado', 'falla_reportada', 'mecanico',
