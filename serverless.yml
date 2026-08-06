@@ -1178,6 +1178,17 @@ functions:
           authorizer:
             name: cognitoAuthorizer
 
+  sucursales_get:
+    handler: src/handlers/sucursales/sucursales_manager.get_sucursal_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /sucursales/{id}
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
   sucursales_update:
     handler: src/handlers/sucursales/sucursales_manager.update_sucursal_handler
     layers:
