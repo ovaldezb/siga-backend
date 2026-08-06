@@ -129,3 +129,29 @@ def delete_sucursal_handler(event, context):
         return create_response(200, "Sucursal eliminada")
     except Exception as e:
         return handle_exception(e)
+
+
+@logger.inject_lambda_context
+def get_sucursal_handler(event, context):
+    try:
+        claims = get_claims(event)
+        tenant_id = claims.get('custom:tenant_id')
+        if not tenant_id:
+            return create_response(403, "No se encontró un tenantId asociado.")
+
+        sucursal_id = event['pathParameters']['id']
+        db = get_tenant_db(tenant_id)
+        
+        sucursal = db["sucursales"].find_one({"_id": ObjectId(sucursal_id)})
+        if not sucursal:
+            return create_response(404, "Sucursal no encontrada")
+
+        sucursal['id'] = str(sucursal.pop('_id'))
+        if 'createdAt' in sucursal and isinstance(sucursal['createdAt'], datetime):
+            sucursal['createdAt'] = iso_utc(sucursal['createdAt'])
+        if 'updatedAt' in sucursal and isinstance(sucursal['updatedAt'], datetime):
+            sucursal['updatedAt'] = iso_utc(sucursal['updatedAt'])
+
+        return create_response(200, "Sucursal obtenida", sucursal)
+    except Exception as e:
+        return handle_exception(e)
