@@ -1,7 +1,7 @@
 """Smoke tests del flujo de ventas (POS y desde OS) — auditoría #6 fase 1."""
 import json
 from bson import ObjectId
-from src.handlers.ventas.ventas_manager import create_venta_handler
+from src.handlers.ventas.ventas_manager import create_venta_handler, get_venta_by_id_handler
 
 
 SUCURSAL_A = "suc-a"
@@ -141,3 +141,28 @@ def test_venta_sin_items_rechaza(mock_db):
     resp = create_venta_handler(evt, None)
     assert resp["statusCode"] == 400
     assert "al menos un item" in json.loads(resp["body"])["message"]
+
+
+def test_get_venta_by_id(mock_db):
+    """Obtención de venta individual por ID."""
+    db = mock_db[f"t_{TENANT}"]
+    item_id = _seed_item(db, stock=10)
+
+    # 1. Crear venta
+    resp_create = create_venta_handler(_venta_event(item_id, cantidad=2, precio=100.0), None)
+    assert resp_create["statusCode"] == 201
+    venta_id = json.loads(resp_create["body"])["data"]["id"]
+
+    # 2. Get por ID
+    evt = {
+        "pathParameters": {"id": venta_id},
+        "requestContext": {"authorizer": {"claims": _claims()}},
+    }
+    resp_get = get_venta_by_id_handler(evt, None)
+    assert resp_get["statusCode"] == 200
+
+    data = json.loads(resp_get["body"])["data"]
+    assert data["id"] == venta_id
+    assert data["total"] == 200.0
+    assert len(data["items"]) == 1
+    assert data["items"][0]["producto"]["id"] == item_id

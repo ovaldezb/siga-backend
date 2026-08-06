@@ -760,3 +760,42 @@ def list_ventas_handler(event, context):
 
     except Exception as e:
         return handle_exception(e)
+
+
+def get_venta_by_id_handler(event, context):
+    """GET /ventas/{id} — Obtiene el detalle de una venta por ID."""
+    try:
+        claims = get_claims(event)
+        tenant_id = claims.get('custom:tenant_id')
+        if not tenant_id:
+            return create_response(403, "No autorizado")
+
+        from src.shared.utils.auth_utils import parse_object_id
+        venta_id = event.get('pathParameters', {}).get('id')
+        object_id, err = parse_object_id(venta_id)
+        if err:
+            return create_response(400, err)
+
+        db = get_tenant_db(tenant_id)
+        venta = db["ventas"].find_one({"_id": object_id, "tenant_id": tenant_id})
+        if not venta:
+            return create_response(404, "Venta no encontrada.")
+
+        venta["id"] = str(venta["_id"])
+        del venta["_id"]
+
+        # Folio y estado de la OS asociada
+        if venta.get('orden_id'):
+            try:
+                orden = db["ordenes_servicio"].find_one({"_id": ObjectId(venta['orden_id'])},
+                                                     {'folio': 1, 'estado': 1})
+                if orden:
+                    venta["orden_folio"] = orden.get('folio')
+                    venta["orden_estado"] = orden.get('estado')
+            except Exception:
+                pass
+
+        return create_response(200, "Venta obtenida", venta)
+
+    except Exception as e:
+        return handle_exception(e)

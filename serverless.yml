@@ -1365,6 +1365,17 @@ functions:
           authorizer:
             name: cognitoAuthorizer
 
+  get_venta_by_id:
+    handler: src.handlers.ventas.ventas_manager.get_venta_by_id_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /ventas/{id}
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
   ventas_cxc:
     handler: src/handlers/ventas/ventas_manager.list_cxc_handler
     layers:
