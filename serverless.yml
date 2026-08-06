@@ -333,6 +333,17 @@ functions:
           authorizer:
             name: cognitoAuthorizer
 
+  factura_timbrar:
+    handler: src.handlers.facturacion.factura_manager.timbrar_factura_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /timbrar-factura
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
   clientes_list:
     handler: src/handlers/clientes/clientes_manager.list_clientes_handler
     layers:
