@@ -9,6 +9,8 @@ sentry-sdk==2.18.0
 requests
 requests-toolbelt
 cryptography
+fpdf>=1.7.2
+num2words>=0.5.12
 
 # Para habilitar Lambda SnapStart (activa el hook afterRestore de database.py), descomenta:
 # snapshot-restore-py==1.0.0

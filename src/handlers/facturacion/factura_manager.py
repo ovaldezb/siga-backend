@@ -8,9 +8,12 @@ from pymongo import ReturnDocument
 
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
-from src.shared.infrastructure.database import get_tenant_db
+from src.shared.infrastructure.database import get_tenant_db, get_platform_db
 from src.shared.utils.auth_utils import get_claims, parse_object_id
 from src.handlers.facturacion.certificates_manager import get_sw_token
+from src.handlers.facturacion.cfdi_pdf_fpdf_generator import CFDIPDF_FPDF_Generator
+import base64
+import tempfile
 
 logger = Logger()
 
@@ -129,12 +132,76 @@ def timbrar_factura_handler(event, context):
                 {"$set": {"venta_facturada": True}}
             )
 
+        # 7.5. Generar PDF de la factura
+        pdf_b64 = None
+        logo_temp_file = None
+        try:
+            # Obtener logoUrl del taller de la base de datos de plataforma
+            platform_db = get_platform_db()
+            taller = platform_db["talleres"].find_one({"tenantId": tenant_id})
+            logo_url = taller.get("logoUrl") if taller else None
+
+            # Descargar el logo de S3 a un archivo temporal
+            logo_path = None
+            if logo_url:
+                try:
+                    res_img = requests.get(logo_url, timeout=5)
+                    if res_img.status_code == 200:
+                        logo_temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+                        logo_temp_file.write(res_img.content)
+                        logo_temp_file.flush()
+                        logo_temp_file.close()
+                        logo_path = logo_temp_file.name
+                except Exception as img_err:
+                    logger.warning(f"No se pudo descargar el logotipo del taller desde S3: {img_err}")
+
+            # Obtener descripciones de régimen fiscal
+            emisor_regimen = timbrado.get("Emisor", {}).get("RegimenFiscal") or sucursal.get("regimen_fiscal") or ""
+            reg_emisor_doc = db["regimenfiscal"].find_one({"regimenfiscal": emisor_regimen})
+            regimen_fiscal_emisor = reg_emisor_doc.get("descripcion") if reg_emisor_doc else emisor_regimen
+
+            receptor_regimen = timbrado.get("Receptor", {}).get("RegimenFiscalReceptor") or ""
+            reg_receptor_doc = db["regimenfiscal"].find_one({"regimenfiscal": receptor_regimen})
+            regimen_fiscal_receptor = reg_receptor_doc.get("descripcion") if reg_receptor_doc else receptor_regimen
+
+            # Generar PDF bytes
+            cfdi_xml = factura_generada["data"]["cfdi"]
+            qr_code = factura_generada["data"].get("qrCode") or ""
+            cadena_original_sat = factura_generada["data"].get("cadenaOriginalSAT") or ""
+            direccion = body.get("direccion", sucursal.get("direccion") or "")
+            empresa = body.get("empresa", id_certificado)
+
+            pdf_gen = CFDIPDF_FPDF_Generator(
+                xml_string=cfdi_xml,
+                qrCode=qr_code,
+                cadena_original_sat=cadena_original_sat,
+                noTicket=ticket,
+                fecha_hora_venta=fecha_venta,
+                direccion=direccion,
+                empresa=empresa,
+                regimen_fiscal_emisor=regimen_fiscal_emisor,
+                regimen_fiscal_receptor=regimen_fiscal_receptor,
+                logo_path=logo_path
+            )
+            pdf_bytes = pdf_gen.generate_pdf()
+            pdf_b64 = base64.b64encode(pdf_bytes).decode('utf-8')
+
+        except Exception as pdf_err:
+            logger.exception(f"Ocurrió un error no fatal al generar el PDF de la factura: {pdf_err}")
+        finally:
+            if logo_temp_file and os.path.exists(logo_temp_file.name):
+                try:
+                    os.unlink(logo_temp_file.name)
+                except Exception:
+                    pass
+
         # 8. Retornar respuesta
         res_payload = {
             "cfdi": pretty_xml,
             "uuid": factura_generada["data"].get("uuid"),
             "folio": secuencia,
-            "serie": timbrado['Serie']
+            "serie": timbrado['Serie'],
+            "pdf_cfdi_b64": pdf_b64
         }
         return create_response(200, "Factura generada exitosamente", res_payload)
 

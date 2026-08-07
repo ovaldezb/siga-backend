@@ -84,6 +84,7 @@ def test_timbrar_factura_success(mock_db, monkeypatch):
         assert data["uuid"] == "uuid-123-456"
         assert data["folio"] == 1
         assert data["serie"] == "A"
+        assert data.get("pdf_cfdi_b64") is not None
 
         # Verify folio is stored in DB
         folio = db["folios"].find_one({"tipo": "factura", "sucursal_id": str(suc_id)})
