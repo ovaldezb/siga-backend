@@ -67,6 +67,9 @@ def test_venta_pos_happy_path_descuenta_stock(mock_db):
     assert abs(data["subtotal"] - 232.0) < 0.01  # sin IVA: subtotal == total
     assert data["iva"] == 0
 
+    venta_doc = db["ventas"].find_one({"folio": data["folio"]})
+    assert venta_doc["venta_facturada"] is False
+
     item = db["items"].find_one({"_id": ObjectId(item_id)})
     assert item["stock"] == 8
 
