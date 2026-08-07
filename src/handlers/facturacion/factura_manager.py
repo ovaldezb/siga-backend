@@ -194,7 +194,6 @@ def timbrar_factura_handler(event, context):
                     os.unlink(logo_temp_file.name)
                 except Exception:
                     pass
-
         # 8. Retornar respuesta
         res_payload = {
             "cfdi": pretty_xml,
