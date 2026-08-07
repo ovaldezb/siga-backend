@@ -149,6 +149,8 @@ package:
     - '!node_modules/**'
     - '!tests/**'
     - '!.venv/**'
+    - '!.serverless-cache/**'
+    - '!.pytest_cache/**'
     - '!package.json'
     - '!package-lock.json'
     - '!requirements.txt'
