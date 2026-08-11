@@ -243,6 +243,7 @@ def create_venta_handler(event, context):
             "createdAt": created_at,
             "fecha_cierre_manual": bool(fecha_cierre_in),
             "venta_facturada": bool(body.get('venta_facturada', False)),
+            "forma_pago_sat": body.get('forma_pago_sat', ''),
         }
 
         # 3.9 PRE-CÁLCULO DE BACKOFFICE CxP — antes de la transacción para no llamar a
