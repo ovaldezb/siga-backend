@@ -5,6 +5,7 @@ unidades de medida (colección `unidad`) utilizando la descripción.
 """
 
 import json
+import re
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.infrastructure.database import MongoDBConnection
@@ -65,10 +66,17 @@ def search_sat_catalogos_handler(event, context):
                 {"_id": 0, "usoCfdi": 1, "descripcion": 1, "regfiscalreceptor": 1, "fisica": 1, "moral": 1}
             ).limit(100)
         else:
-            # Búsqueda insensible a mayúsculas/minúsculas únicamente en el campo de descripción
-            query = {
-                "descripcion": {"$regex": q, "$options": "i"}
-            }
+            escaped_q = re.escape(q)
+            if tipo_busqueda == 'unidad':
+                # Anchor to the beginning of description for units
+                query = {
+                    "descripcion": {"$regex": f"^{escaped_q}", "$options": "i"}
+                }
+            else:
+                # Substring search for product/service keys
+                query = {
+                    "descripcion": {"$regex": escaped_q, "$options": "i"}
+                }
             cursor = db[collection_name].find(
                 query, 
                 {"_id": 0, "clave": 1, "descripcion": 1}

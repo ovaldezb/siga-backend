@@ -37,6 +37,7 @@ def test_search_sat_unidad_by_description(mock_db):
         {"clave": "KGM", "descripcion": "Kilogramo"}
     ])
 
+    # 1. Test happy path start-with match
     event = {
         "pathParameters": {"tipoBusqueda": "unidad"},
         "queryStringParameters": {"q": "pieza"},
@@ -54,6 +55,37 @@ def test_search_sat_unidad_by_description(mock_db):
     assert len(data) == 1
     assert data[0]['clave'] == "H87"
     assert data[0]['descripcion'] == "Pieza"
+
+    # 2. Test that it does NOT match when query is in the middle of description
+    event2 = {
+        "pathParameters": {"tipoBusqueda": "unidad"},
+        "queryStringParameters": {"q": "cisterna"},
+        "requestContext": {
+            "authorizer": {
+                "claims": {"custom:tenant_id": "taller_test"}
+            }
+        }
+    }
+    response2 = search_sat_catalogos_handler(event2, None)
+    assert response2['statusCode'] == 200
+    data2 = json.loads(response2['body'])['data']
+    assert len(data2) == 0  # Should be empty because it starts with "Camión", not "cisterna"
+
+    # 3. Test that it matches when query is the start of the description
+    event3 = {
+        "pathParameters": {"tipoBusqueda": "unidad"},
+        "queryStringParameters": {"q": "camión"},
+        "requestContext": {
+            "authorizer": {
+                "claims": {"custom:tenant_id": "taller_test"}
+            }
+        }
+    }
+    response3 = search_sat_catalogos_handler(event3, None)
+    assert response3['statusCode'] == 200
+    data3 = json.loads(response3['body'])['data']
+    assert len(data3) == 1
+    assert data3[0]['clave'] == "19"
 
 def test_search_sat_invalid_tipo(mock_db):
     event = {
