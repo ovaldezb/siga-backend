@@ -31,7 +31,7 @@ def _seed_item(db, *, sucursal_id=SUCURSAL_A, stock=10, precio=116.0, costo=50.0
 
 def _venta_event(item_id, *, sucursal_id=SUCURSAL_A, cantidad=1, precio=116.0,
                  cliente_id="PUBLICO_GENERAL", metodo_pago="EFECTIVO",
-                 orden_id=None, pagos=None):
+                 orden_id=None, pagos=None, forma_pago_sat="01"):
     body = {
         "sucursal_id": sucursal_id,
         "cliente_id": cliente_id,
@@ -41,7 +41,8 @@ def _venta_event(item_id, *, sucursal_id=SUCURSAL_A, cantidad=1, precio=116.0,
             "precio_unitario": precio,
         }],
         "metodo_pago": metodo_pago,
-        "pagos": pagos or [{"metodo": metodo_pago, "monto": precio * cantidad}],
+        "pagos": pagos or [{"metodo": metodo_pago, "monto": precio * cantidad, "forma_pago_sat": forma_pago_sat}],
+        "forma_pago_sat": forma_pago_sat,
     }
     if orden_id:
         body["orden_id"] = orden_id
@@ -69,6 +70,8 @@ def test_venta_pos_happy_path_descuenta_stock(mock_db):
 
     venta_doc = db["ventas"].find_one({"folio": data["folio"]})
     assert venta_doc["venta_facturada"] is False
+    assert venta_doc["forma_pago_sat"] == "01"
+    assert venta_doc["pagos"][0]["forma_pago_sat"] == "01"
 
     item = db["items"].find_one({"_id": ObjectId(item_id)})
     assert item["stock"] == 8
