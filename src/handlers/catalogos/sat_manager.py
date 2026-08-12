@@ -80,7 +80,7 @@ def search_sat_catalogos_handler(event, context):
             cursor = db[collection_name].find(
                 query, 
                 {"_id": 0, "clave": 1, "descripcion": 1}
-            ).limit(20)
+            ).limit(50)
 
         results = []
         for doc in cursor:
