@@ -37,17 +37,21 @@ def list_clientes_handler(event, context):
         db = get_tenant_db(tenant_id)
         ensure_indexes(db, tenant_id)
 
-        # Enforce scope: admin sin filtro, no-admin restringido a sus sucursales
-        scope_list, scope_err = resolve_sucursal_scope(claims, db, sucursal_id)
-        if scope_err:
-            return create_response(403, scope_err)
-
+        # La cartera de clientes es del taller, no de la sucursal: quien atiende en
+        # cualquier sucursal debe poder encontrar a un cliente dado de alta en otra
+        # (y a los legados que no tienen `sucursal_id`, invisibles con el filtro
+        # anterior). `sucursal_id` en el cliente queda como dato de origen.
+        # Sólo se filtra cuando se pide una sucursal explícita, y ésa sí se valida
+        # contra las sucursales del usuario. `get_cliente_handler` ya funcionaba así.
         filter_query = {}
-        if scope_list is not None:
-            if len(scope_list) == 1:
-                filter_query["sucursal_id"] = scope_list[0]
-            else:
-                filter_query["sucursal_id"] = {"$in": scope_list}
+        if sucursal_id:
+            scope_list, scope_err = resolve_sucursal_scope(claims, db, sucursal_id)
+            if scope_err:
+                return create_response(403, scope_err)
+            if scope_list:
+                filter_query["sucursal_id"] = (
+                    scope_list[0] if len(scope_list) == 1 else {"$in": scope_list}
+                )
 
         if search_query:
             import re
