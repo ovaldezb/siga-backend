@@ -292,6 +292,15 @@ functions:
           authorizer:
             name: cognitoAuthorizer
 
+  openpay_webhook:
+    handler: src/handlers/admin/pagos_manager.openpay_webhook_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /public/webhooks/openpay
+          method: post
+
   certificados_create:
     handler: src/handlers/facturacion/certificates_manager.create_certificate_handler
     layers:
