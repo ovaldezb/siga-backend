@@ -206,14 +206,16 @@ def get_kpis_handler(event, context):
                     h['total'] += res['total']
                     h['count'] += res['count']
 
-        # 5. UTILIDAD Y MARGEN (Consolidado) — la operación va SIN IVA. El ingreso de una
-        # venta es su `total` (lo realmente cobrado), que es el mismo número que muestran
-        # ventas_hoy/ventas_mensuales y la caja: así el dashboard y el P&L contable no
-        # pueden discrepar. Usar `total` además cuadra las ventas históricas, donde
-        # subtotal quedó neto e iva aparte. El costo sale de costo_unitario_snapshot
-        # (fuente de verdad congelada), NO de producto.precio_compra.
+        # 5. UTILIDAD Y MARGEN (MES EN CURSO) — Filtramos al mes actual para que el
+        # dashboard muestre la utilidad del mismo período que "Ingresos Mes". La operación
+        # va SIN IVA. El ingreso de una venta es su `total` (lo realmente cobrado). El
+        # costo sale de costo_unitario_snapshot (fuente de verdad congelada).
+        inicio_mes = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
         res_util_ventas = list(db["ventas"].aggregate([
             {"$match": {**filter_base, "estado": {"$nin": ["CANCELADA", "ANULADA"]}}},
+            {"$addFields": {"__date": match_date_expr}},
+            {"$match": {"__date": {"$gte": inicio_mes}}},
             {"$project": {
                 "neto": {"$ifNull": ["$total", {"$ifNull": ["$subtotal", 0]}]},
                 "costo": {"$reduce": {
@@ -241,6 +243,8 @@ def get_kpis_handler(event, context):
         }
         res_util_os = list(db["ordenes_servicio"].aggregate([
             {"$match": os_entregada_sin_venta},
+            {"$addFields": {"__date": match_date_expr}},
+            {"$match": {"__date": {"$gte": inicio_mes}}},
             {"$unwind": {"path": "$puntosArreglar", "preserveNullAndEmptyArrays": True}},
             {"$unwind": {"path": "$puntosArreglar.items", "preserveNullAndEmptyArrays": True}},
             {"$group": {
@@ -258,14 +262,17 @@ def get_kpis_handler(event, context):
         utilidad_total = (res_util_ventas[0]['utilidad'] if res_util_ventas else 0) + \
                          (res_util_os[0]['utilidad'] if res_util_os else 0)
 
-        # Ingresos totales para margen — mismo criterio que la utilidad: el `total` del
-        # documento. Numerador y denominador miden el mismo universo sin conversiones.
+        # Ingresos totales del MES para margen — mismo criterio que la utilidad.
         ingresos_pos_totales = list(db["ventas"].aggregate([
             {"$match": {**filter_base, "estado": {"$nin": ["CANCELADA", "ANULADA"]}}},
+            {"$addFields": {"__date": match_date_expr}},
+            {"$match": {"__date": {"$gte": inicio_mes}}},
             {"$group": {"_id": None, "total": {"$sum": {"$ifNull": ["$total", {"$ifNull": ["$subtotal", 0]}]}}}}
         ]))
         ingresos_os_totales = list(db["ordenes_servicio"].aggregate([
             {"$match": os_entregada_sin_venta},
+            {"$addFields": {"__date": match_date_expr}},
+            {"$match": {"__date": {"$gte": inicio_mes}}},
             {"$group": {"_id": None, "total": {"$sum": {"$ifNull": ["$total", 0]}}}}
         ]))
         ingresos_totales_val = (ingresos_pos_totales[0]['total'] if ingresos_pos_totales else 0) + \
