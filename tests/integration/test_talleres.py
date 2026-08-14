@@ -1,8 +1,9 @@
 import json
-from src.handlers.admin.talleres_manager import create_taller_handler, list_talleres_handler
+from src.handlers.admin.talleres_manager import create_taller_handler, list_talleres_handler, update_taller_handler
 
 from unittest.mock import patch
 
+# Keep existing tests...
 def test_create_taller_success(mock_db):
     """Verifica la creación de un taller con sus datos básicos."""
     event = {
@@ -67,3 +68,53 @@ def test_list_talleres_isolation(mock_db):
     assert response['statusCode'] == 200
     data = json.loads(response['body'])['data']
     assert len(data) >= 2
+
+def test_update_taller_dates(mock_db):
+    """Verifica que un SUPER_ADMIN pueda actualizar proximaFechaCorte y proximaFechaPago."""
+    db_platform = mock_db["_platform"]
+    from bson import ObjectId
+    from datetime import datetime
+    taller_id = db_platform.talleres.insert_one({
+        "nombreComercial": "Taller Test",
+        "tenantId": "T_TEST",
+        "proximaFechaCorte": datetime(2026, 1, 1),
+        "proximaFechaPago": datetime(2026, 1, 11),
+        "vendedor": "Pedro",
+        "usuarios": 5,
+        "sucursales": 2
+    }).inserted_id
+
+    event = {
+        "pathParameters": {"id": str(taller_id)},
+        "body": json.dumps({
+            "proximaFechaCorte": "2026-05-15T00:00:00Z",
+            "proximaFechaPago": "2026-05-25T00:00:00Z",
+            "vendedor": "Pedro Picapiedra",
+            "usuarios": 10,
+            "sucursales": 5
+        }),
+        "requestContext": {
+            "authorizer": {
+                "claims": {
+                    "cognito:groups": "SUPER_ADMIN"
+                }
+            }
+        }
+    }
+
+    response = update_taller_handler(event, None)
+    assert response['statusCode'] == 200
+    data = json.loads(response['body'])['data']
+    assert data['proximaFechaCorte'].startswith("2026-05-15")
+    assert data['proximaFechaPago'].startswith("2026-05-25")
+    assert data['vendedor'] == "Pedro Picapiedra"
+    assert data['usuarios'] == 10
+    assert data['sucursales'] == 5
+
+    # Verificar en la DB
+    updated = db_platform.talleres.find_one({"_id": ObjectId(taller_id)})
+    assert updated["proximaFechaCorte"] == datetime(2026, 5, 15)
+    assert updated["proximaFechaPago"] == datetime(2026, 5, 25)
+    assert updated["vendedor"] == "Pedro Picapiedra"
+    assert updated["usuarios"] == 10
+    assert updated["sucursales"] == 5

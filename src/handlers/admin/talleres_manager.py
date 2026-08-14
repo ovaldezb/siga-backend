@@ -134,6 +134,46 @@ def create_taller_handler(event, context):
         # En pre-pago, el primer pago vence 10 días después de iniciar el periodo activo
         proxima_pago = base_date + timedelta(days=10)
 
+        # Openpay customer & CLABE assignment
+        openpay_customer_id = ""
+        openpay_clabe = ""
+        openpay_spei_charge_id = ""
+        
+        try:
+            from src.shared.utils import openpay_client
+            # 1. Crear cliente en Openpay
+            customer_res = openpay_client.create_customer(
+                name=body["adminNombre"],
+                last_name=body["adminApellido"],
+                email=admin_email
+            )
+            openpay_customer_id = customer_res.get("id", "")
+            
+            if openpay_customer_id:
+                # 2. Crear cargo SPEI (bank_account) inicial
+                monto_spei = float(body.get("precioSuscripcion") or 599.00)
+                if monto_spei <= 0:
+                    monto_spei = 599.00 # Default fallback
+                
+                desc_spei = f"Suscripcion Mensual Mekanics Manager - {body['nombreComercial']}"
+                order_id_spei = f"SUB-{tenant_id[:16]}-{int(datetime.utcnow().timestamp())}"
+                
+                spei_res = openpay_client.create_spei_charge(
+                    customer_id=openpay_customer_id,
+                    amount=monto_spei,
+                    description=desc_spei,
+                    order_id=order_id_spei
+                )
+                
+                openpay_spei_charge_id = spei_res.get("id", "")
+                payment_method = spei_res.get("payment_method", {})
+                openpay_clabe = payment_method.get("clabe", "")
+                
+                logger.info(f"Openpay CLABE asignada exitosamente para el taller {tenant_id}: {openpay_clabe}")
+        except Exception as op_err:
+            logger.error(f"Error al inicializar Openpay al crear taller: {str(op_err)}")
+            # No bloqueamos el flujo principal en caso de falla de Openpay Sandbox o falta de credenciales
+
         # 2. Insert into Platform DB
         taller_doc = {
             "tenantId": tenant_id,
@@ -150,7 +190,12 @@ def create_taller_handler(event, context):
             "adminEmail": admin_email,
             "adminNombre": body["adminNombre"],
             "adminApellido": body["adminApellido"],
-            "adminTelefono": body.get("adminTelefono"),
+            "vendedor": body.get("vendedor"),
+            "usuarios": body.get("usuarios"),
+            "sucursales": body.get("sucursales"),
+            "openpayCustomerId": openpay_customer_id,
+            "openpayClabe": openpay_clabe,
+            "openpaySpeiChargeId": openpay_spei_charge_id,
             "createdAt": datetime.utcnow()
         }
         
@@ -211,7 +256,7 @@ def get_my_modulos_handler(event, context):
         db = get_platform_db()
         taller = db["talleres"].find_one(
             {"tenantId": tenant_id}, 
-            {"_id": 0, "modulos": 1, "estado": 1, "logoUrl": 1, "nombreComercial": 1, "direccion": 1, "adminTelefono": 1, "proximaFechaCorte": 1, "proximaFechaPago": 1, "precioSuscripcion": 1, "mesesCargo": 1, "diasPrueba": 1, "fechaSuscripcion": 1}
+            {"_id": 0, "modulos": 1, "estado": 1, "logoUrl": 1, "nombreComercial": 1, "direccion": 1, "adminTelefono": 1, "proximaFechaCorte": 1, "proximaFechaPago": 1, "precioSuscripcion": 1, "mesesCargo": 1, "diasPrueba": 1, "fechaSuscripcion": 1, "usuarios": 1, "sucursales": 1, "openpayClabe": 1}
         )
 
         if not taller:
@@ -261,7 +306,10 @@ def get_my_modulos_handler(event, context):
             "precioSuscripcion": taller.get("precioSuscripcion"),
             "mesesCargo": taller.get("mesesCargo"),
             "diasPrueba": taller.get("diasPrueba"),
-            "fechaSuscripcion": f_suscripcion
+            "fechaSuscripcion": f_suscripcion,
+            "usuarios": taller.get("usuarios"),
+            "sucursales": taller.get("sucursales"),
+            "openpayClabe": taller.get("openpayClabe", "")
         })
 
     except Exception as e:
@@ -298,8 +346,28 @@ def update_taller_handler(event, context):
             "precioSuscripcion": body.get("precioSuscripcion"),
             "mesesCargo": body.get("mesesCargo"),
             "diasPrueba": body.get("diasPrueba"),
+            "vendedor": body.get("vendedor"),
+            "usuarios": body.get("usuarios"),
+            "sucursales": body.get("sucursales"),
             "updatedAt": datetime.utcnow()
         }
+
+        # Helper to parse dates from frontend
+        def parse_date(val):
+            if not val:
+                return None
+            try:
+                cleaned = val.replace("Z", "+00:00")
+                if len(cleaned) == 10:
+                    cleaned += "T00:00:00+00:00"
+                return datetime.fromisoformat(cleaned).replace(tzinfo=None)
+            except Exception:
+                return None
+
+        if "proximaFechaCorte" in body:
+            update_data["proximaFechaCorte"] = parse_date(body["proximaFechaCorte"])
+        if "proximaFechaPago" in body:
+            update_data["proximaFechaPago"] = parse_date(body["proximaFechaPago"])
 
         # Eliminar Nones para no sobreescribir con vacío si no se enviaron
         update_data = {k: v for k, v in update_data.items() if v is not None}

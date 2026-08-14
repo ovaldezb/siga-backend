@@ -552,24 +552,21 @@ def _gasto_fijo_filter_rango(meses, sucursal_id):
     pares = [{"year": int(y), "month": int(m)} for (y, m) in meses]
     q = {"$or": pares} if pares else {"_id": None}
     if sucursal_id:
-        q = {"$and": [q, {"$or": [
-            {"sucursal_id": sucursal_id},
-            {"sucursal_id": None},
-            {"sucursal_id": {"$exists": False}},
-        ]}]}
+        q = {"$and": [q, {"sucursal_id": sucursal_id}]}
     return q
 
 
 def _gasto_fijo_filter(year, month, sucursal_id):
-    """Query para encontrar instancias del mes. Si pides sucursal_id incluye también
-    los gastos generales (sucursal_id None) para no esconderlos."""
+    """Query para encontrar instancias del mes.
+
+    El gasto fijo pertenece a UNA sucursal: la renta de una sucursal no es gasto de
+    la otra. Antes se incluían también los de `sucursal_id` nulo/ausente como
+    "gastos generales", pero como la UI nunca mandaba la sucursal al capturar,
+    todos nacían nulos y cada sucursal terminaba viendo los gastos de la otra.
+    """
     q = {"year": int(year), "month": int(month)}
     if sucursal_id:
-        q['$or'] = [
-            {"sucursal_id": sucursal_id},
-            {"sucursal_id": None},
-            {"sucursal_id": {"$exists": False}},
-        ]
+        q["sucursal_id"] = sucursal_id
     return q
 
 
@@ -801,15 +798,11 @@ def delete_gasto_fijo_mes_handler(event, context):
 # ----------------------------------------------------------------------------
 
 def _gasto_variable_filter(year, month, sucursal_id):
-    """Query por mes. Si pides sucursal_id incluye también los gastos generales
-    (sucursal_id None/ausente) para no esconderlos."""
+    """Query por mes, acotada a la sucursal (mismo criterio que los gastos fijos:
+    el gasto es de quien lo eroga, no del taller entero)."""
     q = {"year": int(year), "month": int(month)}
     if sucursal_id:
-        q['$or'] = [
-            {"sucursal_id": sucursal_id},
-            {"sucursal_id": None},
-            {"sucursal_id": {"$exists": False}},
-        ]
+        q["sucursal_id"] = sucursal_id
     return q
 
 
@@ -992,7 +985,7 @@ def get_resumen_mensual_handler(event, context):
             'items': 1, 'subtotal': 1, 'iva': 1, 'total': 1, 'descuento': 1,
             'orden_id': 1, 'sucursal_id': 1, 'createdAt': 1, 'estado': 1,
             'vehiculo_snapshot': 1, 'metodo_pago': 1, 'pagos': 1,
-            'saldo_pendiente': 1, 'usuario_nombre': 1,
+            'saldo_pendiente': 1, 'usuario_nombre': 1, 'venta_facturada': 1,
         }))
 
         # Contexto operativo (vehículo, OS, cotización, cita, pago) para que el
@@ -1042,6 +1035,7 @@ def get_resumen_mensual_handler(event, context):
                 'margen': round(margen, 2),
                 'margen_pct': round((margen / sub * 100), 2) if sub > 0 else 0.0,
                 'fecha': fecha_iso,
+                'venta_facturada': bool(v.get('venta_facturada', False)),
                 # Contexto de ubicación (vehículo, OS/cotización/cita, pago, quién cobró)
                 **{k: ctx.get(k) for k in (
                     'orden_folio', 'orden_estado', 'falla_reportada', 'mecanico',
@@ -1157,11 +1151,7 @@ def get_resumen_mensual_handler(event, context):
             # En rango filtramos por la fecha real del gasto, no por year/month.
             filtro_var = {"fecha": {"$gte": desde, "$lt": hasta_excl}}
             if sucursal_id:
-                filtro_var['$or'] = [
-                    {"sucursal_id": sucursal_id},
-                    {"sucursal_id": None},
-                    {"sucursal_id": {"$exists": False}},
-                ]
+                filtro_var["sucursal_id"] = sucursal_id
         else:
             filtro_var = _gasto_variable_filter(year, month, sucursal_id)
         for d in db.gastos_variables.find(filtro_var):

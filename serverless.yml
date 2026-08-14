@@ -122,6 +122,7 @@ custom:
     dockerizePip: true
     # Adelgaza el paquete (quita .pyc, __pycache__, tests) => cold start más rápido.
     slim: true
+    cacheLocation: .serverless-cache
     layer:
       name: ${self:service}-${self:provider.stage}-lib
       description: Python requirements layer
@@ -148,6 +149,8 @@ package:
     - '!node_modules/**'
     - '!tests/**'
     - '!.venv/**'
+    - '!.serverless-cache/**'
+    - '!.pytest_cache/**'
     - '!package.json'
     - '!package-lock.json'
     - '!requirements.txt'
@@ -289,6 +292,15 @@ functions:
           authorizer:
             name: cognitoAuthorizer
 
+  openpay_webhook:
+    handler: src/handlers/admin/pagos_manager.openpay_webhook_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /public/webhooks/openpay
+          method: post
+
   certificados_create:
     handler: src/handlers/facturacion/certificates_manager.create_certificate_handler
     layers:
@@ -330,6 +342,17 @@ functions:
       - httpApi:
           path: /certificados/{id}
           method: delete
+          authorizer:
+            name: cognitoAuthorizer
+
+  factura_timbrar:
+    handler: src.handlers.facturacion.factura_manager.timbrar_factura_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /timbrar-factura
+          method: post
           authorizer:
             name: cognitoAuthorizer
 
@@ -631,6 +654,17 @@ functions:
       - httpApi:
           path: /talleres/{id}/logo
           method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  search_sat_catalogos:
+    handler: src/handlers/catalogos/sat_manager.search_sat_catalogos_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /catalogos/sat/{tipoBusqueda}
+          method: get
           authorizer:
             name: cognitoAuthorizer
 
@@ -1156,6 +1190,17 @@ functions:
           authorizer:
             name: cognitoAuthorizer
 
+  sucursales_get:
+    handler: src/handlers/sucursales/sucursales_manager.get_sucursal_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /sucursales/{id}
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
   sucursales_update:
     handler: src/handlers/sucursales/sucursales_manager.update_sucursal_handler
     layers:
@@ -1350,6 +1395,17 @@ functions:
     events:
       - httpApi:
           path: /ventas
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  get_venta_by_id:
+    handler: src.handlers.ventas.ventas_manager.get_venta_by_id_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /ventas/{id}
           method: get
           authorizer:
             name: cognitoAuthorizer

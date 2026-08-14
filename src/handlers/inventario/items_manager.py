@@ -164,7 +164,9 @@ def create_item_handler(event, context):
                 "maneja_inventario": body.get('maneja_inventario', True),
                 "stock": to_int(body.get('stock')),
                 "clave_sat": body.get('clave_sat'),
-                "unidad_sat": body.get('unidad_sat')
+                "unidad_sat": body.get('unidad_sat'),
+                "descripcion_clave_sat": body.get('descripcion_clave_sat'),
+                "descripcion_unidad_sat": body.get('descripcion_unidad_sat')
             })
         else: # SERVICIO
             nuevo_item.update({
@@ -348,8 +350,8 @@ def update_item_handler(event, context):
             "precio_taller", "precio_cliente", "precio_distribuidor",
             "precio_compra", "costo_promedio", "precio_incluye_iva", "iva_exento",
             "categoria", "marca", "proveedor", "proveedor_id",
-            "clave_sat", "unidad_sat", "maneja_inventario", "activo", "icon",
-            "sucursal_id"
+            "clave_sat", "unidad_sat", "descripcion_clave_sat", "descripcion_unidad_sat",
+            "maneja_inventario", "activo", "icon", "sucursal_id"
         }
 
         # Mapear IDs
@@ -357,8 +359,15 @@ def update_item_handler(event, context):
             body['sucursal_id'] = body.pop('sucursalId')
         if 'proveedorId' in body:
             body['proveedor_id'] = body.pop('proveedorId')
+        if 'descripcionClaveSat' in body:
+            body['descripcion_clave_sat'] = body.pop('descripcionClaveSat')
+        if 'descripcionUnidadSat' in body:
+            body['descripcion_unidad_sat'] = body.pop('descripcionUnidadSat')
 
-        update_data = {k: body[k] for k in allowed if k in body}
+        update_data = {}
+        for k in allowed:
+            if k in body:
+                update_data[k] = body[k]
 
         if not update_data:
             return create_response(400, "No hay campos válidos para actualizar.")

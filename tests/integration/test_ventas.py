@@ -1,7 +1,7 @@
 """Smoke tests del flujo de ventas (POS y desde OS) — auditoría #6 fase 1."""
 import json
 from bson import ObjectId
-from src.handlers.ventas.ventas_manager import create_venta_handler
+from src.handlers.ventas.ventas_manager import create_venta_handler, get_venta_by_id_handler
 
 
 SUCURSAL_A = "suc-a"
@@ -31,7 +31,7 @@ def _seed_item(db, *, sucursal_id=SUCURSAL_A, stock=10, precio=116.0, costo=50.0
 
 def _venta_event(item_id, *, sucursal_id=SUCURSAL_A, cantidad=1, precio=116.0,
                  cliente_id="PUBLICO_GENERAL", metodo_pago="EFECTIVO",
-                 orden_id=None, pagos=None):
+                 orden_id=None, pagos=None, forma_pago_sat="01"):
     body = {
         "sucursal_id": sucursal_id,
         "cliente_id": cliente_id,
@@ -41,7 +41,8 @@ def _venta_event(item_id, *, sucursal_id=SUCURSAL_A, cantidad=1, precio=116.0,
             "precio_unitario": precio,
         }],
         "metodo_pago": metodo_pago,
-        "pagos": pagos or [{"metodo": metodo_pago, "monto": precio * cantidad}],
+        "pagos": pagos or [{"metodo": metodo_pago, "monto": precio * cantidad, "forma_pago_sat": forma_pago_sat}],
+        "forma_pago_sat": forma_pago_sat,
     }
     if orden_id:
         body["orden_id"] = orden_id
@@ -66,6 +67,11 @@ def test_venta_pos_happy_path_descuenta_stock(mock_db):
     assert data["total"] == 232.0
     assert abs(data["subtotal"] - 232.0) < 0.01  # sin IVA: subtotal == total
     assert data["iva"] == 0
+
+    venta_doc = db["ventas"].find_one({"folio": data["folio"]})
+    assert venta_doc["venta_facturada"] is False
+    assert venta_doc["forma_pago_sat"] == "01"
+    assert venta_doc["pagos"][0]["forma_pago_sat"] == "01"
 
     item = db["items"].find_one({"_id": ObjectId(item_id)})
     assert item["stock"] == 8
@@ -141,3 +147,28 @@ def test_venta_sin_items_rechaza(mock_db):
     resp = create_venta_handler(evt, None)
     assert resp["statusCode"] == 400
     assert "al menos un item" in json.loads(resp["body"])["message"]
+
+
+def test_get_venta_by_id(mock_db):
+    """Obtención de venta individual por ID."""
+    db = mock_db[f"t_{TENANT}"]
+    item_id = _seed_item(db, stock=10)
+
+    # 1. Crear venta
+    resp_create = create_venta_handler(_venta_event(item_id, cantidad=2, precio=100.0), None)
+    assert resp_create["statusCode"] == 201
+    venta_id = json.loads(resp_create["body"])["data"]["id"]
+
+    # 2. Get por ID
+    evt = {
+        "pathParameters": {"id": venta_id},
+        "requestContext": {"authorizer": {"claims": _claims()}},
+    }
+    resp_get = get_venta_by_id_handler(evt, None)
+    assert resp_get["statusCode"] == 200
+
+    data = json.loads(resp_get["body"])["data"]
+    assert data["id"] == venta_id
+    assert data["total"] == 200.0
+    assert len(data["items"]) == 1
+    assert data["items"][0]["producto"]["id"] == item_id
