@@ -57,6 +57,15 @@ def capture_with_event(exc: BaseException, event: Optional[Dict[str, Any]] = Non
     except ImportError:
         return
 
+    # El reporte a Sentry nunca puede tumbar la respuesta ni el log del error:
+    # si el SDK falla (red, config, versión), seguimos como si no existiera.
+    try:
+        _capture(sentry_sdk, exc, event)
+    except Exception:  # noqa: BLE001 — reportar errores no puede generar errores
+        pass
+
+
+def _capture(sentry_sdk, exc: BaseException, event: Optional[Dict[str, Any]]) -> None:
     with sentry_sdk.new_scope() as scope:
         claims = (
             (event or {})
