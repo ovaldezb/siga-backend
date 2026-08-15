@@ -170,6 +170,258 @@ def _stamp_manual_decisions(puntos_nuevos, puntos_anteriores, claims) -> list:
     return puntos_nuevos
 
 
+# ---------------------------------------------------------------------------
+# Inventario: una pieza sale del almacén UNA sola vez
+# ---------------------------------------------------------------------------
+# Regla del sistema: la salida física manda. Cuando el asesor marca una línea de
+# la OS como "entregado", esa pieza YA salió del anaquel y se descuenta aquí, al
+# guardar la orden. El POS (ventas_manager) respeta ese descuento y no lo repite:
+# lee `inventario_descontado_piezas` de cada línea y sólo descuenta el faltante.
+# Antes ambos flujos descontaban por su cuenta y el stock bajaba doble.
+#
+# `linea_id` es la identidad estable de cada línea de la OS: sin él, emparejar la
+# versión guardada contra la entrante dependía del orden del arreglo y borrar un
+# item intermedio recorría los índices, atribuyendo el descuento a otra pieza.
+
+def _ensure_linea_ids(puntos, marcar_sin_consumo: bool = False) -> list:
+    """Estampa un `linea_id` estable en toda línea que no lo traiga. Idempotente.
+
+    `marcar_sin_consumo` se usa al crear la OS: deja explícito que la línea nace
+    sin haber sacado nada del almacén. Es lo que distingue una línea nueva de una
+    histórica (sin el campo), cuyo `entregado` sí implica un descuento ya aplicado.
+    """
+    import uuid
+    for punto in (puntos or []):
+        for item in (punto.get("items") or []):
+            if not item.get("linea_id"):
+                item["linea_id"] = uuid.uuid4().hex
+            if marcar_sin_consumo and item.get("inventario_descontado_piezas") is None:
+                item["inventario_descontado_piezas"] = 0
+                item["inventario_descontado"] = False
+    return puntos
+
+
+def _linea_maneja_inventario(db, item: dict, session=None) -> bool:
+    """True si la línea descuenta stock: item del catálogo, físico y con inventario.
+
+    Quedan fuera los servicios (mano de obra), las piezas externas de proveedor y
+    los items con `maneja_inventario:false` (capturas manuales promovidas al
+    catálogo desde una OS), que no tienen existencias que controlar.
+    """
+    item_id = item.get("item_id")
+    if not item_id or item_id == "manual":
+        return False
+    if item.get("es_externo") or item.get("tipo") == "SERVICIO":
+        return False
+    try:
+        doc = db["items"].find_one(
+            {"_id": ObjectId(item_id)}, {"tipo": 1, "maneja_inventario": 1}, session=session)
+    except (InvalidId, TypeError):
+        return False
+    if not doc:
+        return False
+    if doc.get("tipo") == "SERVICIO" or not doc.get("maneja_inventario", True):
+        return False
+    return True
+
+
+def _piezas_ya_descontadas(item: dict) -> int:
+    """Piezas que esta línea ya sacó del inventario, según lo guardado.
+
+    `inventario_descontado_piezas` es la fuente de verdad y toda línea creada por
+    esta versión lo trae (aunque valga 0). Sin ese campo estamos ante una línea
+    escrita antes del fix: si quedó marcada `entregado`, el toggle viejo ya había
+    descontado su stock al vuelo, así que se cuenta como salida hecha. Sin esta
+    compatibilidad, guardar una OS histórica volvería a descontar sus piezas.
+    """
+    if not item:
+        return 0
+    piezas = item.get("inventario_descontado_piezas")
+    if piezas is not None:
+        try:
+            return max(0, int(piezas))
+        except (TypeError, ValueError):
+            return 0
+    if item.get("inventario_descontado") or item.get("entregado"):
+        try:
+            return max(0, int(item.get("piezas") or 0))
+        except (TypeError, ValueError):
+            return 0
+    return 0
+
+
+def _piezas_objetivo(item: dict, cancelar: bool) -> int:
+    """Piezas que DEBEN estar fuera del inventario para esta línea, tras el guardado."""
+    if cancelar:
+        return 0
+    if item.get("rechazado") or item.get("decision") == "rechazado":
+        return 0
+    if not item.get("entregado"):
+        return 0
+    try:
+        return max(0, int(item.get("piezas") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _indexar_lineas(puntos) -> dict:
+    """Mapa linea_id -> línea. Las líneas históricas sin linea_id se indexan por
+    (punto, nombre, noParte) para que su descuento previo no se pierda en el
+    primer guardado que las migra."""
+    mapa = {}
+    for punto in (puntos or []):
+        pn = punto.get("nombre", "")
+        for item in (punto.get("items") or []):
+            lid = item.get("linea_id")
+            if lid:
+                mapa[lid] = item
+            else:
+                mapa[("legacy", pn, item.get("nombre", ""), item.get("noParte", ""))] = item
+    return mapa
+
+
+def _buscar_linea_anterior(old_map: dict, punto_nombre: str, item: dict):
+    """Ubica la versión guardada de una línea: por linea_id, o por su clave legacy."""
+    lid = item.get("linea_id")
+    if lid and lid in old_map:
+        return old_map[lid]
+    return old_map.get(("legacy", punto_nombre, item.get("nombre", ""), item.get("noParte", "")))
+
+
+class StockInsuficienteOSError(Exception):
+    """El almacén no alcanza para surtir una línea marcada como entregada."""
+
+    def __init__(self, mensaje: str):
+        self.mensaje = mensaje
+        super().__init__(mensaje)
+
+
+def _conciliar_inventario_os(
+    db, session, tenant_id: str, orden_id: str, folio: str, sucursal_id: str,
+    puntos_anteriores, puntos_nuevos, claims, cancelar: bool = False,
+    orden_cobrada: bool = False,
+):
+    """Lleva el stock al estado que declaran las líneas de la OS y estampa el consumo.
+
+    Compara lo que cada línea YA sacó del almacén contra lo que debe tener fuera
+    después de este guardado, y aplica sólo la diferencia. Así el guardado es
+    idempotente: reguardar la misma OS no mueve inventario, subir las piezas de una
+    línea entregada saca las que faltan y apagar el toggle (o cancelar la orden, o
+    borrar la línea) las devuelve.
+
+    Corre dentro de la transacción del guardado: si una línea no alcanza a surtirse,
+    revienta y no queda ni la OS guardada ni medio inventario movido.
+    """
+    if not isinstance(puntos_nuevos, list):
+        return []
+
+    usuario_id = claims.get('sub')
+    usuario_nombre = claims.get('name') or claims.get('email')
+    old_map = _indexar_lineas(puntos_anteriores)
+    vistas = set()
+    movimientos = []
+
+    def _aplicar(item_id: str, nombre: str, ajuste: int, concepto: str):
+        """ajuste > 0 saca piezas del almacén; ajuste < 0 las devuelve."""
+        filtro = {"_id": ObjectId(item_id)}
+        if sucursal_id:
+            filtro["sucursal_id"] = sucursal_id
+        if ajuste > 0:
+            filtro["stock"] = {"$gte": ajuste}
+        doc = db["items"].find_one_and_update(
+            filtro,
+            {"$inc": {"stock": -ajuste}, "$set": {"updatedAt": iso_utc()}},
+            return_document=True,
+            session=session,
+        )
+        if not doc:
+            actual = db["items"].find_one({"_id": ObjectId(item_id)}, {"stock": 1}, session=session)
+            disponible = (actual or {}).get("stock", 0)
+            raise StockInsuficienteOSError(
+                f"Stock insuficiente para \"{nombre}\": se requieren {ajuste} y hay {disponible}. "
+                f"Recibe la compra o desmarca la pieza como entregada."
+            )
+        stock_resultante = doc.get("stock", 0)
+        movimientos.append({
+            "tenant_id": tenant_id,
+            "item_id": item_id,
+            "item_nombre": doc.get("nombre") or nombre,
+            "sucursal_id": sucursal_id,
+            "cantidad": -ajuste,
+            "stock_anterior": stock_resultante + ajuste,
+            "stock_resultante": stock_resultante,
+            "concepto": concepto,
+            "referencia_id": orden_id,
+            "referencia_folio": folio,
+            "usuario_id": usuario_id,
+            "usuario_nombre": usuario_nombre,
+            "createdAt": datetime.utcnow(),
+        })
+
+    # 1. Líneas presentes en el guardado entrante.
+    for punto in puntos_nuevos:
+        pn = punto.get("nombre", "")
+        for item in (punto.get("items") or []):
+            anterior = _buscar_linea_anterior(old_map, pn, item)
+            if anterior is not None:
+                lid = anterior.get("linea_id")
+                vistas.add(lid if lid else ("legacy", pn, anterior.get("nombre", ""), anterior.get("noParte", "")))
+
+            ya = _piezas_ya_descontadas(anterior)
+            objetivo = _piezas_objetivo(item, cancelar)
+
+            # Una línea que no controla inventario nunca mueve stock, pero si su
+            # versión anterior sí lo movió (se convirtió a externa/servicio después
+            # de entregarse) hay que devolver lo que sacó.
+            if objetivo > 0 and not _linea_maneja_inventario(db, item, session):
+                objetivo = 0
+
+            # Piso: lo que ya se cobró no se devuelve editando la orden. Esa pieza
+            # se le vendió al cliente; desmarcar el toggle (o cancelar una OS ya
+            # cobrada) no la regresa al anaquel — eso inflaría el inventario. La
+            # devolución de una pieza vendida es una nota de crédito, no un toggle.
+            if orden_cobrada or (anterior or {}).get("inventario_descontado_por") == "VENTA":
+                objetivo = max(objetivo, ya)
+
+            ajuste = objetivo - ya
+            if ajuste != 0:
+                item_id = item.get("item_id") or (anterior or {}).get("item_id")
+                if item_id and item_id != "manual":
+                    concepto = "CONSUMO_OS" if ajuste > 0 else "DEVOLUCION_OS"
+                    _aplicar(item_id, item.get("nombre", "item"), ajuste, concepto)
+                else:
+                    # Sin item de catálogo no hay stock que mover: el contador se
+                    # queda como estaba para no declarar una salida inexistente.
+                    objetivo = ya
+
+            item["inventario_descontado_piezas"] = objetivo
+            item["inventario_descontado"] = objetivo > 0
+            # Quién sacó la pieza lo decide lo ya guardado, no lo que mande el
+            # cliente: una línea cobrada en POS sigue siendo consumo de la venta.
+            origen_previo = (anterior or {}).get("inventario_descontado_por")
+            if objetivo > 0:
+                item["inventario_descontado_por"] = origen_previo or "OS"
+            else:
+                item.pop("inventario_descontado_por", None)
+
+    # 2. Líneas que estaban guardadas y ya no vienen: se borraron de la OS. Lo que
+    #    hayan sacado del almacén regresa.
+    for clave, anterior in old_map.items():
+        if clave in vistas:
+            continue
+        ya = _piezas_ya_descontadas(anterior)
+        if ya <= 0 or orden_cobrada or anterior.get("inventario_descontado_por") == "VENTA":
+            continue
+        item_id = anterior.get("item_id")
+        if item_id and item_id != "manual":
+            _aplicar(item_id, anterior.get("nombre", "item"), -ya, "DEVOLUCION_OS")
+
+    if movimientos:
+        db["inventario_movimientos"].insert_many(movimientos, session=session)
+
+    return movimientos
+
+
 def _ensure_folio_index(db) -> None:
     """Asegura el índice único en (folio) para ordenes_servicio. Idempotente."""
     try:
@@ -370,6 +622,11 @@ def create_orden_handler(event, context):
             "createdAt": datetime.utcnow(),
             "updatedAt": datetime.utcnow()
         }
+        # Identidad estable por línea desde el nacimiento de la OS: es la llave con
+        # la que el guardado concilia inventario y con la que el POS sabe qué
+        # piezas ya salieron del almacén.
+        _ensure_linea_ids(orden_doc["puntosArreglar"], marcar_sin_consumo=True)
+
         # Calcular subtotal/total server-side (sin IVA; `iva` siempre 0)
         _totales = _calcular_totales_orden(orden_doc.get("puntosArreglar", []))
         orden_doc["subtotal"] = _totales["subtotal"]
@@ -1049,10 +1306,45 @@ def update_orden_handler(event, context):
 
         update_data['updatedAt'] = datetime.utcnow()
 
+        # CONCILIACIÓN DE INVENTARIO — las piezas marcadas "entregado" salen del
+        # almacén aquí, al guardar, y sólo por la diferencia contra lo que ya
+        # habían sacado. Cancelar la orden devuelve todo lo consumido.
+        cancelar_os = (nuevo_estado == 'CANCELADO' and nuevo_estado != orden_actual.get('estado'))
+        puntos_a_conciliar = update_data.get('puntosArreglar')
+        if puntos_a_conciliar is None and cancelar_os:
+            # Cancelación desde el listado: no manda items, pero hay que devolver
+            # lo que la OS ya se había llevado.
+            puntos_a_conciliar = orden_actual.get('puntosArreglar', [])
+
         update_doc = {"$set": update_data}
         if bitacora_push:
             update_doc["$push"] = {"bitacora_estados": bitacora_push}
-        db["ordenes_servicio"].update_one({"_id": ObjectId(orden_id)}, update_doc)
+
+        if puntos_a_conciliar is not None:
+            _ensure_linea_ids(puntos_a_conciliar)
+            sucursal_os = update_data.get('sucursal_id') or orden_actual.get('sucursal_id')
+            client = MongoDBConnection.get_client()
+            try:
+                with client.start_session() as session:
+                    with session.start_transaction():
+                        _conciliar_inventario_os(
+                            db, session, tenant_id, orden_id,
+                            orden_actual.get('folio', ''), sucursal_os,
+                            orden_actual.get('puntosArreglar', []), puntos_a_conciliar,
+                            claims, cancelar=cancelar_os,
+                            orden_cobrada=bool(orden_actual.get('venta_id')),
+                        )
+                        # Los flags de consumo se estamparon sobre las líneas: se
+                        # persisten en el mismo commit que movió el stock.
+                        update_data['puntosArreglar'] = puntos_a_conciliar
+                        update_doc["$set"] = update_data
+                        db["ordenes_servicio"].update_one(
+                            {"_id": ObjectId(orden_id)}, update_doc, session=session)
+            except StockInsuficienteOSError as stock_err:
+                logger.warning(f"OS {orden_id} no guardada por inventario: {stock_err.mensaje}")
+                return create_response(409, stock_err.mensaje)
+        else:
+            db["ordenes_servicio"].update_one({"_id": ObjectId(orden_id)}, update_doc)
 
         # Sincronizar la cita ligada cuando la OS llega a un estado terminal
         # (FINALIZADO/ENTREGADO/CANCELADO) para que no quede clavada en "en proceso".
