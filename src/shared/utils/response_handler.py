@@ -94,6 +94,12 @@ def handle_exception(e: Exception, event: Optional[Dict[str, Any]] = None) -> Di
         logger.warning(f"Client error: {type(e).__name__}: {str(e)}")
         return create_response(400, f"Solicitud inválida: {str(e)}")
 
-    logger.exception(f"An error occurred: {str(e)}")
+    # ORDEN IMPORTANTE — no invertir. Sentry recibe el error por DOS caminos: este
+    # capture explícito (que adjunta tenant_id / usuario / api.path) y, de rebote,
+    # la integración de logging al ejecutar `logger.exception`. El SDK deduplica
+    # por excepción y se queda con el PRIMERO: si el logger va antes, el evento
+    # que llega a Sentry es el suyo, sin un solo tag, y en un backend multi-tenant
+    # eso significa ver el error sin saber de qué taller viene.
     sentry_init.capture_with_event(e, event)
+    logger.exception(f"An error occurred: {str(e)}")
     return create_response(500, "Ha ocurrido un error interno en el servidor.")

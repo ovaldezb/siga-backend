@@ -69,6 +69,28 @@ jobs:
       - name: Parse and Load .env
         run: |
           echo "${{ secrets.ENV_FILE_PROD }}" > .env
+
+          # Sentry — se appendea DESPUÉS del bundle y ANTES del bucle de $GITHUB_ENV.
+          # El orden importa: al final del .env estas líneas ganan sobre las del
+          # bundle (dotenv se queda con la última ocurrencia) y el bucle de abajo
+          # exporta ese mismo valor a $GITHUB_ENV, que es lo que acaba leyendo
+          # `useDotenv` de serverless. Appendear después del bucle dejaría el .env
+          # con el DSN bueno pero el proceso con el vacío: Sentry seguiría mudo.
+          # Vive fuera de ENV_FILE_PROD para poder rotar el DSN sin reeditar el
+          # bundle completo (mismo criterio que en deploy-dev.yml).
+          # Sin el secret no se appendea nada y Sentry queda no-op, igual que hoy.
+          if [ -n "${{ secrets.SENTRY_DSN }}" ]; then
+            echo "SENTRY_DSN=${{ secrets.SENTRY_DSN }}" >> .env
+            echo "SENTRY_ENVIRONMENT=production" >> .env
+            # Plan free: la cuota de performance (transacciones) es aparte de la de
+            # errores y se agota rápido. Arrancamos en 0 = sin tracing, sólo errores.
+            # Si algún día quieren performance, se sube con la variable de repo.
+            echo "SENTRY_TRACES_SAMPLE_RATE=${{ vars.SENTRY_TRACES_SAMPLE_RATE || '0' }}" >> .env
+            echo "Sentry: DSN inyectado (environment=production)."
+          else
+            echo "Sentry: sin secret SENTRY_DSN — el SDK queda deshabilitado."
+          fi
+
           # Opcional: Inyectar las variables directamente al entorno de GitHub Actions (por si otro script las necesita)
           while IFS= read -r line || [ -n "$line" ]; do
             if [[ -n "$line" && "$line" != \#* ]]; then

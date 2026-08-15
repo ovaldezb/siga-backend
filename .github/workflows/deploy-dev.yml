@@ -79,6 +79,9 @@ jobs:
           fi
           if [ -n "${{ secrets.SENTRY_DSN }}" ]; then
             echo "SENTRY_DSN=${{ secrets.SENTRY_DSN }}" >> .env
+            # Explícito para que los errores de dev no se mezclen con los de prod
+            # en el mismo proyecto de Sentry (prod manda 'production').
+            echo "SENTRY_ENVIRONMENT=development" >> .env
           fi
           if [ -n "${{ vars.SENTRY_TRACES_SAMPLE_RATE }}" ]; then
             echo "SENTRY_TRACES_SAMPLE_RATE=${{ vars.SENTRY_TRACES_SAMPLE_RATE }}" >> .env
