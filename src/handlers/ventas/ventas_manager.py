@@ -348,7 +348,12 @@ def create_venta_handler(event, context):
                     "subtotal_linea": base_ln,
                     "iva_linea": iva_ln,
                     "total_linea": total_ln,
-                    "afecta_inventario": False
+                    "afecta_inventario": False,
+                    # Esta línea YA está reflejada en el costo de venta vía
+                    # costo_unitario_snapshot del item externo en la venta. La compra existe
+                    # sólo para la CxP al proveedor y su IVA acreditable; contarla otra vez
+                    # como gasto operativo duplicaría el egreso en el P&L.
+                    "en_costo_venta": True
                 })
 
             subtotal_compra = round(base_compra, 2)
@@ -370,6 +375,9 @@ def create_venta_handler(event, context):
                 "abonos": [],
                 "estado": "RECIBIDA",
                 "notas": f"Generada automáticamente desde OS {body.get('folio_orden', 'N/A')} vinculada a Venta {folio}",
+                # Marca de origen: el P&L usa esto para no volver a restar el costo que ya
+                # viene descontado en la venta (ver contabilidad_manager.get_resumen_mensual).
+                "origen": "VENTA_OS",
                 "orden_id": orden_id,
                 "tenant_id": tenant_id,
                 "createdAt": created_at,
