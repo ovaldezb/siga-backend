@@ -88,6 +88,9 @@ provider:
     SW_USER_NAME: ${env:SW_USER_NAME, ''}
     SW_USER_PASSWORD: ${env:SW_USER_PASSWORD, ''}
     SW_URL: ${env:SW_URL, ''}
+    OPENPAY_MERCHANT_ID: ${env:OPENPAY_MERCHANT_ID, ''}
+    OPENPAY_PRIVATE_KEY: ${env:OPENPAY_PRIVATE_KEY, ''}
+    OPENPAY_PRODUCTION_MODE: ${env:OPENPAY_PRODUCTION_MODE, 'false'}
   httpApi:
     payload: '1.0'
     cors: true

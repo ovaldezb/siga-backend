@@ -115,6 +115,63 @@ def create_venta_handler(event, context):
         # 3. FOLIO SECUENCIAL (MongoDB atómico, no UUID)
         folio = _get_next_folio_internal(tenant_id, "venta", sucursal_id)
 
+        # 3.4 PIEZAS QUE LA OS YA SACÓ DEL ALMACÉN
+        #     Regla del sistema: una pieza sale del inventario una sola vez. Si el
+        #     asesor marcó la línea como "entregado" en la OS, ordenes_manager ya
+        #     descontó ese stock al guardar; cobrarla aquí NO puede volver a
+        #     descontarla. Se resuelve contra la OS —no contra lo que mande el
+        #     front— para que el POS no dependa de flags manipulables.
+        os_doc_inventario = None
+        surtido_por_linea: dict[str, int] = {}
+        surtido_por_item: dict[str, int] = {}
+        if orden_id:
+            try:
+                os_doc_inventario = db["ordenes_servicio"].find_one(
+                    {"_id": ObjectId(orden_id)}, {"puntosArreglar": 1})
+            except (InvalidId, TypeError):
+                os_doc_inventario = None
+        for punto in (os_doc_inventario or {}).get('puntosArreglar', []) or []:
+            for linea in (punto.get('items') or []):
+                piezas = linea.get('inventario_descontado_piezas')
+                if piezas is None and linea.get('inventario_descontado'):
+                    piezas = linea.get('piezas') or 0
+                try:
+                    piezas = max(0, int(piezas or 0))
+                except (TypeError, ValueError):
+                    piezas = 0
+                if piezas <= 0:
+                    continue
+                if linea.get('linea_id'):
+                    surtido_por_linea[linea['linea_id']] = surtido_por_linea.get(linea['linea_id'], 0) + piezas
+                # Acumulado por item: red de seguridad para carritos que no
+                # arrastran linea_id (OS previas a este campo, importaciones viejas).
+                if linea.get('item_id'):
+                    surtido_por_item[linea['item_id']] = surtido_por_item.get(linea['item_id'], 0) + piezas
+
+        def _consumir_surtido(item: dict, item_id: str, cantidad: int) -> int:
+            """Cuántas piezas de esta línea del carrito faltan por descontar.
+
+            Descuenta del saldo ya surtido por la OS (por línea si el carrito la
+            identifica; si no, del acumulado por item) y devuelve el remanente que
+            sí debe salir del almacén al cobrar.
+            """
+            if cantidad <= 0:
+                return 0
+            restante = cantidad
+            linea_id = item.get('linea_id')
+            if linea_id and surtido_por_linea.get(linea_id):
+                usado = min(restante, surtido_por_linea[linea_id])
+                surtido_por_linea[linea_id] -= usado
+                if item_id and surtido_por_item.get(item_id):
+                    surtido_por_item[item_id] = max(0, surtido_por_item[item_id] - usado)
+                restante -= usado
+            elif not linea_id and item_id and surtido_por_item.get(item_id):
+                usado = min(restante, surtido_por_item[item_id])
+                surtido_por_item[item_id] -= usado
+                restante -= usado
+            item['piezas_surtidas_en_os'] = cantidad - restante
+            return restante
+
         # 3.5 VALIDAR STOCK ATÓMICAMENTE ANTES DE PROCESAR + SNAPSHOT COSTO POR LÍNEA
         for item in items:
             producto = item.get('producto', {})
@@ -143,7 +200,11 @@ def create_venta_handler(event, context):
                          # para que el paso 5 tampoco intente descontar.
                          maneja_inv = p.get('maneja_inventario', True)
                          if maneja_inv:
-                             if p.get('stock', 0) < cantidad:
+                             # Sólo se valida (y luego se descuenta) lo que la OS no
+                             # haya sacado ya del almacén.
+                             cantidad_neta = _consumir_surtido(item, item_id, cantidad)
+                             item['piezas_a_descontar'] = cantidad_neta
+                             if cantidad_neta > 0 and p.get('stock', 0) < cantidad_neta:
                                   return create_response(400, f"Stock insuficiente para {producto.get('nombre')}. Disponible: {p.get('stock', 0)}")
                          else:
                              item['no_inventario'] = True
@@ -334,6 +395,12 @@ def create_venta_handler(event, context):
                     #    {"stock": {"$gte": cantidad}} no se cumple ⇒ otro flow se llevó el stock
                     #    entre validación y descuento. Abortamos toda la venta.
                     movimientos_inventario = []
+                    # Piezas que sale del almacén ESTA venta, atribuidas a la línea
+                    # de la OS que las originó. Se estampan en la OS (paso 6) para
+                    # que reabrir la orden y marcarlas "entregado" no las descuente
+                    # por segunda vez.
+                    surtido_en_venta_linea: dict[str, int] = {}
+                    surtido_en_venta_item: dict[str, int] = {}
                     for item in items:
                         producto = item.get('producto', {})
                         item_id = producto.get('id')
@@ -343,6 +410,11 @@ def create_venta_handler(event, context):
                                             or producto.get('tipo') == 'SERVICIO'
                                             or item.get('no_inventario'))
                         if is_manual_or_ext:
+                            continue
+                        # Lo que la OS ya surtió no vuelve a salir del almacén: aquí
+                        # sólo se descuenta el remanente calculado en 3.4/3.5.
+                        cantidad = int(item.get('piezas_a_descontar', cantidad))
+                        if cantidad <= 0:
                             continue
                         # find_one_and_update con return_document=True devuelve el doc YA
                         # actualizado, así obtenemos el stock resultante para la bitácora.
@@ -358,6 +430,12 @@ def create_venta_handler(event, context):
                                 f"(carrera con otra venta). Venta abortada."
                             )
                         stock_resultante = item_actualizado.get('stock', 0)
+                        if item.get('linea_id'):
+                            surtido_en_venta_linea[item['linea_id']] = (
+                                surtido_en_venta_linea.get(item['linea_id'], 0) + cantidad)
+                        else:
+                            surtido_en_venta_item[item_id] = (
+                                surtido_en_venta_item.get(item_id, 0) + cantidad)
                         movimientos_inventario.append({
                             "tenant_id": tenant_id,
                             "item_id": item_id,
@@ -416,12 +494,50 @@ def create_venta_handler(event, context):
                         fecha_cierre_iso = iso_utc(created_at)
                         os_actual = db["ordenes_servicio"].find_one(
                             {"_id": ObjectId(orden_id)},
-                            {"bitacora_estados.estado": 1},
+                            {"bitacora_estados.estado": 1, "puntosArreglar": 1},
                             session=session,
                         )
                         estados_existentes = {
                             b.get("estado") for b in (os_actual or {}).get("bitacora_estados", [])
                         }
+
+                        # Estampar en la OS las piezas que esta venta sacó del almacén.
+                        # Sin esto, una línea cobrada en POS y marcada "entregado"
+                        # después en la OS volvería a descontar stock al guardarla.
+                        if surtido_en_venta_linea or surtido_en_venta_item:
+                            puntos_os = (os_actual or {}).get("puntosArreglar", []) or []
+                            tocado = False
+                            for punto in puntos_os:
+                                for linea in (punto.get("items") or []):
+                                    lid = linea.get("linea_id")
+                                    iid = linea.get("item_id")
+                                    piezas_venta = 0
+                                    if lid and surtido_en_venta_linea.get(lid):
+                                        piezas_venta = surtido_en_venta_linea.pop(lid)
+                                    elif iid and surtido_en_venta_item.get(iid):
+                                        # Sin linea_id sólo se puede atribuir por item;
+                                        # se consume hasta las piezas de esta línea.
+                                        try:
+                                            tope = max(0, int(linea.get("piezas") or 0))
+                                        except (TypeError, ValueError):
+                                            tope = 0
+                                        piezas_venta = min(tope, surtido_en_venta_item[iid])
+                                        surtido_en_venta_item[iid] -= piezas_venta
+                                    if piezas_venta <= 0:
+                                        continue
+                                    previas = linea.get("inventario_descontado_piezas")
+                                    if previas is None:
+                                        previas = linea.get("piezas", 0) if linea.get("inventario_descontado") else 0
+                                    try:
+                                        previas = max(0, int(previas or 0))
+                                    except (TypeError, ValueError):
+                                        previas = 0
+                                    linea["inventario_descontado_piezas"] = previas + piezas_venta
+                                    linea["inventario_descontado"] = True
+                                    linea["inventario_descontado_por"] = "VENTA"
+                                    tocado = True
+                            if tocado:
+                                os_update["puntosArreglar"] = puntos_os
                         nuevas_entradas = []
                         if "FINALIZADO" not in estados_existentes:
                             nuevas_entradas.append({
