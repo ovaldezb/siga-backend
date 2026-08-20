@@ -1061,19 +1061,54 @@ def get_resumen_mensual_handler(event, context):
             'sucursal_id': 1, 'createdAt': 1, 'fecha_factura': 1, 'estado': 1,
             'notas': 1, 'referencia_proveedor': 1, 'metodo_pago': 1,
             'saldo_pendiente': 1, 'usuario_nombre': 1,
+            'origen': 1, 'venta_id': 1, 'orden_id': 1,
         }))
 
         gastos_variables = 0.0       # subtotal (base sin IVA) de líneas sin inventario
         iva_acreditable = 0.0        # iva de todas las compras del mes (incluye inventario)
         compras_inventario_base = 0.0  # base de líneas con inventario (no es gasto del mes, va a inventario)
+        # Base de refacciones externas compradas a proveedor para una OS: ya está restada
+        # como costo de venta, aquí sólo se publica para trazabilidad (no resta otra vez).
+        compras_costo_venta_base = 0.0
         gastos_variables_detalle = []
+        compras_costo_venta_detalle = []
 
         for c in compras:
             iva_acreditable += float(c.get('iva') or 0)
+            # Compra auto-generada al cerrar una venta con items externos: su costo ya viajó
+            # a `costo_venta` vía costo_unitario_snapshot de la venta. `venta_id` sólo lo
+            # estampa ventas_manager, así que sirve de marca retro-compatible con las
+            # compras creadas antes de que existiera `origen`.
+            es_de_venta = c.get('origen') == 'VENTA_OS' or bool(c.get('venta_id'))
             for ln in c.get('items') or []:
                 base_ln = float(ln.get('subtotal_linea') or 0)
                 iva_ln = float(ln.get('iva_linea') or 0)
-                if not ln.get('afecta_inventario'):
+                if not ln.get('afecta_inventario') and (es_de_venta or ln.get('en_costo_venta')):
+                    # Doble conteo evitado: no suma a gastos_variables. El IVA sí quedó
+                    # acumulado arriba porque la factura del proveedor es real.
+                    compras_costo_venta_base += base_ln
+                    fecha_iso = c.get('createdAt')
+                    if isinstance(fecha_iso, datetime):
+                        fecha_iso = iso_utc(fecha_iso)
+                    prov_snap = c.get('proveedor_snapshot') or {}
+                    compras_costo_venta_detalle.append({
+                        'compra_id': str(c.get('_id')),
+                        'folio': c.get('folio'),
+                        'proveedor': prov_snap.get('nombre'),
+                        'proveedor_id': c.get('proveedor_id'),
+                        'concepto': ln.get('nombre') or 'Refacción externa',
+                        'cantidad': ln.get('cantidad'),
+                        'base': round(base_ln, 2),
+                        'iva': round(iva_ln, 2),
+                        'total': round(base_ln + iva_ln, 2),
+                        'fecha': fecha_iso,
+                        'orden_id': c.get('orden_id'),
+                        'venta_id': c.get('venta_id'),
+                        'saldo_pendiente': round(float(c.get('saldo_pendiente') or 0), 2),
+                        'no_parte': ln.get('no_parte'),
+                        'costo_unitario': round(float(ln.get('costo_unitario') or 0), 2),
+                    })
+                elif not ln.get('afecta_inventario'):
                     # Gasto puro: cuenta como egreso variable del mes
                     gastos_variables += base_ln
                     fecha_iso = c.get('createdAt')
@@ -1199,6 +1234,10 @@ def get_resumen_mensual_handler(event, context):
                 "count": len(gastos_fijos_detalle),
             },
             "compras_inventario_base": round(compras_inventario_base, 2),
+            # Informativo: refacciones externas facturadas por el proveedor para una OS.
+            # Ya vienen restadas dentro de `costo_venta`; se publican aparte para que el
+            # contador las ubique sin volver a restarlas.
+            "compras_costo_venta_base": round(compras_costo_venta_base, 2),
             "utilidad_bruta": round(utilidad_bruta, 2),
             "utilidad_neta": round(utilidad_neta, 2),
             "margen_bruto_pct": round(margen_bruto_pct, 2),
@@ -1211,6 +1250,7 @@ def get_resumen_mensual_handler(event, context):
                 "ventas": ventas_detalle[:500],
                 "ordenes_servicio": os_detalle[:500],
                 "gastos_variables": gastos_variables_detalle[:500],
+                "compras_costo_venta": compras_costo_venta_detalle[:500],
                 "gastos_variables_manuales": gastos_variables_manuales_detalle[:500],
                 "gastos_fijos": gastos_fijos_detalle,
             },
