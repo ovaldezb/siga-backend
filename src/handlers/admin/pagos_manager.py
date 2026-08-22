@@ -403,6 +403,7 @@ def openpay_webhook_handler(event, context):
         transaction = body.get("transaction") or {}
         
         logger.info(f"Openpay Webhook Recibido: type='{event_type}', status='{transaction.get('status')}', id='{transaction.get('id')}'")
+        logger.info(f"Cuerpo completo del webhook: {json.dumps(body)}")
         
         if event_type == "charge.succeeded" and transaction.get("status") == "completed":
             trans_id = transaction.get("id")

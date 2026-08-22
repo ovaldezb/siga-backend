@@ -207,3 +207,75 @@ def timbrar_factura_handler(event, context):
     except Exception as e:
         logger.exception("Error al timbrar factura")
         return handle_exception(e)
+
+def list_facturas_handler(event, context):
+    """GET /facturas — Lista facturas emitidas filtradas por mes/año y paginadas."""
+    try:
+        claims = get_claims(event)
+        tenant_id = claims.get('custom:tenant_id')
+        if not tenant_id:
+            return create_response(403, "No se encontró un tenantId asociado.")
+
+        query_params = event.get('queryStringParameters') or {}
+        
+        # Filtro de fecha (mes y año)
+        now = datetime.utcnow()
+        try:
+            month = int(query_params.get('month', now.month))
+            year = int(query_params.get('year', now.year))
+        except (ValueError, TypeError):
+            month = now.month
+            year = now.year
+
+        # Paginación
+        try:
+            page = int(query_params.get('page', 1))
+            limit = int(query_params.get('limit', 10))
+        except (ValueError, TypeError):
+            page = 1
+            limit = 10
+
+        skip = (page - 1) * limit
+
+        db = get_tenant_db(tenant_id)
+
+        # Rango de fechas
+        start_date = datetime(year, month, 1)
+        if month == 12:
+            end_date = datetime(year + 1, 1, 1)
+        else:
+            end_date = datetime(year, month + 1, 1)
+
+        filter_query = {
+            "createdAt": {
+                "$gte": start_date,
+                "$lt": end_date
+            }
+        }
+
+        total = db["facturasemitidas"].count_documents(filter_query)
+        facturas = list(
+            db["facturasemitidas"]
+            .find(filter_query)
+            .sort("createdAt", -1)
+            .skip(skip)
+            .limit(limit)
+        )
+
+        # Formatear para JSON
+        for f in facturas:
+            f['id'] = str(f.pop('_id'))
+            if 'createdAt' in f:
+                f['createdAt'] = f['createdAt'].isoformat()
+
+        return create_response(200, "Facturas obtenidas exitosamente", {
+            "items": facturas,
+            "total": total,
+            "page": page,
+            "limit": limit,
+            "totalPages": (total + limit - 1) // limit if limit > 0 else 0
+        })
+
+    except Exception as e:
+        logger.exception("Error al listar facturas")
+        return handle_exception(e)
