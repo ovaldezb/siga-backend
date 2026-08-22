@@ -660,6 +660,17 @@ functions:
           authorizer:
             name: cognitoAuthorizer
 
+  talleres_enrolar_openpay:
+    handler: src/handlers/admin/talleres_manager.enrolar_openpay_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /talleres/{id}/enrolar-openpay
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
   search_sat_catalogos:
     handler: src/handlers/catalogos/sat_manager.search_sat_catalogos_handler
     layers:

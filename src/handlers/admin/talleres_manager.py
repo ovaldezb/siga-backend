@@ -497,3 +497,104 @@ def upload_logo_handler(event, context):
     except Exception as e:
         logger.error(f"Error in upload_logo: {str(e)}")
         return handle_exception(e)
+
+def enrolar_openpay_handler(event, context):
+    """
+    Enrola o re-enrola manualmente a un taller en Openpay.
+    Exclusivo de SUPER_ADMIN.
+    """
+    try:
+        from bson import ObjectId
+
+        if not is_super_admin(get_claims(event)):
+            return create_response(403, "Solo un SUPER_ADMIN puede enrolar talleres.")
+
+        taller_id = event.get('pathParameters', {}).get('id')
+        if not taller_id:
+            return create_response(400, "ID de taller no proporcionado")
+
+        try:
+            obj_id = ObjectId(taller_id)
+        except Exception:
+            return create_response(400, "ID de taller inválido")
+
+        db = get_platform_db()
+        taller = db["talleres"].find_one({"_id": obj_id})
+        if not taller:
+            return create_response(404, "Taller no encontrado")
+
+        # Verificar si ya cuenta con información en los campos
+        customer_id = taller.get("openpayCustomerId")
+        clabe = taller.get("openpayClabe")
+        spei_charge_id = taller.get("openpaySpeiChargeId")
+
+        if customer_id or clabe or spei_charge_id:
+            return create_response(400, "El taller ya cuenta con información de Openpay (ya fue enrolado).")
+
+        tenant_id = taller.get("tenantId")
+        admin_email = taller.get("adminEmail")
+        admin_nombre = taller.get("adminNombre")
+        admin_apellido = taller.get("adminApellido")
+        nombre_comercial = taller.get("nombreComercial", "Taller")
+        precio_suscripcion = taller.get("precioSuscripcion")
+
+        from src.shared.utils import openpay_client
+
+        # 1. Crear cliente en Openpay
+        try:
+            customer_res = openpay_client.create_customer(
+                name=admin_nombre,
+                last_name=admin_apellido,
+                email=admin_email
+            )
+            new_customer_id = customer_res.get("id", "")
+        except Exception as cust_err:
+            logger.error(f"Error al crear cliente en Openpay para el taller {tenant_id}: {str(cust_err)}")
+            return create_response(400, f"Error al registrar cliente en Openpay: {str(cust_err)}")
+
+        if not new_customer_id:
+            return create_response(500, "No se pudo obtener el ID del cliente de Openpay")
+
+        # 2. Crear cargo SPEI inicial
+        monto_spei = float(precio_suscripcion or 599.00)
+        if monto_spei <= 0:
+            monto_spei = 599.00
+
+        desc_spei = f"Suscripcion Mensual Mekanics Manager - {nombre_comercial}"
+        order_id_spei = f"SUB-{tenant_id[:16]}-{int(datetime.utcnow().timestamp())}"
+
+        try:
+            spei_res = openpay_client.create_spei_charge(
+                customer_id=new_customer_id,
+                amount=monto_spei,
+                description=desc_spei,
+                order_id=order_id_spei
+            )
+            new_spei_charge_id = spei_res.get("id", "")
+            payment_method = spei_res.get("payment_method", {})
+            new_clabe = payment_method.get("clabe", "")
+        except Exception as spei_err:
+            logger.error(f"Error al crear cargo SPEI en Openpay para el taller {tenant_id}: {str(spei_err)}")
+            return create_response(400, f"Error al generar CLABE en Openpay: {str(spei_err)}")
+
+        # 3. Guardar en base de datos
+        db["talleres"].update_one(
+            {"_id": obj_id},
+            {"$set": {
+                "openpayCustomerId": new_customer_id,
+                "openpayClabe": new_clabe,
+                "openpaySpeiChargeId": new_spei_charge_id
+            }}
+        )
+
+        logger.info(f"Taller {tenant_id} enrolado exitosamente en Openpay. Customer: {new_customer_id}, CLABE: {new_clabe}")
+
+        return create_response(200, "Taller enrolado exitosamente en Openpay", {
+            "openpayCustomerId": new_customer_id,
+            "openpayClabe": new_clabe,
+            "openpaySpeiChargeId": new_spei_charge_id
+        })
+
+    except Exception as e:
+        logger.error(f"Error in enrolar_openpay: {str(e)}")
+        return handle_exception(e)
