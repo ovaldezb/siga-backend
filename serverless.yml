@@ -359,6 +359,28 @@ functions:
           authorizer:
             name: cognitoAuthorizer
 
+  facturas_list:
+    handler: src.handlers.facturacion.factura_manager.list_facturas_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /facturas
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  facturas_get_pdf:
+    handler: src.handlers.facturacion.factura_manager.get_factura_pdf_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /facturas/{id}/pdf
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
   clientes_list:
     handler: src/handlers/clientes/clientes_manager.list_clientes_handler
     layers:
@@ -656,6 +678,17 @@ functions:
     events:
       - httpApi:
           path: /talleres/{id}/logo
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  talleres_enrolar_openpay:
+    handler: src/handlers/admin/talleres_manager.enrolar_openpay_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /talleres/{id}/enrolar-openpay
           method: post
           authorizer:
             name: cognitoAuthorizer

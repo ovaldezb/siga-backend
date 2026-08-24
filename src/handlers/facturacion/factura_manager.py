@@ -207,3 +207,211 @@ def timbrar_factura_handler(event, context):
     except Exception as e:
         logger.exception("Error al timbrar factura")
         return handle_exception(e)
+
+def list_facturas_handler(event, context):
+    """GET /facturas — Lista facturas emitidas filtradas por mes/año y paginadas."""
+    try:
+        claims = get_claims(event)
+        tenant_id = claims.get('custom:tenant_id')
+        if not tenant_id:
+            return create_response(403, "No se encontró un tenantId asociado.")
+
+        query_params = event.get('queryStringParameters') or {}
+        
+        # Filtro de fecha (mes y año)
+        now = datetime.utcnow()
+        try:
+            month = int(query_params.get('month', now.month))
+            year = int(query_params.get('year', now.year))
+        except (ValueError, TypeError):
+            month = now.month
+            year = now.year
+
+        # Paginación
+        try:
+            page = int(query_params.get('page', 1))
+            limit = int(query_params.get('limit', 10))
+        except (ValueError, TypeError):
+            page = 1
+            limit = 10
+
+        skip = (page - 1) * limit
+
+        db = get_tenant_db(tenant_id)
+
+        # Rango de fechas
+        start_date = datetime(year, month, 1)
+        if month == 12:
+            end_date = datetime(year + 1, 1, 1)
+        else:
+            end_date = datetime(year, month + 1, 1)
+
+        filter_query = {
+            "createdAt": {
+                "$gte": start_date,
+                "$lt": end_date
+            }
+        }
+
+        total = db["facturasemitidas"].count_documents(filter_query)
+        facturas = list(
+            db["facturasemitidas"]
+            .find(filter_query)
+            .sort("createdAt", -1)
+            .skip(skip)
+            .limit(limit)
+        )
+
+        # Formatear para JSON
+        for f in facturas:
+            f['id'] = str(f.pop('_id'))
+            if 'createdAt' in f:
+                f['createdAt'] = f['createdAt'].isoformat()
+
+        return create_response(200, "Facturas obtenidas exitosamente", {
+            "items": facturas,
+            "total": total,
+            "page": page,
+            "limit": limit,
+            "totalPages": (total + limit - 1) // limit if limit > 0 else 0
+        })
+
+    except Exception as e:
+        logger.exception("Error al listar facturas")
+        return handle_exception(e)
+
+def get_factura_pdf_handler(event, context):
+    """GET /facturas/{id}/pdf — Genera y retorna el PDF de una factura en base64."""
+    try:
+        claims = get_claims(event)
+        tenant_id = claims.get('custom:tenant_id')
+        if not tenant_id:
+            return create_response(403, "No se encontró un tenantId asociado.")
+
+        factura_id = event.get('pathParameters', {}).get('id')
+        if not factura_id:
+            return create_response(400, "ID de factura no proporcionado")
+
+        try:
+            factura_oid = ObjectId(factura_id)
+        except Exception:
+            return create_response(400, "ID de factura inválido")
+
+        db = get_tenant_db(tenant_id)
+        factura = db["facturasemitidas"].find_one({"_id": factura_oid})
+        if not factura:
+            return create_response(404, "Factura no encontrada")
+
+        cfdi_xml = factura.get("cfdi")
+        if not cfdi_xml:
+            return create_response(400, "La factura no contiene el XML CFDI")
+
+        # 1. Parsear XML para obtener el Régimen Fiscal y Datos de Emisor
+        import xml.etree.ElementTree as ET
+        try:
+            # Eliminar caracteres extraños si existen antes del parse
+            if cfdi_xml.startswith('\ufeff'):
+                cfdi_xml = cfdi_xml[1:]
+            root = ET.fromstring(cfdi_xml)
+        except Exception as parse_err:
+            logger.error(f"Error parseando XML para PDF: {parse_err}")
+            return create_response(500, "El XML de la factura está malformado")
+
+        # Namespaces de CFDI v4
+        ns = {'cfdi': 'http://www.sat.gob.mx/cfd/4'}
+        
+        emisor_node = root.find('cfdi:Emisor', ns)
+        receptor_node = root.find('cfdi:Receptor', ns)
+
+        emisor_regimen = ""
+        emisor_nombre = ""
+        if emisor_node is not None:
+            emisor_regimen = emisor_node.attrib.get("RegimenFiscal", "")
+            emisor_nombre = emisor_node.attrib.get("Nombre", "")
+
+        receptor_regimen = ""
+        if receptor_node is not None:
+            receptor_regimen = receptor_node.attrib.get("RegimenFiscalReceptor", "")
+
+        # 2. Buscar descripciones de Régimen Fiscal
+        reg_emisor_doc = db["regimenfiscal"].find_one({"regimenfiscal": emisor_regimen})
+        regimen_fiscal_emisor = reg_emisor_doc.get("descripcion") if reg_emisor_doc else emisor_regimen
+
+        reg_receptor_doc = db["regimenfiscal"].find_one({"regimenfiscal": receptor_regimen})
+        regimen_fiscal_receptor = reg_receptor_doc.get("descripcion") if reg_receptor_doc else receptor_regimen
+
+        # 3. Obtener dirección de la sucursal
+        sucursal_id = factura.get("sucursal")
+        direccion = ""
+        if sucursal_id:
+            try:
+                suc_oid = ObjectId(sucursal_id)
+                sucursal = db["sucursales"].find_one({"_id": suc_oid})
+                if sucursal:
+                    direccion = sucursal.get("direccion", "")
+            except Exception:
+                pass
+
+        # 4. Obtener logo de S3
+        logo_path = None
+        logo_temp_file = None
+        try:
+            platform_db = get_platform_db()
+            taller = platform_db["talleres"].find_one({"tenantId": tenant_id})
+            logo_url = taller.get("logoUrl") if taller else None
+
+            if logo_url:
+                try:
+                    res_img = requests.get(logo_url, timeout=5)
+                    if res_img.status_code == 200:
+                        logo_temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+                        logo_temp_file.write(res_img.content)
+                        logo_temp_file.flush()
+                        logo_temp_file.close()
+                        logo_path = logo_temp_file.name
+                except Exception as img_err:
+                    logger.warning(f"No se pudo descargar el logotipo para el PDF: {img_err}")
+        except Exception:
+            pass
+
+        # 5. Generar PDF
+        pdf_b64 = None
+        try:
+            # Obtener datos adicionales almacenados
+            qr_code = factura.get("qrCode") or ""
+            cadena_original_sat = factura.get("cadenaOriginalSAT") or ""
+            ticket = factura.get("ticket") or ""
+            fecha_venta = factura.get("fechaTimbrado") or ""
+            empresa = emisor_nombre or factura.get("idCertificado") or ""
+
+            pdf_gen = CFDIPDF_FPDF_Generator(
+                xml_string=cfdi_xml,
+                qrCode=qr_code,
+                cadena_original_sat=cadena_original_sat,
+                noTicket=ticket,
+                fecha_hora_venta=fecha_venta,
+                direccion=direccion,
+                empresa=empresa,
+                regimen_fiscal_emisor=regimen_fiscal_emisor,
+                regimen_fiscal_receptor=regimen_fiscal_receptor,
+                logo_path=logo_path
+            )
+            pdf_bytes = pdf_gen.generate_pdf()
+            pdf_b64 = base64.b64encode(pdf_bytes).decode('utf-8')
+        except Exception as gen_err:
+            logger.exception("Error al generar PDF")
+            return create_response(500, f"Error al generar PDF de la factura: {str(gen_err)}")
+        finally:
+            if logo_temp_file and os.path.exists(logo_temp_file.name):
+                try:
+                    os.unlink(logo_temp_file.name)
+                except Exception:
+                    pass
+
+        return create_response(200, "PDF generado exitosamente", {
+            "pdf_cfdi_b64": pdf_b64
+        })
+
+    except Exception as e:
+        logger.exception("Error en get_factura_pdf")
+        return handle_exception(e)
