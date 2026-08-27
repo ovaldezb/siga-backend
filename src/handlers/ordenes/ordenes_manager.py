@@ -12,6 +12,7 @@ from src.shared.utils.os_events import (
     list_os_events,
     OS_EVENT_CREATED,
     OS_EVENT_ESTADO_CHANGED,
+    OS_EVENT_CLONED,
 )
 from src.shared.utils.indexes import ensure_indexes
 from src.handlers.admin.folios_manager import _get_next_folio_internal
@@ -420,6 +421,122 @@ def _conciliar_inventario_os(
         db["inventario_movimientos"].insert_many(movimientos, session=session)
 
     return movimientos
+
+
+# ---------------------------------------------------------------------------
+# Cancelación de una OS que ya se cobró
+# ---------------------------------------------------------------------------
+
+def _anular_venta_de_os(db, session, orden, claims, motivo, sesion_caja):
+    """Anula la venta ligada a una OS que se está cancelando.
+
+    Antes, cancelar la orden sólo cambiaba su estado: la venta seguía viva, así que
+    su monto continuaba sumando como ingreso del mes en Contabilidad y su saldo
+    seguía ocupando la línea de crédito del cliente. Aquí la venta pasa a
+    CANCELADA, se libera el saldo y —si el taller ya había recibido dinero de
+    contado— se registra la SALIDA en la caja abierta para que el arqueo del día
+    siga cuadrando.
+
+    NOTA: el inventario NO se devuelve. Esa regla la fija `_conciliar_inventario_os`
+    (`orden_cobrada`): una pieza que ya se le entregó al cliente no vuelve al
+    anaquel por cancelar la orden; eso es una nota de crédito, no un toggle.
+
+    Devuelve el resumen de lo anulado (para la bitácora) o None si no había venta.
+    """
+    venta_id = orden.get('venta_id')
+    if not venta_id:
+        return None
+    try:
+        venta_oid = ObjectId(venta_id)
+    except (InvalidId, TypeError):
+        logger.warning(f"OS {orden.get('folio')} tiene un venta_id inválido: {venta_id}")
+        return None
+
+    venta = db["ventas"].find_one({"_id": venta_oid}, session=session)
+    if not venta:
+        return None
+    if str(venta.get('estado') or '').upper() in ('CANCELADA', 'ANULADA'):
+        return None  # idempotente: reintentos no duplican la reversión de caja
+
+    usuario = claims.get('name') or claims.get('email') or claims.get('sub') or 'system'
+    total = float(venta.get('total') or 0)
+    credito = float(venta.get('monto_credito') or 0)
+    saldo_previo = float(venta.get('saldo_pendiente') or 0)
+
+    db["ventas"].update_one(
+        {"_id": venta_oid},
+        {"$set": {
+            "estado": "CANCELADA",
+            "cancelada_at": iso_utc(),
+            "cancelada_por": usuario,
+            "cancelada_motivo": motivo or f"Cancelación de la orden {orden.get('folio', '')}".strip(),
+            "cancelada_desde_orden_id": str(orden.get('_id')),
+            # El saldo deja de ocupar el crédito del cliente; se conserva el importe
+            # original en otra llave para poder auditar la reversión.
+            "saldo_pendiente": 0.0,
+            "saldo_pendiente_anulado": round(saldo_previo, 2),
+            "updatedAt": datetime.utcnow(),
+        }},
+        session=session,
+    )
+
+    # Dinero que el cliente sí entregó y que sale del cajón: lo cobrado de contado
+    # al momento de la venta, más los abonos en efectivo posteriores (los únicos
+    # que registrar_abono_handler empuja a caja).
+    devolucion = 0.0
+    if venta.get('caja_movimiento_registrado'):
+        devolucion += max(0.0, total - credito)
+    for abono in venta.get('abonos') or []:
+        if str(abono.get('metodo') or '').upper() != 'EFECTIVO':
+            continue
+        try:
+            devolucion += float(abono.get('monto') or 0)
+        except (TypeError, ValueError):
+            continue
+    devolucion = round(devolucion, 2)
+
+    caja_reversada = False
+    if devolucion > 0 and sesion_caja:
+        db.caja_sesiones.update_one(
+            {"_id": sesion_caja["_id"], "estado": "ABIERTA"},
+            {
+                "$push": {"movimientos": {
+                    "id": str(ObjectId()),
+                    "tipo": "SALIDA",
+                    "monto": devolucion,
+                    "concepto": (f"Cancelación de venta {venta.get('folio')} "
+                                 f"(OS {orden.get('folio', '')})"),
+                    "venta_id": str(venta_oid),
+                    "venta_folio": venta.get('folio'),
+                    "fecha": iso_utc(),
+                    "usuario_id": claims.get('sub'),
+                    "usuario_nombre": usuario,
+                }},
+                "$inc": {"total_salidas": devolucion},
+            },
+            session=session,
+        )
+        caja_reversada = True
+    elif devolucion > 0:
+        # Sin caja abierta no se puede asentar la salida ahora. Se marca para que el
+        # cajero la registre y el corte no arrastre un sobrante fantasma.
+        db["ventas"].update_one(
+            {"_id": venta_oid},
+            {"$set": {"reverso_caja_pendiente": devolucion}},
+            session=session,
+        )
+        logger.warning(
+            f"Venta {venta.get('folio')} anulada sin caja abierta: queda pendiente "
+            f"registrar la salida de {devolucion}")
+
+    return {
+        "venta_id": str(venta_oid),
+        "venta_folio": venta.get('folio'),
+        "total": round(total, 2),
+        "saldo_liberado": round(saldo_previo, 2),
+        "devolucion_caja": devolucion,
+        "caja_reversada": caja_reversada,
+    }
 
 
 def _ensure_folio_index(db) -> None:
@@ -1316,6 +1433,22 @@ def update_orden_handler(event, context):
             # lo que la OS ya se había llevado.
             puntos_a_conciliar = orden_actual.get('puntosArreglar', [])
 
+        # Cancelar una OS ya cobrada obliga a anular su venta: de lo contrario el
+        # monto sigue contando como ingreso del mes y el saldo sigue ocupando la
+        # línea de crédito del cliente.
+        anulacion_venta = None
+        cancelar_venta = bool(cancelar_os and orden_actual.get('venta_id'))
+        sesion_caja_cancelacion = None
+        if cancelar_venta:
+            # Lectura fuera de la transacción, igual que hace el POS al cobrar.
+            sesion_caja_cancelacion = db.caja_sesiones.find_one({
+                "sucursal_id": update_data.get('sucursal_id') or orden_actual.get('sucursal_id'),
+                "estado": "ABIERTA",
+            })
+            update_data['pagada'] = False
+            update_data['saldo_pendiente'] = 0
+            update_data['venta_anulada'] = True
+
         update_doc = {"$set": update_data}
         if bitacora_push:
             update_doc["$push"] = {"bitacora_estados": bitacora_push}
@@ -1340,11 +1473,23 @@ def update_orden_handler(event, context):
                         update_doc["$set"] = update_data
                         db["ordenes_servicio"].update_one(
                             {"_id": ObjectId(orden_id)}, update_doc, session=session)
+                        if cancelar_venta:
+                            anulacion_venta = _anular_venta_de_os(
+                                db, session, orden_actual, claims,
+                                update_data.get('motivo_cancelacion'),
+                                sesion_caja_cancelacion,
+                            )
             except StockInsuficienteOSError as stock_err:
                 logger.warning(f"OS {orden_id} no guardada por inventario: {stock_err.mensaje}")
                 return create_response(409, stock_err.mensaje)
         else:
             db["ordenes_servicio"].update_one({"_id": ObjectId(orden_id)}, update_doc)
+            if cancelar_venta:
+                anulacion_venta = _anular_venta_de_os(
+                    db, None, orden_actual, claims,
+                    update_data.get('motivo_cancelacion'),
+                    sesion_caja_cancelacion,
+                )
 
         # Sincronizar la cita ligada cuando la OS llega a un estado terminal
         # (FINALIZADO/ENTREGADO/CANCELADO) para que no quede clavada en "en proceso".
@@ -1374,6 +1519,8 @@ def update_orden_handler(event, context):
             motivo = update_data.get("motivo_cancelacion")
             if motivo:
                 payload["motivo"] = motivo
+            if anulacion_venta:
+                payload["venta_anulada"] = anulacion_venta
             append_os_event(
                 db, tenant_id, orden_id, OS_EVENT_ESTADO_CHANGED,
                 payload=payload, claims=claims, event=event,
@@ -1403,6 +1550,212 @@ def update_orden_handler(event, context):
                 vs['updatedAt'] = iso_utc(vs['updatedAt'])
         
         return create_response(200, "Orden actualizada", orden)
+    except Exception as e:
+        return handle_exception(e)
+
+
+# ---------------------------------------------------------------------------
+# Clonado de una OS cancelada
+# ---------------------------------------------------------------------------
+
+# Campos de la línea que describen lo que YA pasó con la orden original (surtido,
+# entrega, decisión del cliente). Una copia en borrador nace sin ese historial:
+# si se arrastraran, la nueva OS creería que sus piezas ya salieron del almacén.
+_CAMPOS_LINEA_NO_CLONABLES = (
+    'linea_id', 'entregado', 'inventario_descontado', 'inventario_descontado_piezas',
+    'inventario_descontado_por', 'decision_source', 'decided_by', 'decided_at',
+    'decided_meta',
+)
+
+
+def _clonar_puntos_arreglar(puntos):
+    """Copia los conceptos de una OS dejándolos listos para trabajarse de nuevo."""
+    copia = []
+    for punto in (puntos or []):
+        items = []
+        for item in (punto.get('items') or []):
+            if not isinstance(item, dict):
+                continue
+            limpio = {k: v for k, v in item.items() if k not in _CAMPOS_LINEA_NO_CLONABLES}
+            limpio['entregado'] = False
+            items.append(limpio)
+        copia.append({"nombre": punto.get('nombre', ''), "items": items})
+    return copia
+
+
+@logger.inject_lambda_context
+def clonar_orden_handler(event, context):
+    """POST /ordenes/{id}/clonar — Recrea en borrador una OS cancelada.
+
+    Cancelar por un error de captura obliga a recapturar el vehículo, el cliente y
+    todos los conceptos a mano. Este endpoint genera una OS nueva en RECEPCION con
+    los mismos datos, con folio propio.
+
+    Candados contra el mal uso:
+      · Sólo se puede clonar una OS en estado CANCELADO.
+      · Una OS cancelada se clona UNA sola vez (`clonada_en_orden_id`); el segundo
+        intento responde 409 apuntando al folio que ya se generó.
+      · La copia guarda de forma permanente de qué orden cancelada viene
+        (`clonada_de_orden_id` / `clonada_de_folio`) y quién la clonó
+        (`clonada_por` / `clonada_por_id` / `clonada_at`).
+      · La copia nace SIN cobro, sin cita y sin anticipo: no hereda dinero.
+    """
+    try:
+        claims = get_claims(event)
+        tenant_id = claims.get('custom:tenant_id')
+        if not tenant_id:
+            return create_response(403, "No se encontró un tenantId asociado.")
+
+        orden_id = event.get('pathParameters', {}).get('id')
+        try:
+            orden_oid = ObjectId(orden_id)
+        except (InvalidId, TypeError):
+            return create_response(400, "ID de orden inválido.")
+
+        db = get_tenant_db(tenant_id)
+        original = db["ordenes_servicio"].find_one({"_id": orden_oid})
+        if not original:
+            return create_response(404, "Orden no encontrada")
+
+        if original.get('estado') != 'CANCELADO':
+            return create_response(
+                409, "Sólo se puede clonar una orden cancelada.")
+
+        if original.get('clonada_en_orden_id'):
+            return create_response(
+                409,
+                f"Esta orden ya fue clonada en la {original.get('clonada_en_folio') or 'orden nueva'}. "
+                "Trabaja sobre esa orden en lugar de generar otra copia.",
+                {"orden_id": original.get('clonada_en_orden_id'),
+                 "folio": original.get('clonada_en_folio')})
+
+        sucursal_id = original.get('sucursal_id')
+        if not sucursal_id:
+            return create_response(400, "La orden original no tiene sucursal; no se puede clonar.")
+
+        responsable = claims.get('email') or claims.get('name') or claims.get('sub') or 'system'
+        ahora = datetime.utcnow()
+
+        _ensure_folio_index(db)
+        folio = _get_next_folio_internal(tenant_id, "os", sucursal_id)
+
+        nueva = {
+            "folio": folio,
+            "tenant_id": tenant_id,
+            "sucursal_id": sucursal_id,
+            "estado": "RECEPCION",
+            "bitacora_estados": [{
+                "estado": "RECEPCION",
+                "fecha": iso_utc(ahora),
+                "usuario_id": responsable,
+            }],
+            "cliente_snapshot": original.get('cliente_snapshot'),
+            "vehiculo_id": original.get('vehiculo_id'),
+            "vehiculo_snapshot": original.get('vehiculo_snapshot'),
+            # Sin cita: la de la orden original ya se cerró al cancelarla y una cita
+            # sólo puede estar ligada a una OS.
+            "cita_id": None,
+            "puntosArreglar": _clonar_puntos_arreglar(original.get('puntosArreglar')),
+            "falla_reportada": original.get('falla_reportada', ''),
+            "diagnostico": original.get('diagnostico', ''),
+            "mecanico_id": original.get('mecanico_id'),
+            "mecanico_nombre": original.get('mecanico_nombre'),
+            "kilometraje": original.get('kilometraje', 0),
+            "nivel_tanque": original.get('nivel_tanque', 0),
+            "testigos_encendidos": original.get('testigos_encendidos', []),
+            "inventario": original.get('inventario', []),
+            "info_adicional_vehiculo": original.get('info_adicional_vehiculo', []),
+            "proximo_cambio_bujias": original.get('proximo_cambio_bujias', 0),
+            "proximo_cambio_aceite": original.get('proximo_cambio_aceite', 0),
+            "proximo_cambio_bujias_fecha": original.get('proximo_cambio_bujias_fecha', ''),
+            "proximo_cambio_aceite_fecha": original.get('proximo_cambio_aceite_fecha', ''),
+            "aplica_costo_revision": original.get('aplica_costo_revision', False),
+            "costo_revision": original.get('costo_revision'),
+            # Dinero: la copia nace limpia. El anticipo y el cobro pertenecen a la
+            # orden cancelada, no se heredan.
+            "anticipo": 0,
+            "pagada": False,
+            "precios_incluyen_iva": original.get('precios_incluyen_iva', True),
+            "decodedVin": original.get('decodedVin'),
+            # Trazabilidad del clonado (candado antifraude: siempre visible en la OS)
+            "clonada_de_orden_id": str(orden_oid),
+            "clonada_de_folio": original.get('folio'),
+            "clonada_de_motivo_cancelacion": original.get('motivo_cancelacion'),
+            "clonada_por": claims.get('name') or claims.get('email') or responsable,
+            "clonada_por_id": claims.get('sub'),
+            "clonada_at": iso_utc(ahora),
+            "createdAt": ahora,
+            "updatedAt": ahora,
+        }
+        _ensure_linea_ids(nueva["puntosArreglar"], marcar_sin_consumo=True)
+
+        _totales = _calcular_totales_orden(nueva["puntosArreglar"])
+        nueva["subtotal"] = _totales["subtotal"]
+        nueva["iva"] = _totales["iva"]
+        nueva["total"] = _totales["total"]
+
+        # Insertar la copia y marcar la original ATÓMICAMENTE: sin esto, un fallo a
+        # medias dejaría la OS cancelada sin su candado y permitiría clonarla otra vez.
+        client = MongoDBConnection.get_client()
+        resultado = None
+        for intento in range(3):
+            try:
+                with client.start_session() as session:
+                    with session.start_transaction():
+                        resultado = db["ordenes_servicio"].insert_one(nueva, session=session)
+                        marcada = db["ordenes_servicio"].update_one(
+                            {"_id": orden_oid, "clonada_en_orden_id": {"$exists": False}},
+                            {"$set": {
+                                "clonada_en_orden_id": str(resultado.inserted_id),
+                                "clonada_en_folio": folio,
+                                "clonada_en_at": iso_utc(ahora),
+                                "clonada_en_por": nueva["clonada_por"],
+                            }},
+                            session=session,
+                        )
+                        # Carrera: otro usuario clonó la misma OS entre la validación
+                        # y la transacción. Se aborta para no generar folios gemelos.
+                        if marcada.matched_count == 0:
+                            raise RuntimeError("La orden ya había sido clonada por otro usuario.")
+                break
+            except Exception as ins_err:
+                if "E11000" in str(ins_err) and intento < 2:
+                    logger.warning(f"Colisión de folio al clonar OS; reintentando (era {folio})")
+                    folio = _get_next_folio_internal(tenant_id, "os", sucursal_id)
+                    nueva["folio"] = folio
+                    continue
+                if "ya había sido clonada" in str(ins_err):
+                    return create_response(409, str(ins_err))
+                raise
+
+        nueva["id"] = str(resultado.inserted_id)
+        nueva.pop("_id", None)
+        nueva["createdAt"] = iso_utc(nueva["createdAt"])
+        nueva["updatedAt"] = iso_utc(nueva["updatedAt"])
+        if 'sucursal_id' in nueva:
+            nueva['sucursalId'] = nueva['sucursal_id']
+
+        append_os_event(
+            db, tenant_id, nueva["id"], OS_EVENT_CLONED,
+            payload={
+                "origen_orden_id": str(orden_oid),
+                "origen_folio": original.get('folio'),
+                "origen_motivo_cancelacion": original.get('motivo_cancelacion'),
+                "folio": folio,
+            },
+            claims=claims, event=event,
+        )
+        # También en la línea de tiempo de la orden cancelada, para que la auditoría
+        # de la original muestre que de ahí salió una copia y quién la hizo.
+        append_os_event(
+            db, tenant_id, str(orden_oid), OS_EVENT_CLONED,
+            payload={"destino_orden_id": nueva["id"], "destino_folio": folio},
+            claims=claims, event=event,
+        )
+
+        logger.info(f"OS {original.get('folio')} clonada en {folio} por {responsable}")
+        return create_response(201, f"Orden {original.get('folio')} clonada en {folio}", nueva)
+
     except Exception as e:
         return handle_exception(e)
 
