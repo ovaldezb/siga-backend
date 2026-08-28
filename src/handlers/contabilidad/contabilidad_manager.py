@@ -313,15 +313,19 @@ def get_aging_cxc_handler(event, context):
             return create_response(403, "No autorizado")
 
         qp = event.get('queryStringParameters') or {}
-        query = {"saldo_pendiente": {"$gt": 0}}
+        # Una venta cancelada deja de ser cobrable aunque su saldo quedara vivo en
+        # documentos históricos: no debe seguir apareciendo en la cartera.
+        query = {"saldo_pendiente": {"$gt": 0}, "estado": {"$nin": ["CANCELADA", "ANULADA"]}}
         if qp.get('sucursal_id'):
             query['sucursal_id'] = qp['sucursal_id']
 
         db = get_tenant_db(tenant_id)
         ventas = list(db.ventas.find(query, {
             'cliente_id': 1, 'cliente_nombre': 1, 'folio': 1,
-            'saldo_pendiente': 1, 'total': 1, 'createdAt': 1
+            'saldo_pendiente': 1, 'total': 1, 'createdAt': 1,
+            'estado': 1, 'orden_id': 1,
         }).limit(1000))
+        ventas = _filtrar_ventas_vigentes(db, ventas)
 
         # Buckets globales
         global_aging = _aging_buckets(ventas)
@@ -434,8 +438,10 @@ def get_margen_ventas_handler(event, context):
         ventas = list(db.ventas.find(query, {
             'folio': 1, 'cliente_nombre': 1, 'items': 1,
             'subtotal': 1, 'total': 1, 'descuento': 1, 'sucursal_id': 1,
-            'createdAt': 1,
+            'createdAt': 1, 'estado': 1, 'orden_id': 1,
         }))
+        # Las ventas canceladas (y las de OS canceladas) no tienen margen que reportar.
+        ventas = _filtrar_ventas_vigentes(db, ventas)
 
         ingresos = 0.0
         costos = 0.0
@@ -960,6 +966,37 @@ def _is_venta_valida(v):
     return estado not in ('CANCELADA', 'ANULADA')
 
 
+def _ordenes_canceladas_ids(db, ventas):
+    """Set de `orden_id` (string) cuyas OS están CANCELADO, entre las ventas dadas."""
+    oids = []
+    for v in ventas:
+        oid = _oid(v.get('orden_id'))
+        if oid:
+            oids.append(oid)
+    if not oids:
+        return set()
+    return {
+        str(o['_id'])
+        for o in db.ordenes_servicio.find({"_id": {"$in": oids}, "estado": "CANCELADO"}, {"_id": 1})
+    }
+
+
+def _filtrar_ventas_vigentes(db, ventas):
+    """Deja fuera del P&L todo lo que ya no es ingreso del taller.
+
+    Dos criterios, y hacen falta los dos:
+      1. La venta quedó CANCELADA/ANULADA (la marca ordenes_manager al cancelar la OS).
+      2. La OS asociada está CANCELADO aunque su venta siga viva. Cubre las
+         cancelaciones hechas antes de que existiera el punto 1, que dejaban el
+         monto de una orden cancelada sumando como ganancia del mes.
+    """
+    vigentes = [v for v in ventas if _is_venta_valida(v)]
+    canceladas = _ordenes_canceladas_ids(db, vigentes)
+    if not canceladas:
+        return vigentes
+    return [v for v in vigentes if (v.get('orden_id') or '') not in canceladas]
+
+
 def get_resumen_mensual_handler(event, context):
     """GET /contabilidad/resumen-mensual?year=&month=&sucursal_id=
     Devuelve P&L del mes: ingresos, costo de venta, gastos variables (compras sin inventario),
@@ -988,9 +1025,13 @@ def get_resumen_mensual_handler(event, context):
             'saldo_pendiente': 1, 'usuario_nombre': 1, 'venta_facturada': 1,
         }))
 
+        # Fuera las ventas canceladas y las que cuelgan de una OS cancelada: ni su
+        # ingreso ni su costo pertenecen al P&L del mes.
+        ventas = _filtrar_ventas_vigentes(db, ventas)
+
         # Contexto operativo (vehículo, OS, cotización, cita, pago) para que el
         # contador ubique cada renglón sin salir de Contabilidad.
-        ctx_ventas = _construir_contexto_ventas(db, [v for v in ventas if _is_venta_valida(v)])
+        ctx_ventas = _construir_contexto_ventas(db, ventas)
 
         # Operación SIN IVA: el ingreso de una venta es su `total` (lo cobrado). brutos y
         # netos son el mismo número; se mantienen ambas llaves para no romper el front.
@@ -1001,8 +1042,6 @@ def get_resumen_mensual_handler(event, context):
         os_detalle = []
 
         for v in ventas:
-            if not _is_venta_valida(v):
-                continue
             tot = float(v.get('total') or v.get('subtotal') or 0)
             sub = tot
             ingresos_brutos += tot
@@ -1303,6 +1342,9 @@ def get_resumen_por_os_handler(event, context):
             'saldo_pendiente': 1, 'usuario_nombre': 1,
         }))
 
+        # Una OS cancelada no produce utilidad aunque su venta siga en la colección.
+        ventas = _filtrar_ventas_vigentes(db, ventas)
+
         # Contexto de ubicación (OS, cotización, cita, vehículo completo, pago). Resuelve
         # también las OS en batch, así que no hace falta un segundo find aquí.
         ctx_ventas = _construir_contexto_ventas(db, ventas)
@@ -1486,6 +1528,9 @@ def get_concentrado_ventas_handler(event, context):
             'createdAt': 1, 'estado': 1, 'vehiculo_snapshot': 1, 'metodo_pago': 1,
             'pagos': 1, 'saldo_pendiente': 1, 'usuario_nombre': 1,
         }))
+
+        # Fuera los renglones de OS canceladas: no son ganancia ni pérdida real.
+        ventas = _filtrar_ventas_vigentes(db, ventas)
 
         # Mismo contexto de ubicación que las otras pestañas (vehículo, OS, cotización).
         ctx_ventas = _construir_contexto_ventas(db, ventas)

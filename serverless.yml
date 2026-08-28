@@ -792,6 +792,17 @@ functions:
           authorizer:
             name: cognitoAuthorizer
 
+  ordenes_clonar:
+    handler: src/handlers/ordenes/ordenes_manager.clonar_orden_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /ordenes/{id}/clonar
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
   ordenes_set_fechas_cierre:
     handler: src/handlers/ordenes/ordenes_manager.set_fechas_cierre_handler
     layers:
@@ -1465,6 +1476,17 @@ functions:
       - httpApi:
           path: /ventas/{id}/pagos
           method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  ventas_metodo_pago:
+    handler: src/handlers/ventas/ventas_manager.update_metodo_pago_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /ventas/{id}/metodo-pago
+          method: put
           authorizer:
             name: cognitoAuthorizer
 

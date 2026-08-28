@@ -14,6 +14,7 @@ Tipos de evento:
 - `os.estado_changed` — cambio de estado, payload {from, to, motivo?}.
 - `os.deleted`        — borrado de la OS.
 - `os.payment`        — registro de pago / cobro (opcional para fase 2).
+- `os.cloned`         — se recreó una OS cancelada, payload {origen/destino}.
 """
 from datetime import datetime
 from typing import Optional
@@ -118,3 +119,4 @@ OS_EVENT_CREATED = "os.created"
 OS_EVENT_ESTADO_CHANGED = "os.estado_changed"
 OS_EVENT_DELETED = "os.deleted"
 OS_EVENT_PAYMENT = "os.payment"
+OS_EVENT_CLONED = "os.cloned"

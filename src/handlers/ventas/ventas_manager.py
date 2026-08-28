@@ -2,7 +2,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
-from src.shared.utils.auth_utils import try_parse_id, get_claims
+from src.shared.utils.auth_utils import try_parse_id, get_claims, is_admin
 from src.shared.infrastructure.database import get_tenant_db, MongoDBConnection
 from src.shared.utils.indexes import ensure_indexes
 from src.handlers.admin.folios_manager import _get_next_folio_internal
@@ -250,7 +250,8 @@ def create_venta_handler(event, context):
             limite = float(cliente.get('limite_credito', 0))
             # Saldo deudor previo: ventas con saldo_pendiente > 0 del mismo cliente
             saldo_previo_agg = list(db["ventas"].aggregate([
-                {"$match": {"cliente_id": cliente_id, "saldo_pendiente": {"$gt": 0}}},
+                {"$match": {"cliente_id": cliente_id, "saldo_pendiente": {"$gt": 0},
+                            "estado": {"$nin": ["CANCELADA", "ANULADA"]}}},
                 {"$group": {"_id": None, "saldo": {"$sum": "$saldo_pendiente"}}}
             ]))
             saldo_previo = float(saldo_previo_agg[0]['saldo']) if saldo_previo_agg else 0.0
@@ -808,7 +809,9 @@ def list_cxc_handler(event, context):
         sucursal_id = query_params.get('sucursal_id')
         cliente_id = query_params.get('cliente_id')
 
-        query = {"saldo_pendiente": {"$gt": 0}}
+        # Una venta anulada (p. ej. porque se canceló su OS) ya no es cobrable: queda
+        # fuera de la cartera aunque algún documento histórico conserve saldo.
+        query = {"saldo_pendiente": {"$gt": 0}, "estado": {"$nin": ["CANCELADA", "ANULADA"]}}
         if sucursal_id:
             query["sucursal_id"] = sucursal_id
         if cliente_id:
@@ -922,6 +925,206 @@ def get_venta_by_id_handler(event, context):
                 pass
 
         return create_response(200, "Venta obtenida", venta)
+
+    except Exception as e:
+        return handle_exception(e)
+
+
+# ---------------------------------------------------------------------------
+# Corrección del método de pago de una venta ya cobrada
+# ---------------------------------------------------------------------------
+
+# Convertir un cobro a/desde CRÉDITO no es corregir una etiqueta: mueve el saldo
+# de cuentas por cobrar y la línea de crédito del cliente. Eso se hace anulando y
+# recobrando la venta, no desde aquí.
+_METODO_PAGO_BLOQUEADO = 'CREDITO'
+
+
+def _normaliza_metodo(valor):
+    """Método de pago saneado: mayúsculas, sin espacios, o None si viene vacío."""
+    metodo = str(valor or '').strip().upper()
+    return metodo or None
+
+
+def update_metodo_pago_handler(event, context):
+    """PUT /ventas/{id}/metodo-pago — Corrige CON QUÉ se pagó una venta ya cobrada.
+
+    Caso real: el cajero cobró con tarjeta y capturó "efectivo". El importe está
+    bien, la etiqueta no, y el corte de caja sale con el desglose equivocado.
+
+    Los IMPORTES SON INMUTABLES aquí: el handler nunca lee montos del body — cada
+    línea conserva el monto que ya estaba guardado, y `total`, `subtotal`,
+    `descuento`, `items` y `saldo_pendiente` ni se tocan. Lo único que cambia es
+    el `metodo` (y su `referencia` / `forma_pago_sat`) de cada pago.
+
+    Body: {"pagos": [{"metodo": "TARJETA", "referencia": "1234",
+                      "forma_pago_sat": "04"}, ...],  # mismo orden y largo que los guardados
+           "metodo_pago": "TARJETA",   # alternativa para ventas viejas sin pagos[]
+           "motivo": "texto"}
+    """
+    try:
+        claims = get_claims(event)
+        tenant_id = claims.get('custom:tenant_id')
+        if not tenant_id:
+            return create_response(403, "No autorizado")
+        # Es un ajuste sobre dinero ya cobrado: sólo administración lo puede hacer.
+        if not is_admin(claims):
+            return create_response(
+                403, "Sólo un administrador puede corregir el método de pago de una venta.")
+
+        from src.shared.utils.auth_utils import parse_object_id
+        venta_id = event.get('pathParameters', {}).get('id')
+        venta_oid, err = parse_object_id(venta_id)
+        if err:
+            return create_response(400, err)
+
+        body = json.loads(event.get('body') or '{}')
+        motivo = str(body.get('motivo') or '').strip()
+
+        db = get_tenant_db(tenant_id)
+        venta = db["ventas"].find_one({"_id": venta_oid, "tenant_id": tenant_id})
+        if not venta:
+            return create_response(404, "Venta no encontrada.")
+        if str(venta.get('estado') or '').upper() in ('CANCELADA', 'ANULADA'):
+            return create_response(409, "La venta está cancelada; no se puede modificar su pago.")
+
+        pagos_actuales = venta.get('pagos') or []
+        pagos_body = body.get('pagos')
+        nuevos_pagos = []
+        metodo_plano = None
+
+        if pagos_actuales:
+            if not isinstance(pagos_body, list) or len(pagos_body) != len(pagos_actuales):
+                return create_response(
+                    400,
+                    f"Se esperan exactamente {len(pagos_actuales)} línea(s) de pago, "
+                    "en el mismo orden que las registradas.")
+            for actual, entrada in zip(pagos_actuales, pagos_body):
+                if not isinstance(entrada, dict):
+                    return create_response(400, "Formato de pagos inválido.")
+                metodo_actual = _normaliza_metodo(actual.get('metodo'))
+                metodo_nuevo = _normaliza_metodo(entrada.get('metodo')) or metodo_actual
+                if not metodo_nuevo:
+                    return create_response(400, "Cada línea de pago requiere un método.")
+                if _METODO_PAGO_BLOQUEADO in (metodo_actual, metodo_nuevo) and metodo_actual != metodo_nuevo:
+                    return create_response(
+                        409,
+                        "No se puede convertir un pago a/desde CRÉDITO desde aquí: eso mueve "
+                        "las cuentas por cobrar. Cancela la venta y vuelve a cobrarla.")
+                # El monto se toma SIEMPRE del documento guardado, nunca del body.
+                pago = dict(actual)
+                pago['metodo'] = metodo_nuevo
+                if 'referencia' in entrada:
+                    pago['referencia'] = str(entrada.get('referencia') or '')
+                if entrada.get('forma_pago_sat'):
+                    pago['forma_pago_sat'] = str(entrada['forma_pago_sat'])
+                nuevos_pagos.append(pago)
+        else:
+            # Venta antigua sin desglose: sólo tiene el `metodo_pago` plano.
+            metodo_plano = _normaliza_metodo(body.get('metodo_pago'))
+            if not metodo_plano:
+                return create_response(400, "Indica el nuevo método de pago.")
+            metodo_actual = _normaliza_metodo(venta.get('metodo_pago'))
+            if _METODO_PAGO_BLOQUEADO in (metodo_actual, metodo_plano) and metodo_actual != metodo_plano:
+                return create_response(
+                    409,
+                    "No se puede convertir un pago a/desde CRÉDITO desde aquí: eso mueve "
+                    "las cuentas por cobrar. Cancela la venta y vuelve a cobrarla.")
+
+        metodos_usados = {p['metodo'] for p in nuevos_pagos} if nuevos_pagos else {metodo_plano}
+        metodo_resumen = 'MIXTO' if len(metodos_usados) > 1 else next(iter(metodos_usados))
+
+        usuario = claims.get('name') or claims.get('email') or claims.get('sub') or 'unknown'
+        historial = {
+            "fecha": iso_utc(),
+            "usuario_id": claims.get('sub'),
+            "usuario_nombre": usuario,
+            "motivo": motivo,
+            "antes": {
+                "metodo_pago": venta.get('metodo_pago'),
+                "pagos": [{"metodo": p.get('metodo'), "monto": p.get('monto'),
+                           "referencia": p.get('referencia')} for p in pagos_actuales],
+            },
+            "despues": {
+                "metodo_pago": metodo_resumen,
+                "pagos": [{"metodo": p.get('metodo'), "monto": p.get('monto'),
+                           "referencia": p.get('referencia')} for p in nuevos_pagos],
+            },
+        }
+
+        set_doc = {
+            "metodo_pago": metodo_resumen,
+            "metodo_pago_corregido": True,
+            "updatedAt": datetime.utcnow(),
+        }
+        if nuevos_pagos:
+            set_doc["pagos"] = nuevos_pagos
+            primera_sat = next((p.get('forma_pago_sat') for p in nuevos_pagos if p.get('forma_pago_sat')), None)
+            if primera_sat:
+                set_doc["forma_pago_sat"] = primera_sat
+
+        db["ventas"].update_one(
+            {"_id": venta_oid},
+            {"$set": set_doc, "$push": {"historial_metodo_pago": historial}},
+        )
+
+        # La caja sólo se re-etiqueta si su sesión sigue ABIERTA. Un corte ya cerrado
+        # tiene un arqueo firmado con el conteo físico por método: reescribirlo
+        # después invalidaría esa auditoría.
+        caja_actualizada = False
+        sesion_id = venta.get('caja_sesion_id')
+        if sesion_id and nuevos_pagos:
+            try:
+                sesion_oid = ObjectId(sesion_id)
+            except (InvalidId, TypeError):
+                sesion_oid = None
+            if sesion_oid:
+                sesion = db.caja_sesiones.find_one({"_id": sesion_oid, "estado": "ABIERTA"})
+                if sesion:
+                    movimientos = sesion.get('movimientos') or []
+                    # Los movimientos de esta venta se generaron en el mismo orden que
+                    # sus pagos de contado, así que se re-etiquetan por posición.
+                    contado = [p for p in nuevos_pagos
+                               if _normaliza_metodo(p.get('metodo')) != _METODO_PAGO_BLOQUEADO]
+                    idx = 0
+                    tocado = False
+                    for mov in movimientos:
+                        if mov.get('venta_id') != str(venta_oid) or mov.get('tipo') != 'VENTA':
+                            continue
+                        if idx >= len(contado):
+                            break
+                        metodo_mov = contado[idx]['metodo']
+                        mov['metodo'] = metodo_mov
+                        mov['concepto'] = f"Venta {venta.get('folio')} ({metodo_mov})"
+                        idx += 1
+                        tocado = True
+                    if tocado:
+                        db.caja_sesiones.update_one(
+                            {"_id": sesion_oid, "estado": "ABIERTA"},
+                            {"$set": {"movimientos": movimientos}},
+                        )
+                        caja_actualizada = True
+
+        # La Nota de Servicio de la OS imprime `pago_info.metodo`: se sincroniza.
+        if venta.get('orden_id'):
+            try:
+                db["ordenes_servicio"].update_one(
+                    {"_id": ObjectId(venta['orden_id'])},
+                    {"$set": {"pago_info.metodo": metodo_resumen,
+                              "updatedAt": datetime.utcnow()}},
+                )
+            except (InvalidId, TypeError):
+                pass
+
+        actualizada = db["ventas"].find_one({"_id": venta_oid})
+        actualizada['id'] = str(actualizada.pop('_id'))
+        for campo in ('createdAt', 'updatedAt'):
+            if isinstance(actualizada.get(campo), datetime):
+                actualizada[campo] = iso_utc(actualizada[campo])
+        actualizada['caja_actualizada'] = caja_actualizada
+
+        logger.info(f"Método de pago de la venta {venta.get('folio')} corregido por {usuario}")
+        return create_response(200, "Método de pago actualizado", actualizada)
 
     except Exception as e:
         return handle_exception(e)

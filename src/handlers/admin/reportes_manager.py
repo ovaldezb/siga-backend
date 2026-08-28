@@ -41,6 +41,23 @@ def get_kpis_handler(event, context):
             "venta_id": {"$in": [None, ""]},
         }
 
+        # VENTAS QUE SÍ SON INGRESO. Se descartan dos casos que inflaban los KPIs:
+        #   · la venta quedó CANCELADA/ANULADA;
+        #   · su OS está CANCELADO aunque la venta siguiera viva (cancelaciones
+        #     previas al fix, que hacían aparecer la orden cancelada como ganancia).
+        ventas_de_os_canceladas = []
+        for o in db["ordenes_servicio"].find(
+            {**filter_base, "estado": "CANCELADO", "venta_id": {"$nin": [None, ""]}},
+            {"venta_id": 1},
+        ):
+            try:
+                ventas_de_os_canceladas.append(ObjectId(o["venta_id"]))
+            except Exception:
+                continue
+        ventas_filter = {**filter_base, "estado": {"$nin": ["CANCELADA", "ANULADA"]}}
+        if ventas_de_os_canceladas:
+            ventas_filter["_id"] = {"$nin": ventas_de_os_canceladas}
+
         # 1. INGRESOS HOY (OS + POS)
         today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
         
@@ -55,7 +72,7 @@ def get_kpis_handler(event, context):
 
         # Ventas POS Hoy
         res_ventas_hoy = list(db["ventas"].aggregate([
-            {"$match": filter_base},
+            {"$match": ventas_filter},
             {"$addFields": {"__date": match_date_expr}},
             {"$match": {"__date": {"$gte": today}}},
             {"$group": {"_id": None, "total": {"$sum": "$total"}}}
@@ -78,7 +95,7 @@ def get_kpis_handler(event, context):
         # incompleto. Unimos también desde `ordenes_servicio` con estado ENTREGADO,
         # y consolidamos por cliente_id en Python.
         ventas_por_cliente = list(db["ventas"].aggregate([
-            {"$match": filter_base},
+            {"$match": ventas_filter},
             {"$group": {
                 "_id": "$cliente_id",
                 "total_gastado": {"$sum": "$total"},
@@ -178,7 +195,7 @@ def get_kpis_handler(event, context):
 
         # Agregación mensual de Ventas POS
         ventas_mensuales = list(db["ventas"].aggregate([
-            {"$match": filter_base},
+            {"$match": ventas_filter},
             {"$addFields": {"__date": date_expr}},
             {"$group": {
                 "_id": {"$dateToString": {"format": "%Y-%m", "date": "$__date"}},
@@ -213,7 +230,7 @@ def get_kpis_handler(event, context):
         inicio_mes = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
         res_util_ventas = list(db["ventas"].aggregate([
-            {"$match": {**filter_base, "estado": {"$nin": ["CANCELADA", "ANULADA"]}}},
+            {"$match": ventas_filter},
             {"$addFields": {"__date": match_date_expr}},
             {"$match": {"__date": {"$gte": inicio_mes}}},
             {"$project": {
@@ -264,7 +281,7 @@ def get_kpis_handler(event, context):
 
         # Ingresos totales del MES para margen — mismo criterio que la utilidad.
         ingresos_pos_totales = list(db["ventas"].aggregate([
-            {"$match": {**filter_base, "estado": {"$nin": ["CANCELADA", "ANULADA"]}}},
+            {"$match": ventas_filter},
             {"$addFields": {"__date": match_date_expr}},
             {"$match": {"__date": {"$gte": inicio_mes}}},
             {"$group": {"_id": None, "total": {"$sum": {"$ifNull": ["$total", {"$ifNull": ["$subtotal", 0]}]}}}}
@@ -292,7 +309,7 @@ def get_kpis_handler(event, context):
             "estado": {"$in": ["RECEPCION", "COTIZADO", "APROBADO", "EN_PROCESO", "FINALIZADO"]}
         })
         cuentas_por_cobrar_agg = list(db["ventas"].aggregate([
-            {"$match": {**filter_base, "saldo_pendiente": {"$gt": 0}}},
+            {"$match": {**ventas_filter, "saldo_pendiente": {"$gt": 0}}},
             {"$group": {"_id": None, "total": {"$sum": "$saldo_pendiente"}, "count": {"$sum": 1}}}
         ]))
         cxc_total = cuentas_por_cobrar_agg[0]['total'] if cuentas_por_cobrar_agg else 0
@@ -300,7 +317,7 @@ def get_kpis_handler(event, context):
 
         # 7. PRODUCTO MÁS VENDIDO (Top 1)
         top_producto = list(db["ventas"].aggregate([
-            {"$match": filter_base},
+            {"$match": ventas_filter},
             {"$unwind": "$items"},
             {"$group": {
                 "_id": {"$ifNull": ["$items.producto.id", "$items.id"]},
