@@ -68,14 +68,20 @@ def search_sat_catalogos_handler(event, context):
         else:
             escaped_q = re.escape(q)
             if tipo_busqueda == 'unidad':
-                # Anchor to the beginning of description for units
+                # Anchor to the beginning of description or code for units
                 query = {
-                    "descripcion": {"$regex": f"^{escaped_q}", "$options": "i"}
+                    "$or": [
+                        {"descripcion": {"$regex": f"^{escaped_q}", "$options": "i"}},
+                        {"clave": {"$regex": f"^{escaped_q}", "$options": "i"}}
+                    ]
                 }
             else:
-                # Substring search for product/service keys
+                # Substring search for product/service keys by description or code
                 query = {
-                    "descripcion": {"$regex": escaped_q, "$options": "i"}
+                    "$or": [
+                        {"descripcion": {"$regex": escaped_q, "$options": "i"}},
+                        {"clave": {"$regex": escaped_q, "$options": "i"}}
+                    ]
                 }
             cursor = db[collection_name].find(
                 query, 
