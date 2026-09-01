@@ -2,6 +2,7 @@ import json
 import os
 import requests
 import xml.dom.minidom
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from bson import ObjectId
 from pymongo import ReturnDocument
@@ -18,6 +19,63 @@ import tempfile
 logger = Logger()
 
 SW_URL = os.getenv("SW_URL")
+
+def extraer_datos_cfdi(cfdi_xml_str):
+    """Extrae datos fiscales clave de un XML de CFDI (3.3 o 4.0)."""
+    try:
+        if not cfdi_xml_str or not isinstance(cfdi_xml_str, str):
+            return {}
+        
+        root = ET.fromstring(cfdi_xml_str.encode('utf-8'))
+        
+        serie = root.attrib.get('Serie') or root.attrib.get('serie') or ''
+        folio = root.attrib.get('Folio') or root.attrib.get('folio') or ''
+        subtotal_str = root.attrib.get('SubTotal') or root.attrib.get('subTotal') or '0'
+        total_str = root.attrib.get('Total') or root.attrib.get('total') or '0'
+        moneda = root.attrib.get('Moneda') or root.attrib.get('moneda') or 'MXN'
+        forma_pago = root.attrib.get('FormaPago') or root.attrib.get('formaPago') or ''
+        metodo_pago = root.attrib.get('MetodoPago') or root.attrib.get('metodoPago') or ''
+
+        try:
+            subtotal = float(subtotal_str)
+        except (ValueError, TypeError):
+            subtotal = 0.0
+
+        try:
+            total = float(total_str)
+        except (ValueError, TypeError):
+            total = 0.0
+
+        rfc_receptor = ''
+        nombre_receptor = ''
+        uso_cfdi = ''
+        regimen_fiscal_receptor = ''
+
+        for elem in root.iter():
+            tag = elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag
+            if tag == 'Receptor':
+                rfc_receptor = elem.attrib.get('Rfc') or elem.attrib.get('rfc') or ''
+                nombre_receptor = elem.attrib.get('Nombre') or elem.attrib.get('nombre') or ''
+                uso_cfdi = elem.attrib.get('UsoCFDI') or elem.attrib.get('usoCFDI') or ''
+                regimen_fiscal_receptor = elem.attrib.get('RegimenFiscalReceptor') or elem.attrib.get('regimenFiscalReceptor') or ''
+                break
+
+        return {
+            "serie": serie,
+            "folio": folio,
+            "subtotal": subtotal,
+            "total": total,
+            "moneda": moneda,
+            "forma_pago": forma_pago,
+            "metodo_pago": metodo_pago,
+            "rfc_receptor": rfc_receptor,
+            "nombre_receptor": nombre_receptor,
+            "uso_cfdi": uso_cfdi,
+            "regimen_fiscal_receptor": regimen_fiscal_receptor
+        }
+    except Exception as e:
+        logger.warning(f"Error parseando XML CFDI: {e}")
+        return {}
 
 def timbrar_factura_handler(event, context):
     """POST /timbrar-factura — Timbra un CFDI 4.0 con SW Sapien."""
@@ -100,6 +158,17 @@ def timbrar_factura_handler(event, context):
         pretty_xml = dom.toprettyxml(indent="  ", encoding="UTF-8").decode("utf-8")
 
         # 7. Persistir en la colección facturasemitidas
+        receptor = timbrado.get("Receptor") or {}
+        try:
+            subtotal_val = float(timbrado.get("SubTotal") or 0.0)
+        except (ValueError, TypeError):
+            subtotal_val = 0.0
+
+        try:
+            total_val = float(timbrado.get("Total") or 0.0)
+        except (ValueError, TypeError):
+            total_val = 0.0
+
         factura_doc = {
             "cadenaOriginalSAT": factura_generada["data"].get("cadenaOriginalSAT"),
             "cfdi": pretty_xml,
@@ -113,6 +182,17 @@ def timbrar_factura_handler(event, context):
             "sucursal": sucursal_id,
             "idCertificado": id_certificado,
             "ticket": ticket,
+            "serie": timbrado.get("Serie") or "",
+            "folio": secuencia,
+            "rfc_receptor": receptor.get("Rfc") or "",
+            "nombre_receptor": receptor.get("Nombre") or "",
+            "uso_cfdi": receptor.get("UsoCFDI") or "",
+            "regimen_fiscal_receptor": receptor.get("RegimenFiscalReceptor") or "",
+            "forma_pago": timbrado.get("FormaPago") or "",
+            "metodo_pago": timbrado.get("MetodoPago") or "",
+            "moneda": timbrado.get("Moneda") or "MXN",
+            "subtotal": subtotal_val,
+            "total": total_val,
             "estatus": "Vigente",
             "tenant_id": tenant_id,
             "createdAt": datetime.utcnow()
@@ -262,11 +342,32 @@ def list_facturas_handler(event, context):
             .limit(limit)
         )
 
-        # Formatear para JSON
+        # Formatear para JSON y auto-migración híbrida (Just-In-Time)
         for f in facturas:
-            f['id'] = str(f.pop('_id'))
-            if 'createdAt' in f:
+            f_id = f.pop('_id')
+            f['id'] = str(f_id)
+            if 'createdAt' in f and hasattr(f['createdAt'], 'isoformat'):
                 f['createdAt'] = f['createdAt'].isoformat()
+
+            # Si es un documento histórico y no tiene campos desnormalizados
+            if 'nombre_receptor' not in f or 'total' not in f or f.get('nombre_receptor') is None:
+                cfdi_xml = f.get('cfdi')
+                if cfdi_xml:
+                    datos_extraidos = extraer_datos_cfdi(cfdi_xml)
+                    if datos_extraidos:
+                        # Completar en memoria para respuesta inmediata
+                        for k, v in datos_extraidos.items():
+                            if k not in f or f.get(k) is None:
+                                f[k] = v
+                        
+                        # Persistir en BD para que la próxima lectura sea directa y nativa
+                        try:
+                            db["facturasemitidas"].update_one(
+                                {"_id": f_id},
+                                {"$set": datos_extraidos}
+                            )
+                        except Exception as update_err:
+                            logger.warning(f"No se pudo auto-migrar documento de factura {f_id}: {update_err}")
 
         return create_response(200, "Facturas obtenidas exitosamente", {
             "items": facturas,
