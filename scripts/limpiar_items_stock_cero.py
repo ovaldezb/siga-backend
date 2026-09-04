@@ -40,13 +40,21 @@ Uso:
   python scripts/limpiar_items_stock_cero.py --sucursal <ID>       # acota a una sucursal
   python scripts/limpiar_items_stock_cero.py --antes-de 2026-01-01 # sólo los creados antes
   python scripts/limpiar_items_stock_cero.py --categorias ABD      # incluir catálogo muerto
-  python scripts/limpiar_items_stock_cero.py --tenant <ID> --aplicar  # ejecuta el borrado
+
+  # Borrado real. El respaldo es obligatorio: se escribe un JSON por taller ANTES
+  # de borrar, y si no se puede escribir, ese taller no se toca.
+  python scripts/limpiar_items_stock_cero.py --aplicar --respaldo H:/taller/respaldos
+
+Para restaurar un respaldo:
+  mongoimport --uri "<uri>" --db t_<tenant> --collection items --file <archivo.json> --jsonArray
 """
 import os
 import re
 import sys
 import argparse
+from datetime import datetime
 from pymongo import MongoClient
+from bson.json_util import dumps as bson_dumps
 
 MONGO_USER = os.environ.get("MONGO_USER")
 MONGO_PASSWORD = os.environ.get("MONGO_PASSWORD")
@@ -122,6 +130,22 @@ ETIQUETAS = {
 }
 
 
+def escribir_respaldo(directorio, tenant_id, documentos):
+    """Vuelca los documentos a borrar en JSON extendido de Mongo, antes de borrarlos.
+
+    Se usa `bson.json_util` para conservar ObjectId y fechas tal cual, de modo que
+    el archivo se pueda restaurar con `mongoimport` o con `json_util.loads`.
+    Devuelve la ruta escrita; si algo falla, propaga la excepción para que el
+    llamador aborte el borrado (sin respaldo no se borra).
+    """
+    os.makedirs(directorio, exist_ok=True)
+    sello = datetime.now().strftime("%Y%m%d-%H%M%S")
+    ruta = os.path.join(directorio, f"items_borrados_{tenant_id}_{sello}.json")
+    with open(ruta, "w", encoding="utf-8") as fh:
+        fh.write(bson_dumps(documentos, indent=2, ensure_ascii=False))
+    return ruta
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--tenant", help="Limitar a un tenantId específico")
@@ -134,9 +158,17 @@ def main():
                         help="Grupos a borrar: A huérfanos, B capturas manuales, "
                              "C réplica con existencia en otra sucursal, D catálogo "
                              "en 0 (default AB)")
+    parser.add_argument("--respaldo", metavar="DIR",
+                        help="Carpeta donde volcar los artículos antes de borrarlos "
+                             "(un JSON por taller). Obligatorio con --aplicar.")
+    parser.add_argument("--sin-respaldo", action="store_true",
+                        help="Permite borrar sin respaldo. Úsalo sólo a conciencia.")
     parser.add_argument("--aplicar", action="store_true",
                         help="Ejecuta el borrado (sin esto es dry-run)")
     args = parser.parse_args()
+
+    if args.aplicar and not args.respaldo and not args.sin_respaldo:
+        sys.exit("Borrado sin red: indica --respaldo <carpeta> (o --sin-respaldo si lo asumes).")
 
     objetivo = {c for c in args.categorias.upper() if c in ETIQUETAS}
     if not objetivo:
@@ -209,6 +241,16 @@ def main():
             continue
 
         if args.aplicar:
+            # El respaldo va SIEMPRE antes del borrado: si no se puede escribir,
+            # este taller se salta y sus artículos siguen en la base.
+            if args.respaldo:
+                try:
+                    ruta = escribir_respaldo(args.respaldo, tenant_id, borrables)
+                    print(f"  -> respaldo: {ruta}")
+                except Exception as err:
+                    print(f"  -> ABORTADO: no se pudo escribir el respaldo ({err}). "
+                          f"No se borró nada de este taller.")
+                    continue
             res = items.delete_many({"_id": {"$in": [i["_id"] for i in borrables]}})
             total_borrados += res.deleted_count
             print(f"  -> BORRADOS {res.deleted_count} artículos")
