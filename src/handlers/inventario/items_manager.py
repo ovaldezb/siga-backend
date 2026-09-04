@@ -10,6 +10,162 @@ from src.shared.utils.date_utils import iso_utc
 
 logger = Logger()
 
+# Campos del catálogo que un artículo comparte entre sucursales: al editarlos en una,
+# se propagan a los artículos con el mismo número de parte en las demás (así los precios
+# se capturan una sola vez). Deliberadamente NO entran aquí:
+#   · stock            → existencia física, propia de cada sucursal
+#   · precio_compra / costo_promedio → costo local, lo recalcula compras_manager por sucursal
+#   · sucursal_id, tenant_id, createdAt
+CAMPOS_CATALOGO_COMPARTIDOS = (
+    "nombre", "tipo", "precio_venta", "precio_taller", "precio_cliente",
+    "precio_distribuidor", "precio_incluye_iva", "iva_exento", "categoria",
+    "marca", "proveedor", "proveedor_id", "clave_sat", "unidad_sat",
+    "descripcion_clave_sat", "descripcion_unidad_sat", "maneja_inventario",
+    "activo", "icon",
+)
+
+
+def _sucursales_tenant(db):
+    """Sucursales del tenant como [{id, nombre, activa}], ordenadas por nombre."""
+    sucursales = []
+    for s in db["sucursales"].find({}, {"nombre": 1, "activa": 1}):
+        sucursales.append({
+            "id": str(s["_id"]),
+            "nombre": s.get("nombre") or "(sin nombre)",
+            "activa": s.get("activa", True),
+        })
+    sucursales.sort(key=lambda s: s["nombre"])
+    return sucursales
+
+
+def _variantes_no_parte(no_partes):
+    """Números de parte a buscar con `$in`, cubriendo mayúsculas/minúsculas.
+
+    Se evita `$regex`/collation a propósito: con `$in` exacto la consulta sigue
+    usando el índice, y en la práctica el número de parte sólo varía en caja.
+    """
+    variantes = set()
+    for np in no_partes:
+        np = (np or '').strip()
+        if np:
+            variantes.update({np, np.upper(), np.lower()})
+    return list(variantes)
+
+
+def _es_inventariable(item):
+    """True si el artículo lleva existencia física (no es servicio ni captura manual)."""
+    return item.get('tipo') != 'SERVICIO' and item.get('maneja_inventario', True)
+
+
+def _existencias_por_sucursal(db, items_pagina):
+    """Existencia de cada número de parte en todas las sucursales del tenant.
+
+    Devuelve `{no_parte_lower: {sucursal_id: stock}}` para los artículos de la página.
+    Una sola agregación, sin importar cuántos artículos traiga el listado.
+    """
+    no_partes = {(i.get('no_parte') or '').strip() for i in items_pagina if _es_inventariable(i)}
+    variantes = _variantes_no_parte(no_partes)
+    if not variantes:
+        return {}
+
+    pipeline = [
+        {"$match": {"no_parte": {"$in": variantes}, "tipo": {"$ne": "SERVICIO"}}},
+        {"$group": {
+            "_id": {"np": {"$toLower": "$no_parte"}, "sucursal": "$sucursal_id"},
+            "stock": {"$sum": {"$ifNull": ["$stock", 0]}},
+        }},
+    ]
+    existencias = {}
+    for fila in db["items"].aggregate(pipeline):
+        np = fila["_id"].get("np")
+        sucursal_id = fila["_id"].get("sucursal")
+        if not np or not sucursal_id:
+            continue
+        existencias.setdefault(np, {})[str(sucursal_id)] = fila.get("stock") or 0
+    return existencias
+
+
+def _replicar_item_en_sucursales(db, tenant_id, item_base, origen_id):
+    """Da de alta el mismo artículo en las demás sucursales activas, con stock 0.
+
+    Así el número de parte queda disponible en todo el taller desde el alta y los
+    precios se editan una sola vez. Omite las sucursales donde ese número de parte
+    ya existe (no toca el artículo existente). Devuelve la lista de sucursales
+    donde sí se creó.
+    """
+    no_parte = (item_base.get('no_parte') or '').strip()
+    if not no_parte:
+        return []
+
+    destinos = [s for s in _sucursales_tenant(db)
+                if s['activa'] and s['id'] != str(origen_id or '')]
+    if not destinos:
+        return []
+
+    ya_tienen = set()
+    for d in db["items"].find({"no_parte": {"$in": _variantes_no_parte([no_parte])}},
+                              {"sucursal_id": 1}):
+        if d.get('sucursal_id'):
+            ya_tienen.add(str(d['sucursal_id']))
+
+    clones, creadas = [], []
+    for s in destinos:
+        if s['id'] in ya_tienen:
+            continue
+        clone = {k: v for k, v in item_base.items()
+                 if k not in ('_id', 'id', 'sucursalId')}
+        clone['sucursal_id'] = s['id']
+        clone['tenant_id'] = tenant_id
+        clone['stock'] = None if not _es_inventariable(clone) else 0
+        clone['createdAt'] = iso_utc()
+        if item_base.get('_id'):
+            clone['clonado_de'] = str(item_base['_id'])
+        clones.append(clone)
+        creadas.append(s)
+
+    if not clones:
+        return []
+
+    try:
+        db["items"].insert_many(clones)
+    except Exception as err:
+        # El alta en la sucursal del usuario ya quedó hecha: la réplica es un extra
+        # y no debe tumbar la petición.
+        logger.warning(f"No se pudo replicar el artículo a otras sucursales: {err}")
+        return []
+    return creadas
+
+
+def _propagar_catalogo_a_sucursales(db, item_oid, update_data, no_parte_anterior, no_parte_nuevo):
+    """Replica los cambios de catálogo hacia el mismo número de parte en otras sucursales.
+
+    Sólo viajan los campos de `CAMPOS_CATALOGO_COMPARTIDOS` (nunca stock ni costos).
+    Si el número de parte cambió, también se sincroniza para que los hermanos no
+    queden huérfanos. Devuelve cuántos artículos se actualizaron.
+    """
+    cambios = {k: v for k, v in update_data.items() if k in CAMPOS_CATALOGO_COMPARTIDOS}
+    if not cambios:
+        return 0
+
+    no_partes = [np for np in {(no_parte_anterior or '').strip(), (no_parte_nuevo or '').strip()} if np]
+    variantes = _variantes_no_parte(no_partes)
+    if not variantes:
+        return 0
+
+    if no_parte_nuevo and no_parte_anterior and no_parte_nuevo.strip() != no_parte_anterior.strip():
+        cambios['no_parte'] = no_parte_nuevo.strip()
+    cambios['updatedAt'] = iso_utc()
+
+    try:
+        res = db["items"].update_many(
+            {"_id": {"$ne": item_oid}, "no_parte": {"$in": variantes}},
+            {"$set": cambios}
+        )
+        return res.modified_count
+    except Exception as err:
+        logger.warning(f"No se pudieron propagar los cambios a otras sucursales: {err}")
+        return 0
+
 def list_items_handler(event, context):
     try:
         claims =get_claims(event)
@@ -25,6 +181,11 @@ def list_items_handler(event, context):
         # del Punto de Venta. Los SERVICIOS (mano de obra) sí se conservan.
         solo_inventario = str(
             query_params.get('soloInventario') or query_params.get('solo_inventario') or ''
+        ).lower() == 'true'
+        # Existencias cruzadas: adjunta a cada artículo el stock del mismo número de
+        # parte en TODAS las sucursales del taller (para "¿lo hay en la otra sucursal?").
+        incluir_existencias = str(
+            query_params.get('existencias') or query_params.get('incluirExistencias') or ''
         ).lower() == 'true'
         page = int(query_params.get('page', 1))
         limit = int(query_params.get('limit', 50))
@@ -69,16 +230,30 @@ def list_items_handler(event, context):
         total = db["items"].count_documents(query)
         items_result = list(db["items"].find(query).skip(skip).limit(limit))
         
+        existencias = _existencias_por_sucursal(db, items_result) if incluir_existencias else {}
+        sucursales = _sucursales_tenant(db) if incluir_existencias else []
+
         for i in items_result:
             i['id'] = str(i.pop('_id'))
             if 'sucursal_id' in i:
                 i['sucursalId'] = i.pop('sucursal_id')
-            
+
+            if incluir_existencias and _es_inventariable(i):
+                por_sucursal = existencias.get((i.get('no_parte') or '').strip().lower(), {})
+                i['existencias'] = [{
+                    "sucursal_id": s['id'],
+                    "sucursal_nombre": s['nombre'],
+                    "stock": por_sucursal.get(s['id'], 0),
+                    "es_actual": s['id'] == str(i.get('sucursalId') or ''),
+                } for s in sucursales if s['activa'] or por_sucursal.get(s['id'])]
+                i['stock_total'] = sum(e['stock'] for e in i['existencias'])
+
         return create_response(200, "Items obtenidos", {
             "items": items_result,
             "total": total,
             "page": page,
-            "limit": limit
+            "limit": limit,
+            "sucursales": sucursales if incluir_existencias else None,
         })
     except Exception as e:
         return handle_exception(e)
@@ -175,12 +350,27 @@ def create_item_handler(event, context):
             })
 
         result = db["items"].insert_one(nuevo_item)
+
+        # Alta multi-sucursal: por defecto el número de parte queda dado de alta en
+        # todas las sucursales (stock 0 en las demás) para no tener que capturarlo
+        # —ni actualizar sus precios— sucursal por sucursal.
+        replicar = body.get('replicar_en_sucursales', body.get('replicarEnSucursales', True))
+        replicadas = []
+        if replicar and sucursal_nueva:
+            replicadas = _replicar_item_en_sucursales(db, tenant_id, nuevo_item, sucursal_nueva)
+
         nuevo_item['id'] = str(result.inserted_id)
         del nuevo_item['_id']
         if 'sucursal_id' in nuevo_item:
             nuevo_item['sucursalId'] = nuevo_item.pop('sucursal_id')
-        
-        return create_response(201, "Item creado exitosamente", nuevo_item)
+        nuevo_item['replicado_en'] = [{"sucursal_id": s['id'], "sucursal_nombre": s['nombre']}
+                                      for s in replicadas]
+
+        mensaje = "Item creado exitosamente"
+        if replicadas:
+            nombres = ", ".join(s['nombre'] for s in replicadas)
+            mensaje = f"Item creado exitosamente y dado de alta también en: {nombres}."
+        return create_response(201, mensaje, nuevo_item)
     except Exception as e:
         return handle_exception(e)
 
@@ -372,9 +562,16 @@ def update_item_handler(event, context):
         if not update_data:
             return create_response(400, "No hay campos válidos para actualizar.")
 
+        item_oid = ObjectId(item_id)
+
+        # Número de parte previo: si el usuario lo cambia, se necesita el anterior para
+        # localizar a los hermanos de las otras sucursales antes de sincronizarlos.
+        anterior = db["items"].find_one({"_id": item_oid}, {"no_parte": 1})
+        no_parte_anterior = (anterior or {}).get('no_parte')
+
         update_data['updatedAt'] = iso_utc()
 
-        update_query = {"_id": ObjectId(item_id)}
+        update_query = {"_id": item_oid}
         if sucursal_id_guard and not ignore_scope:
             update_query["sucursal_id"] = sucursal_id_guard
         result = db["items"].update_one(update_query, {"$set": update_data})
@@ -382,11 +579,26 @@ def update_item_handler(event, context):
         if result.matched_count == 0:
             return create_response(404, "Item no encontrado en esta sucursal.")
 
-        item = db["items"].find_one({"_id": ObjectId(item_id)})
+        # Precios y datos del catálogo se capturan una sola vez: se propagan al mismo
+        # número de parte en las demás sucursales (stock y costos quedan intactos).
+        propagar = body.get('propagar_a_sucursales', body.get('propagarASucursales', True))
+        propagados = 0
+        if propagar:
+            propagados = _propagar_catalogo_a_sucursales(
+                db, item_oid, update_data, no_parte_anterior,
+                update_data.get('no_parte', no_parte_anterior)
+            )
+
+        item = db["items"].find_one({"_id": item_oid})
         item['id'] = str(item.pop('_id'))
         if 'sucursal_id' in item:
             item['sucursalId'] = item.pop('sucursal_id')
-        return create_response(200, "Item actualizado", item)
+        item['propagado_a'] = propagados
+
+        mensaje = "Item actualizado"
+        if propagados:
+            mensaje = f"Item actualizado (también en {propagados} sucursal(es) más)"
+        return create_response(200, mensaje, item)
     except Exception as e:
         return handle_exception(e)
 
