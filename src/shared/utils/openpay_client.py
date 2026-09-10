@@ -79,8 +79,8 @@ def create_spei_charge(customer_id: str, amount: float, description: str, order_
     }
     return _request(f"/customers/{customer_id}/charges", payload, "POST")
 
-def create_card_charge(customer_id: str, amount: float, description: str, token_id: str, device_session_id: str, order_id: str) -> dict:
-    """Crea un cargo inmediato de tipo tarjeta de crédito/débito para un cliente."""
+def create_card_charge(customer_id: str, amount: float, description: str, token_id: str, device_session_id: str, order_id: str, use_3d_secure: bool = True, redirect_url: str = None) -> dict:
+    """Crea un cargo de tipo tarjeta con soporte para 3D Secure para un cliente."""
     payload = {
         "method": "card",
         "source_id": token_id,
@@ -89,4 +89,17 @@ def create_card_charge(customer_id: str, amount: float, description: str, token_
         "description": description,
         "order_id": order_id
     }
+    if use_3d_secure:
+        payload["use_3d_secure"] = True
+    if redirect_url:
+        payload["redirect_url"] = redirect_url
+
     return _request(f"/customers/{customer_id}/charges", payload, "POST")
+
+def get_charge(charge_id: str, customer_id: str = None) -> dict:
+    """Obtiene el detalle y estatus de un cargo en Openpay."""
+    if customer_id:
+        endpoint = f"/customers/{customer_id}/charges/{charge_id}"
+    else:
+        endpoint = f"/charges/{charge_id}"
+    return _request(endpoint, method="GET")

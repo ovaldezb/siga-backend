@@ -26,6 +26,58 @@ def add_months(source_date, months):
         day = min(source_date.day, days_in_months[month-1])
     return datetime(year, month, day, source_date.hour, source_date.minute, source_date.second)
 
+def calcular_nuevas_fechas_suscripcion(taller, fecha_referencia=None):
+    """Calcula la nueva fecha de corte y límite de pago según el modelo pre-pago."""
+    if fecha_referencia is None:
+        fecha_referencia = datetime.utcnow()
+
+    corte_actual = taller.get("proximaFechaCorte")
+    pago_actual = taller.get("proximaFechaPago")
+    meses_cargo = taller.get("mesesCargo", 1)
+    try:
+        meses_cargo = int(meses_cargo)
+    except (ValueError, TypeError):
+        meses_cargo = 1
+    if meses_cargo < 1 or meses_cargo > 12:
+        meses_cargo = 1
+
+    corte_dt = None
+    if corte_actual:
+        if isinstance(corte_actual, str):
+            try:
+                corte_dt = datetime.fromisoformat(corte_actual.replace("Z", "+00:00")).replace(tzinfo=None)
+            except ValueError:
+                pass
+        elif isinstance(corte_actual, datetime):
+            corte_dt = corte_actual.replace(tzinfo=None)
+
+    pago_dt = None
+    if pago_actual:
+        if isinstance(pago_actual, str):
+            try:
+                pago_dt = datetime.fromisoformat(pago_actual.replace("Z", "+00:00")).replace(tzinfo=None)
+            except ValueError:
+                pass
+        elif isinstance(pago_actual, datetime):
+            pago_dt = pago_actual.replace(tzinfo=None)
+
+    if corte_dt and pago_dt:
+        es_primer_pago = (corte_dt - pago_dt) > timedelta(days=15)
+        if fecha_referencia <= pago_dt:
+            if es_primer_pago:
+                nueva_corte = corte_dt
+            else:
+                nueva_corte = add_months(corte_dt, meses_cargo)
+        else:
+            nueva_corte = add_months(fecha_referencia, meses_cargo) - timedelta(days=10)
+        nueva_pago = nueva_corte + timedelta(days=10)
+    else:
+        nueva_corte = add_months(fecha_referencia, meses_cargo)
+        nueva_pago = nueva_corte + timedelta(days=10)
+
+    return nueva_corte, nueva_pago
+
+
 # @logger.inject_lambda_context
 def procesar_pago_suscripcion_handler(event, context):
     try:
@@ -59,6 +111,7 @@ def procesar_pago_suscripcion_handler(event, context):
         card_token_id = body.get("card_token_id")
         openpay_token_id = body.get("openpay_token_id")
         device_session_id = body.get("device_session_id")
+        redirect_url = body.get("redirect_url")
 
         if not monto or (not card_token_id and not openpay_token_id):
             return create_response(400, "Parámetros de token de tarjeta y monto son requeridos.")
@@ -98,7 +151,9 @@ def procesar_pago_suscripcion_handler(event, context):
                     description=concepto,
                     token_id=openpay_token_id,
                     device_session_id=device_session_id,
-                    order_id=order_id
+                    order_id=order_id,
+                    use_3d_secure=True,
+                    redirect_url=redirect_url
                 )
             except Exception as op_err:
                 pago_fail_doc = {
@@ -114,10 +169,35 @@ def procesar_pago_suscripcion_handler(event, context):
                 db["suscripciones_pagos"].insert_one(pago_fail_doc)
                 return create_response(400, f"Error al procesar el pago en Openpay: {str(op_err)}")
                 
+            status_openpay = charge_res.get("status")
+            payment_method_info = charge_res.get("payment_method") or {}
+            url_3ds = payment_method_info.get("url")
+
             card_info = charge_res.get("card", {})
             brand = card_info.get("brand", "VISA").upper()
             last4 = card_info.get("card_number", "••••")[-4:]
-            
+            metodo_str = f"Tarjeta (Openpay - {brand} •••• {last4})"
+
+            # Si Openpay requiere autenticación 3D Secure con el banco
+            if status_openpay == "charge_pending" and url_3ds:
+                pago_doc = {
+                    "tallerTenantId": tenant_id,
+                    "usuarioEmail": user_email,
+                    "monto": float(monto),
+                    "concepto": concepto,
+                    "folioClip": charge_res.get("id"),
+                    "estado": "PENDIENTE",
+                    "metodo": metodo_str,
+                    "fechaPago": datetime.utcnow()
+                }
+                db["suscripciones_pagos"].insert_one(pago_doc)
+                return create_response(200, "Se requiere autenticación 3D Secure con su banco", {
+                    "requires_3ds": True,
+                    "url_3ds": url_3ds,
+                    "charge_id": charge_res.get("id"),
+                    "status": "charge_pending"
+                })
+
             pago_doc = {
                 "tallerTenantId": tenant_id,
                 "usuarioEmail": user_email,
@@ -125,7 +205,7 @@ def procesar_pago_suscripcion_handler(event, context):
                 "concepto": concepto,
                 "folioClip": charge_res.get("id"),
                 "estado": "COMPLETADO",
-                "metodo": f"Tarjeta (Openpay - {brand} •••• {last4})",
+                "metodo": metodo_str,
                 "fechaPago": datetime.utcnow()
             }
             db["suscripciones_pagos"].insert_one(pago_doc)
@@ -231,70 +311,8 @@ def procesar_pago_suscripcion_handler(event, context):
 
         # 5. Extender la vigencia del Taller (Platform DB -> talleres)
         taller = db["talleres"].find_one({"tenantId": tenant_id})
-        corte_actual = None
-        pago_actual = None
-        meses_cargo = 1
-        if taller:
-            corte_actual = taller.get("proximaFechaCorte")
-            pago_actual = taller.get("proximaFechaPago")
-            meses_cargo = taller.get("mesesCargo", 1)
-            try:
-                meses_cargo = int(meses_cargo)
-            except (ValueError, TypeError):
-                meses_cargo = 1
-        if meses_cargo < 1 or meses_cargo > 12:
-            meses_cargo = 1
-        
-        # Parsear proximaFechaCorte a datetime naive
-        corte_dt = None
-        if corte_actual:
-            if isinstance(corte_actual, str):
-                try:
-                    corte_dt = datetime.fromisoformat(corte_actual.replace("Z", "+00:00")).replace(tzinfo=None)
-                except ValueError:
-                    pass
-            elif isinstance(corte_actual, datetime):
-                corte_dt = corte_actual.replace(tzinfo=None)
-
-        # Parsear proximaFechaPago a datetime naive
-        pago_dt = None
-        if pago_actual:
-            if isinstance(pago_actual, str):
-                try:
-                    pago_dt = datetime.fromisoformat(pago_actual.replace("Z", "+00:00")).replace(tzinfo=None)
-                except ValueError:
-                    pass
-            elif isinstance(pago_actual, datetime):
-                pago_dt = pago_actual.replace(tzinfo=None)
-
         fecha_pago = datetime.utcnow()
-
-        # Determinar nueva corte y pago para modelo Pre-pago
-        if corte_dt and pago_dt:
-            # Determinar si es el primer pago de todos (el primer pago inicial con gracia)
-            # En el primer pago, corte_dt (fin de ciclo) y pago_dt (límite de pago) están distanciados por ~20 días.
-            # En los subsecuentes, la fecha de pago es 10 días posterior a la fecha de corte (corte es inicio de ciclo).
-            es_primer_pago = (corte_dt - pago_dt) > timedelta(days=15)
-
-            if fecha_pago <= pago_dt:
-                # Pago a tiempo (antes o en la fecha límite de pago)
-                if es_primer_pago:
-                    # El primer pago valida el ciclo actual, no avanzamos la corte por defecto
-                    nueva_corte = corte_dt
-                else:
-                    # Ciclos subsecuentes: avanzamos la fecha de corte
-                    nueva_corte = add_months(corte_dt, meses_cargo)
-            else:
-                # Pago tardío (fuera de la fecha límite de pago -> pago atrasado)
-                # Opción A: nueva_fecha_corte = fecha_realmente_pago + meses_cargo - 10 días
-                nueva_corte = add_months(fecha_pago, meses_cargo) - timedelta(days=10)
-                
-            # La fecha límite de pago es siempre 10 días posterior al corte
-            nueva_pago = nueva_corte + timedelta(days=10)
-        else:
-            # Si no hay fechas guardadas previas, inicializar a partir de hoy
-            nueva_corte = add_months(fecha_pago, meses_cargo)
-            nueva_pago = nueva_corte + timedelta(days=10)
+        nueva_corte, nueva_pago = calcular_nuevas_fechas_suscripcion(taller, fecha_pago)
 
         db["talleres"].update_one(
             {"tenantId": tenant_id},
@@ -382,6 +400,128 @@ def obtener_historial_pagos_handler(event, context):
         logger.error(f"Error obteniendo historial: {str(e)}")
         return handle_exception(e)
 
+def confirmar_pago_openpay_handler(event, context):
+    """Verifica y confirma el estado de un cargo procesado mediante 3D Secure."""
+    try:
+        claims = get_claims(event)
+        tenant_id = claims.get('custom:tenant_id')
+        user_email = claims.get('email', 'pago@cliente.com')
+
+        body = json.loads(event.get("body") or "{}")
+        query_params = event.get("queryStringParameters") or {}
+
+        charge_id = body.get("charge_id") or body.get("id") or query_params.get("charge_id") or query_params.get("id")
+        if not charge_id:
+            return create_response(400, "El identificador de cargo (charge_id o id) es requerido.")
+
+        db = get_platform_db()
+        taller = db["talleres"].find_one({"tenantId": tenant_id})
+        if not taller:
+            return create_response(404, "Taller no encontrado.")
+
+        from src.shared.utils import openpay_client
+        charge_res = openpay_client.get_charge(charge_id)
+        status = charge_res.get("status")
+
+        pago_existente = db["suscripciones_pagos"].find_one({"folioClip": charge_id})
+
+        if status == "completed":
+            # Idempotencia: si ya fue procesado y completado
+            if pago_existente and pago_existente.get("estado") == "COMPLETADO":
+                pago_existente["id"] = str(pago_existente["_id"])
+                del pago_existente["_id"]
+                pago_existente["proximaFechaCorte"] = iso_utc(taller.get("proximaFechaCorte"))
+                pago_existente["proximaFechaPago"] = iso_utc(taller.get("proximaFechaPago"))
+                return create_response(200, "El pago ya se encuentra procesado y completado.", {
+                    "pago": pago_existente
+                })
+
+            card_info = charge_res.get("card", {})
+            brand = card_info.get("brand", "VISA").upper()
+            last4 = card_info.get("card_number", "••••")[-4:]
+            metodo_str = f"Tarjeta (Openpay - {brand} •••• {last4})"
+
+            fecha_actual = datetime.utcnow()
+            nueva_corte, nueva_pago = calcular_nuevas_fechas_suscripcion(taller, fecha_actual)
+
+            if pago_existente:
+                db["suscripciones_pagos"].update_one(
+                    {"_id": pago_existente["_id"]},
+                    {"$set": {
+                        "estado": "COMPLETADO",
+                        "metodo": metodo_str,
+                        "fechaPago": fecha_actual
+                    }}
+                )
+                pago_id = str(pago_existente["_id"])
+            else:
+                pago_doc = {
+                    "tallerTenantId": tenant_id,
+                    "usuarioEmail": user_email,
+                    "monto": float(charge_res.get("amount", 0)),
+                    "concepto": charge_res.get("description", "Suscripción Mensual Mekanics Manager"),
+                    "folioClip": charge_id,
+                    "estado": "COMPLETADO",
+                    "metodo": metodo_str,
+                    "fechaPago": fecha_actual
+                }
+                res_ins = db["suscripciones_pagos"].insert_one(pago_doc)
+                pago_id = str(res_ins.inserted_id)
+
+            db["talleres"].update_one(
+                {"tenantId": tenant_id},
+                {"$set": {
+                    "proximaFechaCorte": nueva_corte,
+                    "proximaFechaPago": nueva_pago,
+                    "estado": "ACTIVO"
+                }}
+            )
+
+            pago_resp = {
+                "id": pago_id,
+                "folioClip": charge_id,
+                "monto": float(charge_res.get("amount", 0)),
+                "concepto": charge_res.get("description", "Suscripción Mensual Mekanics Manager"),
+                "metodo": metodo_str,
+                "estado": "COMPLETADO",
+                "fechaPago": iso_utc(fecha_actual),
+                "proximaFechaCorte": iso_utc(nueva_corte),
+                "proximaFechaPago": iso_utc(nueva_pago)
+            }
+
+            return create_response(200, "Pago con tarjeta verificado y completado exitosamente", {
+                "pago": pago_resp
+            })
+
+        elif status in ["failed", "cancelled"]:
+            error_desc = charge_res.get("error_message") or charge_res.get("description") or "Transacción declinada o cancelada por el banco."
+            error_code = charge_res.get("error_code")
+            if pago_existente:
+                db["suscripciones_pagos"].update_one(
+                    {"_id": pago_existente["_id"]},
+                    {"$set": {
+                        "estado": "FALLIDO",
+                        "detalle": error_desc,
+                        "codigoError": error_code
+                    }}
+                )
+
+            return create_response(400, f"Error al procesar el pago: {error_desc}", {
+                "status": status,
+                "error_code": error_code,
+                "detalle": error_desc
+            })
+
+        else: # status == 'charge_pending'
+            return create_response(200, "El pago continúa pendiente de autenticación.", {
+                "status": "charge_pending",
+                "charge_id": charge_id
+            })
+
+    except Exception as e:
+        logger.error(f"Error confirmando pago Openpay: {str(e)}")
+        return handle_exception(e)
+
 def openpay_webhook_handler(event, context):
     try:
         # 1. Autenticación básica opcional para seguridad
@@ -409,10 +549,71 @@ def openpay_webhook_handler(event, context):
             trans_id = transaction.get("id")
             customer_id = transaction.get("customer_id")
             amount = transaction.get("amount")
+            method = transaction.get("method")
             
             db = get_platform_db()
-            
-            # Buscar el taller por openpaySpeiChargeId o por openpayCustomerId
+
+            # Caso 1: Cobro con Tarjeta (3D Secure completado asíncronamente)
+            if method == "card":
+                pago = db["suscripciones_pagos"].find_one({"folioClip": trans_id})
+                taller = None
+                if pago:
+                    taller = db["talleres"].find_one({"tenantId": pago.get("tallerTenantId")})
+                if not taller and customer_id:
+                    taller = db["talleres"].find_one({"openpayCustomerId": customer_id})
+
+                if not taller:
+                    logger.error(f"Taller no encontrado para cargo con tarjeta Openpay {trans_id}")
+                    return create_response(200, "Webhook recibido pero taller no fue localizado.")
+
+                tenant_id = taller.get("tenantId")
+                admin_email = taller.get("adminEmail", "pago@cliente.com")
+
+                if pago and pago.get("estado") == "COMPLETADO":
+                    logger.info(f"Cargo con tarjeta {trans_id} ya estaba marcado como COMPLETADO previamente.")
+                    return create_response(200, "Webhook procesado: cargo ya completado.")
+
+                card_info = transaction.get("card", {})
+                brand = card_info.get("brand", "VISA").upper()
+                last4 = card_info.get("card_number", "••••")[-4:]
+                metodo_str = f"Tarjeta (Openpay - {brand} •••• {last4})"
+
+                fecha_actual = datetime.utcnow()
+                if pago:
+                    db["suscripciones_pagos"].update_one(
+                        {"_id": pago["_id"]},
+                        {"$set": {
+                            "estado": "COMPLETADO",
+                            "metodo": metodo_str,
+                            "fechaPago": fecha_actual
+                        }}
+                    )
+                else:
+                    pago_doc = {
+                        "tallerTenantId": tenant_id,
+                        "usuarioEmail": admin_email,
+                        "monto": float(amount),
+                        "concepto": transaction.get("description", "Suscripción Mensual Mekanics Manager"),
+                        "folioClip": trans_id,
+                        "estado": "COMPLETADO",
+                        "metodo": metodo_str,
+                        "fechaPago": fecha_actual
+                    }
+                    db["suscripciones_pagos"].insert_one(pago_doc)
+
+                nueva_corte, nueva_pago = calcular_nuevas_fechas_suscripcion(taller, fecha_actual)
+                db["talleres"].update_one(
+                    {"tenantId": tenant_id},
+                    {"$set": {
+                        "proximaFechaCorte": nueva_corte,
+                        "proximaFechaPago": nueva_pago,
+                        "estado": "ACTIVO"
+                    }}
+                )
+                logger.info(f"Suscripcion extendida exitosamente para el taller {tenant_id} via Tarjeta 3DS Webhook.")
+                return create_response(200, "Webhook de tarjeta procesado correctamente")
+
+            # Caso 2: Cobro SPEI (method == "bank_account")
             taller = db["talleres"].find_one({"openpaySpeiChargeId": trans_id})
             if not taller and customer_id:
                 taller = db["talleres"].find_one({"openpayCustomerId": customer_id})
@@ -424,63 +625,20 @@ def openpay_webhook_handler(event, context):
             tenant_id = taller.get("tenantId")
             admin_email = taller.get("adminEmail", "pago@cliente.com")
             
-            # Registrar el pago exitoso en la Colección 'suscripciones_pagos'
             pago_doc = {
                 "tallerTenantId": tenant_id,
                 "usuarioEmail": admin_email,
                 "monto": float(amount),
                 "concepto": transaction.get("description", "Suscripción Mensual Mekanics Manager"),
-                "folioClip": trans_id, # Usamos folioClip para guardar el ID de transaccion Openpay
+                "folioClip": trans_id,
                 "estado": "COMPLETADO",
                 "metodo": "Transferencia SPEI (Openpay)",
                 "fechaPago": datetime.utcnow()
             }
             db["suscripciones_pagos"].insert_one(pago_doc)
             
-            # Calcular nueva fecha de corte
-            corte_actual = taller.get("proximaFechaCorte")
-            pago_actual = taller.get("proximaFechaPago")
-            meses_cargo = taller.get("mesesCargo", 1)
-            try:
-                meses_cargo = int(meses_cargo)
-            except (ValueError, TypeError):
-                meses_cargo = 1
-                
-            corte_dt = None
-            if corte_actual:
-                if isinstance(corte_actual, str):
-                    try:
-                        corte_dt = datetime.fromisoformat(corte_actual.replace("Z", "+00:00")).replace(tzinfo=None)
-                    except ValueError:
-                        pass
-                elif isinstance(corte_actual, datetime):
-                    corte_dt = corte_actual.replace(tzinfo=None)
-                    
-            pago_dt = None
-            if pago_actual:
-                if isinstance(pago_actual, str):
-                    try:
-                        pago_dt = datetime.fromisoformat(pago_actual.replace("Z", "+00:00")).replace(tzinfo=None)
-                    except ValueError:
-                        pass
-                elif isinstance(pago_actual, datetime):
-                    pago_dt = pago_actual.replace(tzinfo=None)
-                    
-            fecha_pago = datetime.utcnow()
-            
-            if corte_dt and pago_dt:
-                es_primer_pago = (corte_dt - pago_dt) > timedelta(days=15)
-                if fecha_pago <= pago_dt:
-                    if es_primer_pago:
-                        nueva_corte = corte_dt
-                    else:
-                        nueva_corte = add_months(corte_dt, meses_cargo)
-                else:
-                    nueva_corte = add_months(fecha_pago, meses_cargo) - timedelta(days=10)
-                nueva_pago = nueva_corte + timedelta(days=10)
-            else:
-                nueva_corte = add_months(fecha_pago, meses_cargo)
-                nueva_pago = nueva_corte + timedelta(days=10)
+            fecha_actual = datetime.utcnow()
+            nueva_corte, nueva_pago = calcular_nuevas_fechas_suscripcion(taller, fecha_actual)
                 
             # Generar un NUEVO cargo SPEI para el siguiente mes
             openpay_spei_charge_id = ""
@@ -508,7 +666,6 @@ def openpay_webhook_handler(event, context):
             except Exception as new_spei_err:
                 logger.error(f"Error al generar siguiente cargo SPEI para el taller {tenant_id}: {str(new_spei_err)}")
                 
-            # Actualizar vigencia y nuevo SPEI en el taller
             db["talleres"].update_one(
                 {"tenantId": tenant_id},
                 {"$set": {
@@ -520,6 +677,16 @@ def openpay_webhook_handler(event, context):
                 }}
             )
             logger.info(f"Suscripcion extendida exitosamente para el taller {tenant_id} via SPEI Webhook.")
+
+        elif event_type == "charge.failed":
+            trans_id = transaction.get("id")
+            error_desc = transaction.get("error_message") or transaction.get("description") or "Cargo fallido en Openpay"
+            db = get_platform_db()
+            db["suscripciones_pagos"].update_one(
+                {"folioClip": trans_id},
+                {"$set": {"estado": "FALLIDO", "detalle": error_desc}}
+            )
+            logger.info(f"Cargo {trans_id} actualizado a FALLIDO por Webhook charge.failed")
             
         return create_response(200, "Webhook procesado correctamente")
     except Exception as e:
