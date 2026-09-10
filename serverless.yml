@@ -295,6 +295,17 @@ functions:
           authorizer:
             name: cognitoAuthorizer
 
+  pagos_confirmar:
+    handler: src/handlers/admin/pagos_manager.confirmar_pago_openpay_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /pagos/suscripcion/confirmar
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
   openpay_webhook:
     handler: src/handlers/admin/pagos_manager.openpay_webhook_handler
     layers:
