@@ -2,6 +2,7 @@ import json
 from unittest.mock import patch, MagicMock
 from datetime import datetime
 from bson import ObjectId
+from src.handlers.admin.talleres_manager import create_taller_handler
 from src.handlers.admin.pagos_manager import (
     procesar_pago_suscripcion_handler,
     openpay_webhook_handler,
