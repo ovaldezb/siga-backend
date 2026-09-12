@@ -40,6 +40,13 @@ def ensure_indexes(db, tenant_id: str) -> None:
             [("orden_id", 1)], unique=True, name="uniq_cotizacion_orden"
         )
 
+        # flotilla_acceso: una entrada por flotilla (portal del cliente flotillero).
+        # El unique protege el upsert de create_portal_link: dos asesores rotando el
+        # enlace a la vez no pueden dejar dos nonces vivos para la misma flotilla.
+        db.flotilla_acceso.create_index(
+            [("flotilla_id", 1)], unique=True, name="uniq_flotilla_acceso"
+        )
+
         # citas: el listing ordena por (fecha desc, horaInicio desc, createdAt desc)
         # con scope sucursal_id; sin índice compuesto el sort cae a memoria (>10k docs).
         db.citas.create_index(
