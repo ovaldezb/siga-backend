@@ -5,7 +5,7 @@ from datetime import datetime
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.infrastructure.database import get_tenant_db, MongoDBConnection
-from src.shared.utils.auth_utils import try_parse_id, get_claims, is_admin
+from src.shared.utils.auth_utils import try_parse_id, get_claims, is_admin, es_mecanico
 from src.shared.utils.date_utils import iso_utc
 from src.shared.utils.os_events import (
     append_os_event,
@@ -19,6 +19,107 @@ from src.handlers.admin.folios_manager import _get_next_folio_internal
 
 logger = Logger()
 #UPDATE_COMPLETE: 19/05/2026
+
+# ---------------------------------------------------------------------------
+# Pestañas de la lista de OS (query param `tab`)
+#
+# Espejo exacto de `tabDe()` en sae-app/src/app/pages/ordenes-servicio/
+# ordenes-servicio.component.ts. Tienen que coincidir: el backend decide qué
+# filas y qué total devuelve (paginación) y el front vuelve a filtrar encima.
+# Si divergen, el usuario ve "23 resultados" y una lista de 18.
+#
+# Reglas:
+# - Por Cobrar = el trabajo terminó y sigue debiendo algo. Dos condiciones, las
+#   dos necesarias: `saldo_pendiente > 0` atrapa crédito y abonos parciales
+#   (incluso si el flujo dejó `pagada: True` con saldo vivo), y `pagada != True`
+#   atrapa la OS terminada que nunca pasó por el POS, que no tiene venta y por
+#   eso tampoco tiene `saldo_pendiente`.
+# - Pagadas = cobrada de verdad y sin un peso pendiente. Antes esta pestaña no
+#   miraba el saldo, así que una OS a crédito con adeudo vivo aparecía como
+#   pagada.
+# - Activas = el complemento (`$nor`). Al ser catch-all, ninguna combinación de
+#   (estado, pagada, saldo_pendiente) puede quedar fuera de todas las pestañas
+#   y desaparecer de la vista, que es lo que pasaba antes.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Mecánicos: la orden sin dinero
+#
+# Un usuario del grupo MECANICO no ve importes ni puede mover nada que cueste.
+# Se aplica en el servidor, no sólo escondiéndolo en pantalla: si los precios
+# viajan al dispositivo, se leen en la consola del navegador.
+#
+# Lo que SÍ conserva es el estatus de cada trabajo (aprobado / rechazado /
+# pendiente): es lo que le dice qué tiene autorizado hacer.
+# ---------------------------------------------------------------------------
+
+# Campos con importe dentro de cada item de `puntosArreglar`.
+_ITEM_CAMPOS_DINERO = (
+    'precioVenta', 'precio_venta', 'precioCompra', 'precio_compra',
+    'subtotal', 'costo', 'costo_proveedor', 'descuento', 'importe',
+)
+
+# Campos con importe a nivel de la orden.
+_ORDEN_CAMPOS_DINERO = (
+    'total', 'subtotal', 'iva', 'anticipo', 'costo_revision',
+    'saldo_pendiente', 'monto_credito', 'pago_info',
+)
+
+
+def _sin_importes(orden: dict) -> dict:
+    """Devuelve la orden sin un solo número de dinero. Muta y devuelve el mismo dict."""
+    for campo in _ORDEN_CAMPOS_DINERO:
+        orden.pop(campo, None)
+
+    for punto in orden.get('puntosArreglar') or []:
+        for item in punto.get('items') or []:
+            for campo in _ITEM_CAMPOS_DINERO:
+                item.pop(campo, None)
+
+    # `inventario` es la lista de refacciones surtidas; conserva costos por línea.
+    for entrada in orden.get('inventario') or []:
+        if isinstance(entrada, dict):
+            for campo in _ITEM_CAMPOS_DINERO:
+                entrada.pop(campo, None)
+
+    return orden
+
+
+# Lo único que un MECANICO puede escribir en la orden. Cualquier otro campo del
+# body se ignora en silencio. `puntosArreglar` queda FUERA a propósito por dos
+# razones: sus items traen precios, y como al mecánico se los borramos al leer,
+# aceptar su versión del arreglo borraría los importes de la orden.
+_CAMPOS_MECANICO = [
+    'estado', 'falla_reportada', 'diagnostico',
+    'kilometraje', 'nivel_tanque', 'testigos_encendidos',
+    'proximo_cambio_bujias', 'proximo_cambio_aceite',
+    'proximo_cambio_bujias_fecha', 'proximo_cambio_aceite_fecha',
+]
+
+
+_ESTADOS_COBRABLES = ['FINALIZADO', 'ENTREGADO']
+
+# `saldo_pendiente` ausente o null = la OS nunca pasó por el POS, cuenta como 0.
+_SALDO_VIVO = {'saldo_pendiente': {'$gt': 0}}
+_SIN_SALDO = {'$or': [{'saldo_pendiente': {'$lte': 0}}, {'saldo_pendiente': None}]}
+_NO_PAGADA = {'pagada': {'$ne': True}}
+
+_TAB_CANCELADAS = {'estado': 'CANCELADO'}
+_TAB_POR_COBRAR = {'$and': [
+    {'estado': {'$in': _ESTADOS_COBRABLES}},
+    {'$or': [_SALDO_VIVO, _NO_PAGADA]},
+]}
+# El `$ne: CANCELADO` es la prioridad del frontend hecha explícita: allá "canceladas"
+# se evalúa primero, así que una OS cancelada después de cobrada NO cuenta como pagada.
+# Aquí las condiciones son independientes y hay que excluirla a mano.
+_TAB_PAGADAS = {'$and': [{'estado': {'$ne': 'CANCELADO'}}, {'pagada': True}, _SIN_SALDO]}
+
+_TAB_CONDICIONES = {
+    'canceladas': _TAB_CANCELADAS,
+    'porcobrar': _TAB_POR_COBRAR,
+    'pagadas': _TAB_PAGADAS,
+    'activas': {'$nor': [_TAB_CANCELADAS, _TAB_POR_COBRAR, _TAB_PAGADAS]},
+}
 
 # ---------------------------------------------------------------------------
 # Mantenimiento preventivo: sincronización bidireccional OS <-> Vehículo
@@ -566,6 +667,11 @@ def create_orden_handler(event, context):
         body = json.loads(event.get('body', '{}'))
         db = get_tenant_db(tenant_id)
 
+        # El mecánico puede abrir una orden, pero no ponerle precio: sus importes
+        # se descartan y la orden nace en cero para que el asesor la cotice.
+        if es_mecanico(claims):
+            body = _sin_importes(body)
+
         # 0. Validar sucursalId
         sucursal_id_os = body.get("sucursalId")
         if not sucursal_id_os:
@@ -948,20 +1054,12 @@ def list_ordenes_handler(event, context):
 
         # `tab` = pestaña principal del frontend. Traduce la combinación estado+pago
         # a condiciones Mongo para que paginación y conteos sean correctos por pestaña
-        # (antes el front recibía todo y filtraba en cliente, rompiendo el total/páginas).
-        # "Por Cobrar" = reparación finalizada con cobro pendiente (incluye ventas a
-        # crédito, que ventas_manager deja en FINALIZADO + pagada:False).
+        # (si el front recibiera todo y filtrara en cliente, el total/páginas miente).
+        # Las condiciones son el espejo de `tabDe()` en ordenes-servicio.component.ts;
+        # si cambias una, cambia la otra o la lista y su paginación se contradicen.
         tab = query_params.get('tab')
-        if tab == 'activas':
-            and_conditions.append({'estado': {'$nin': ['CANCELADO', 'FINALIZADO', 'ENTREGADO']}})
-            and_conditions.append({'pagada': {'$ne': True}})
-        elif tab == 'porcobrar':
-            and_conditions.append({'estado': 'FINALIZADO'})
-            and_conditions.append({'pagada': {'$ne': True}})
-        elif tab == 'pagadas':
-            and_conditions.append({'$or': [{'pagada': True}, {'estado': 'ENTREGADO'}]})
-        elif tab == 'canceladas':
-            and_conditions.append({'estado': 'CANCELADO'})
+        if tab in _TAB_CONDICIONES:
+            and_conditions.append(_TAB_CONDICIONES[tab])
 
         # Periodo (año / mes) sobre la fecha de ingreso.
         anio_filter = query_params.get('anio')
@@ -1099,7 +1197,11 @@ def list_ordenes_handler(event, context):
                         ev['createdAt'] = iso_utc(ev['createdAt'])
 
             ordenes.append(o)
-            
+
+        # Al mecánico la lista le llega sin importes.
+        if es_mecanico(claims):
+            ordenes = [_sin_importes(o) for o in ordenes]
+
         response_data = {
             "items": ordenes,
             "total": total,
@@ -1165,6 +1267,9 @@ def get_orden_handler(event, context):
             orden['cliente_link_enviado'] = db['cotizacion_acceso'].count_documents(
                 {'orden_id': orden['id']}, limit=1
             ) > 0
+
+        if es_mecanico(claims):
+            orden = _sin_importes(orden)
 
         return create_response(200, "Orden obtenida", orden)
     except Exception as e:
@@ -1367,6 +1472,11 @@ def update_orden_handler(event, context):
         if 'sucursalId' in body:
             body['sucursal_id'] = body.pop('sucursalId')
 
+        # El mecánico sólo escribe los campos de su trabajo. Todo lo que cuesta
+        # —items, anticipo, costo de revisión— se ignora aunque venga en el body.
+        if es_mecanico(claims):
+            campos_permitidos = _CAMPOS_MECANICO
+
         for campo in campos_permitidos:
             if campo in body:
                 update_data[campo] = body[campo]
@@ -1548,7 +1658,12 @@ def update_orden_handler(event, context):
                 vs['createdAt'] = iso_utc(vs['createdAt'])
             if 'updatedAt' in vs and isinstance(vs['updatedAt'], datetime):
                 vs['updatedAt'] = iso_utc(vs['updatedAt'])
-        
+
+        # La orden que regresa tras guardar también va sin importes: el front la
+        # usa para refrescar la pantalla.
+        if es_mecanico(claims):
+            orden = _sin_importes(orden)
+
         return create_response(200, "Orden actualizada", orden)
     except Exception as e:
         return handle_exception(e)

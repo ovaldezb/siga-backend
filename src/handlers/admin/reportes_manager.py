@@ -3,7 +3,7 @@ from datetime import datetime
 from bson import ObjectId
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
-from src.shared.utils.auth_utils import try_parse_id, get_claims
+from src.shared.utils.auth_utils import try_parse_id, get_claims, es_mecanico
 from src.shared.infrastructure.database import get_tenant_db
 from src.shared.utils.indexes import ensure_indexes
 from src.shared.utils.date_utils import iso_utc
@@ -17,6 +17,9 @@ def get_kpis_handler(event, context):
         claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         if not tenant_id: return create_response(403, "No autorizado")
+
+        if es_mecanico(claims):
+            return create_response(403, "Tu usuario no tiene acceso a la informacion de cobros.")
 
         query_params = event.get('queryStringParameters') or {}
         sucursal_id = query_params.get('sucursal_id')
@@ -328,7 +331,30 @@ def get_kpis_handler(event, context):
             {"$limit": 1}
         ]))
 
+        # 7.5 PIEZAS VENDIDAS SIN COSTEAR
+        #     Mientras falte el precio de entrada, esas líneas cuentan con costo 0 y
+        #     la utilidad de arriba sale más alta de lo real. Se devuelve el conteo
+        #     para que el reporte lo advierta en vez de presentar el número como firme.
+        costos_pendientes_agg = list(db["ventas"].aggregate([
+            {"$match": {**ventas_filter, "items.costo_pendiente": True}},
+            {"$unwind": "$items"},
+            {"$match": {"items.costo_pendiente": True}},
+            {"$group": {
+                "_id": None,
+                "count": {"$sum": 1},
+                "importe_venta": {"$sum": {"$multiply": [
+                    {"$ifNull": ["$items.precio_unitario", 0]},
+                    {"$ifNull": ["$items.cantidad", 1]},
+                ]}},
+            }},
+        ]))
+        costos_pendientes = {
+            "count": costos_pendientes_agg[0]['count'] if costos_pendientes_agg else 0,
+            "importe_venta": round(costos_pendientes_agg[0]['importe_venta'], 2) if costos_pendientes_agg else 0.0,
+        }
+
         return create_response(200, "KPIs consolidados generados", {
+            "costos_pendientes": costos_pendientes,
             "top_clientes": top_clientes,
             "mecanicos": mecanicos_stats,
             "history": history,
@@ -357,6 +383,9 @@ def get_customer_history_handler(event, context):
         claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         if not tenant_id: return create_response(403, "No autorizado")
+
+        if es_mecanico(claims):
+            return create_response(403, "Tu usuario no tiene acceso a la informacion de cobros.")
 
         cliente_id = event['pathParameters']['id']
         db = get_tenant_db(tenant_id)
