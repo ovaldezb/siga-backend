@@ -21,6 +21,52 @@ logger = Logger()
 #UPDATE_COMPLETE: 19/05/2026
 
 # ---------------------------------------------------------------------------
+# Pestañas de la lista de OS (query param `tab`)
+#
+# Espejo exacto de `tabDe()` en sae-app/src/app/pages/ordenes-servicio/
+# ordenes-servicio.component.ts. Tienen que coincidir: el backend decide qué
+# filas y qué total devuelve (paginación) y el front vuelve a filtrar encima.
+# Si divergen, el usuario ve "23 resultados" y una lista de 18.
+#
+# Reglas:
+# - Por Cobrar = el trabajo terminó y sigue debiendo algo. Dos condiciones, las
+#   dos necesarias: `saldo_pendiente > 0` atrapa crédito y abonos parciales
+#   (incluso si el flujo dejó `pagada: True` con saldo vivo), y `pagada != True`
+#   atrapa la OS terminada que nunca pasó por el POS, que no tiene venta y por
+#   eso tampoco tiene `saldo_pendiente`.
+# - Pagadas = cobrada de verdad y sin un peso pendiente. Antes esta pestaña no
+#   miraba el saldo, así que una OS a crédito con adeudo vivo aparecía como
+#   pagada.
+# - Activas = el complemento (`$nor`). Al ser catch-all, ninguna combinación de
+#   (estado, pagada, saldo_pendiente) puede quedar fuera de todas las pestañas
+#   y desaparecer de la vista, que es lo que pasaba antes.
+# ---------------------------------------------------------------------------
+
+_ESTADOS_COBRABLES = ['FINALIZADO', 'ENTREGADO']
+
+# `saldo_pendiente` ausente o null = la OS nunca pasó por el POS, cuenta como 0.
+_SALDO_VIVO = {'saldo_pendiente': {'$gt': 0}}
+_SIN_SALDO = {'$or': [{'saldo_pendiente': {'$lte': 0}}, {'saldo_pendiente': None}]}
+_NO_PAGADA = {'pagada': {'$ne': True}}
+
+_TAB_CANCELADAS = {'estado': 'CANCELADO'}
+_TAB_POR_COBRAR = {'$and': [
+    {'estado': {'$in': _ESTADOS_COBRABLES}},
+    {'$or': [_SALDO_VIVO, _NO_PAGADA]},
+]}
+# El `$ne: CANCELADO` es la prioridad del frontend hecha explícita: allá "canceladas"
+# se evalúa primero, así que una OS cancelada después de cobrada NO cuenta como pagada.
+# Aquí las condiciones son independientes y hay que excluirla a mano.
+_TAB_PAGADAS = {'$and': [{'estado': {'$ne': 'CANCELADO'}}, {'pagada': True}, _SIN_SALDO]}
+
+_TAB_CONDICIONES = {
+    'canceladas': _TAB_CANCELADAS,
+    'porcobrar': _TAB_POR_COBRAR,
+    'pagadas': _TAB_PAGADAS,
+    'activas': {'$nor': [_TAB_CANCELADAS, _TAB_POR_COBRAR, _TAB_PAGADAS]},
+}
+
+# ---------------------------------------------------------------------------
 # Mantenimiento preventivo: sincronización bidireccional OS <-> Vehículo
 # ---------------------------------------------------------------------------
 
@@ -948,20 +994,12 @@ def list_ordenes_handler(event, context):
 
         # `tab` = pestaña principal del frontend. Traduce la combinación estado+pago
         # a condiciones Mongo para que paginación y conteos sean correctos por pestaña
-        # (antes el front recibía todo y filtraba en cliente, rompiendo el total/páginas).
-        # "Por Cobrar" = reparación finalizada con cobro pendiente (incluye ventas a
-        # crédito, que ventas_manager deja en FINALIZADO + pagada:False).
+        # (si el front recibiera todo y filtrara en cliente, el total/páginas miente).
+        # Las condiciones son el espejo de `tabDe()` en ordenes-servicio.component.ts;
+        # si cambias una, cambia la otra o la lista y su paginación se contradicen.
         tab = query_params.get('tab')
-        if tab == 'activas':
-            and_conditions.append({'estado': {'$nin': ['CANCELADO', 'FINALIZADO', 'ENTREGADO']}})
-            and_conditions.append({'pagada': {'$ne': True}})
-        elif tab == 'porcobrar':
-            and_conditions.append({'estado': 'FINALIZADO'})
-            and_conditions.append({'pagada': {'$ne': True}})
-        elif tab == 'pagadas':
-            and_conditions.append({'$or': [{'pagada': True}, {'estado': 'ENTREGADO'}]})
-        elif tab == 'canceladas':
-            and_conditions.append({'estado': 'CANCELADO'})
+        if tab in _TAB_CONDICIONES:
+            and_conditions.append(_TAB_CONDICIONES[tab])
 
         # Periodo (año / mes) sobre la fecha de ingreso.
         anio_filter = query_params.get('anio')
