@@ -331,7 +331,30 @@ def get_kpis_handler(event, context):
             {"$limit": 1}
         ]))
 
+        # 7.5 PIEZAS VENDIDAS SIN COSTEAR
+        #     Mientras falte el precio de entrada, esas líneas cuentan con costo 0 y
+        #     la utilidad de arriba sale más alta de lo real. Se devuelve el conteo
+        #     para que el reporte lo advierta en vez de presentar el número como firme.
+        costos_pendientes_agg = list(db["ventas"].aggregate([
+            {"$match": {**ventas_filter, "items.costo_pendiente": True}},
+            {"$unwind": "$items"},
+            {"$match": {"items.costo_pendiente": True}},
+            {"$group": {
+                "_id": None,
+                "count": {"$sum": 1},
+                "importe_venta": {"$sum": {"$multiply": [
+                    {"$ifNull": ["$items.precio_unitario", 0]},
+                    {"$ifNull": ["$items.cantidad", 1]},
+                ]}},
+            }},
+        ]))
+        costos_pendientes = {
+            "count": costos_pendientes_agg[0]['count'] if costos_pendientes_agg else 0,
+            "importe_venta": round(costos_pendientes_agg[0]['importe_venta'], 2) if costos_pendientes_agg else 0.0,
+        }
+
         return create_response(200, "KPIs consolidados generados", {
+            "costos_pendientes": costos_pendientes,
             "top_clientes": top_clientes,
             "mecanicos": mecanicos_stats,
             "history": history,

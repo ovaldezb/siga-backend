@@ -76,6 +76,13 @@ def ensure_indexes(db, tenant_id: str) -> None:
             name="ventas_saldo_pendiente",
             partialFilterExpression={"saldo_pendiente": {"$gt": 0}},
         )
+        # Piezas vendidas fuera de inventario a las que les falta el precio de entrada.
+        # La lista "Por costear" y el aviso de los reportes filtran por esta marca.
+        db.ventas.create_index(
+            [("items.costo_pendiente", 1)],
+            name="ventas_costo_pendiente",
+            partialFilterExpression={"items.costo_pendiente": True},
+        )
 
         # compras: reportes contables y historial por proveedor.
         db.compras.create_index([("sucursal_id", 1), ("createdAt", -1)], name="compras_suc_fecha")

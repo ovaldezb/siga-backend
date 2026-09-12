@@ -1563,6 +1563,31 @@ functions:
           authorizer:
             name: cognitoAuthorizer
 
+  # Piezas vendidas fuera de inventario a las que les falta el precio de entrada.
+  # La ruta va ANTES que /ventas/{id} en intención, pero httpApi resuelve por
+  # especificidad, así que /ventas/costos-pendientes no choca con el path param.
+  ventas_costos_pendientes:
+    handler: src/handlers/ventas/ventas_manager.list_costos_pendientes_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /ventas/costos-pendientes
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  ventas_actualizar_costos:
+    handler: src/handlers/ventas/ventas_manager.actualizar_costos_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /ventas/{id}/costos
+          method: put
+          authorizer:
+            name: cognitoAuthorizer
+
   ventas_abono:
     handler: src/handlers/ventas/ventas_manager.registrar_abono_handler
     layers:
