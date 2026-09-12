@@ -19,13 +19,9 @@ Seguridad:
 - Cliente nunca puede tocar items en estado APROBADO/EN_PROCESO/FINALIZADO.
 """
 
-import base64
-import hashlib
-import hmac
 import json
 import os
 import random
-import re
 import secrets
 from datetime import datetime, timedelta
 from typing import Optional, Tuple
@@ -38,6 +34,7 @@ from src.shared.utils.auth_utils import get_claims
 from src.shared.utils.date_utils import iso_utc
 from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.utils.indexes import ensure_indexes
+from src.shared.utils import public_link
 
 logger = Logger()
 
@@ -57,56 +54,21 @@ CHALLENGE_RECIPES = [
 
 
 # ---------- helpers de firma ----------
+# La implementación vive en `shared/utils/public_link.py` (compartida con el portal
+# de flotillas). Se re-exponen con los nombres privados históricos para no tocar
+# los ~700 usos internos ni los tests que los ejercitan directamente.
 
-def _get_secret() -> bytes:
-    s = os.environ.get('CLIENT_LINK_SECRET', '')
-    if not s:
-        # Fallback dev-only para no romper local sin SSM. Logueamos warning para detectarlo.
-        s = 'dev-fallback-' + os.environ.get('MONGO_HOST', 'localhost')
-        logger.warning('CLIENT_LINK_SECRET no configurado; usando fallback de desarrollo')
-    return s.encode('utf-8')
-
-
-def _b64u(b: bytes) -> str:
-    return base64.urlsafe_b64encode(b).rstrip(b'=').decode('ascii')
-
-
-def _b64u_dec(s: str) -> bytes:
-    pad = '=' * (-len(s) % 4)
-    return base64.urlsafe_b64decode((s + pad).encode('ascii'))
-
-
-def _sign(payload: dict) -> str:
-    body = json.dumps(payload, separators=(',', ':'), sort_keys=True).encode('utf-8')
-    sig = hmac.new(_get_secret(), body, hashlib.sha256).digest()
-    return f"{_b64u(body)}.{_b64u(sig)}"
-
-
-def _verify(token: str) -> Optional[dict]:
-    try:
-        body_b64, sig_b64 = token.split('.', 1)
-        body = _b64u_dec(body_b64)
-        sig = _b64u_dec(sig_b64)
-        expected = hmac.new(_get_secret(), body, hashlib.sha256).digest()
-        if not hmac.compare_digest(sig, expected):
-            return None
-        payload = json.loads(body.decode('utf-8'))
-        exp = payload.get('exp')
-        if exp and datetime.utcnow().timestamp() > exp:
-            return None
-        return payload
-    except Exception:
-        return None
-
-
-def _hash_answer(answer: str) -> str:
-    return hmac.new(_get_secret(), answer.encode('utf-8'), hashlib.sha256).hexdigest()
+_get_secret = public_link.get_secret
+_b64u = public_link.b64u
+_b64u_dec = public_link.b64u_dec
+_sign = public_link.sign
+_verify = public_link.verify
+_hash_answer = public_link.hash_answer
 
 
 # ---------- challenge ----------
 
-def _digits(s: str) -> str:
-    return re.sub(r'\D', '', s or '')
+_digits = public_link.digits
 
 
 def _take(digits: str, mode: str, count: int) -> str:
@@ -373,13 +335,10 @@ def _decode_token(token: str) -> Tuple[Optional[str], Optional[dict], Optional[s
     return payload.get('t'), payload, None
 
 
-def _client_ip(event) -> str:
-    return ((event.get('requestContext') or {}).get('identity') or {}).get('sourceIp', '')
-
-
-def _user_agent(event) -> str:
-    h = event.get('headers') or {}
-    return h.get('User-Agent') or h.get('user-agent') or ''
+# httpApi (v2) publica la IP en requestContext.http.sourceIp, no en identity.sourceIp:
+# la versión compartida cubre ambas formas (antes `decided_meta.ip` salía vacío).
+_client_ip = public_link.client_ip
+_user_agent = public_link.user_agent
 
 
 # Campos visibles al cliente. TODO si agregamos descripcion en items, agregarlo aquí.
