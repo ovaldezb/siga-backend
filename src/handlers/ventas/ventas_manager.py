@@ -2,7 +2,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
-from src.shared.utils.auth_utils import try_parse_id, get_claims, is_admin
+from src.shared.utils.auth_utils import try_parse_id, get_claims, is_admin, es_mecanico
 from src.shared.infrastructure.database import get_tenant_db, MongoDBConnection
 from src.shared.utils.indexes import ensure_indexes
 from src.handlers.admin.folios_manager import _get_next_folio_internal
@@ -51,6 +51,9 @@ def create_venta_handler(event, context):
         tenant_id = claims.get('custom:tenant_id')
         if not tenant_id:
             return create_response(403, "No autorizado")
+
+        if es_mecanico(claims):
+            return create_response(403, "Tu usuario no tiene acceso a la informacion de cobros.")
 
         usuario_id = claims.get('sub', 'unknown')
         usuario_nombre = claims.get('name') or claims.get('email') or 'unknown'
@@ -672,6 +675,9 @@ def registrar_abono_handler(event, context):
         if not tenant_id:
             return create_response(403, "No autorizado")
 
+        if es_mecanico(claims):
+            return create_response(403, "Tu usuario no tiene acceso a la informacion de cobros.")
+
         usuario_id = claims.get('sub', 'unknown')
         usuario_nombre = claims.get('name') or claims.get('email') or 'unknown'
         venta_id = event['pathParameters']['id']
@@ -805,6 +811,9 @@ def list_cxc_handler(event, context):
         if not tenant_id:
             return create_response(403, "No autorizado")
 
+        if es_mecanico(claims):
+            return create_response(403, "Tu usuario no tiene acceso a la informacion de cobros.")
+
         query_params = event.get('queryStringParameters') or {}
         sucursal_id = query_params.get('sucursal_id')
         cliente_id = query_params.get('cliente_id')
@@ -845,6 +854,9 @@ def list_ventas_handler(event, context):
         claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         if not tenant_id: return create_response(403, "No autorizado")
+
+        if es_mecanico(claims):
+            return create_response(403, "Tu usuario no tiene acceso a la informacion de cobros.")
 
         query_params = event.get('queryStringParameters') or {}
         sucursal_id = query_params.get('sucursal_id')
@@ -898,6 +910,9 @@ def get_venta_by_id_handler(event, context):
         tenant_id = claims.get('custom:tenant_id')
         if not tenant_id:
             return create_response(403, "No autorizado")
+
+        if es_mecanico(claims):
+            return create_response(403, "Tu usuario no tiene acceso a la informacion de cobros.")
 
         from src.shared.utils.auth_utils import parse_object_id
         venta_id = event.get('pathParameters', {}).get('id')
@@ -967,6 +982,9 @@ def update_metodo_pago_handler(event, context):
         tenant_id = claims.get('custom:tenant_id')
         if not tenant_id:
             return create_response(403, "No autorizado")
+
+        if es_mecanico(claims):
+            return create_response(403, "Tu usuario no tiene acceso a la informacion de cobros.")
         # Es un ajuste sobre dinero ya cobrado: sólo administración lo puede hacer.
         if not is_admin(claims):
             return create_response(

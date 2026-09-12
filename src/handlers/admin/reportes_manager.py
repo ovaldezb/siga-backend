@@ -3,7 +3,7 @@ from datetime import datetime
 from bson import ObjectId
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
-from src.shared.utils.auth_utils import try_parse_id, get_claims
+from src.shared.utils.auth_utils import try_parse_id, get_claims, es_mecanico
 from src.shared.infrastructure.database import get_tenant_db
 from src.shared.utils.indexes import ensure_indexes
 from src.shared.utils.date_utils import iso_utc
@@ -17,6 +17,9 @@ def get_kpis_handler(event, context):
         claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         if not tenant_id: return create_response(403, "No autorizado")
+
+        if es_mecanico(claims):
+            return create_response(403, "Tu usuario no tiene acceso a la informacion de cobros.")
 
         query_params = event.get('queryStringParameters') or {}
         sucursal_id = query_params.get('sucursal_id')
@@ -357,6 +360,9 @@ def get_customer_history_handler(event, context):
         claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         if not tenant_id: return create_response(403, "No autorizado")
+
+        if es_mecanico(claims):
+            return create_response(403, "Tu usuario no tiene acceso a la informacion de cobros.")
 
         cliente_id = event['pathParameters']['id']
         db = get_tenant_db(tenant_id)

@@ -64,6 +64,17 @@ def is_admin(claims: Dict[str, Any]) -> bool:
     return 'ADMIN' in grupo or 'SUPER_ADMIN' in grupo
 
 
+def es_mecanico(claims: Dict[str, Any]) -> bool:
+    """True sólo para el mecánico puro.
+
+    El mecánico trabaja la orden pero no ve ni mueve dinero. Si el mismo usuario
+    trae además ADMIN o ASESOR, manda el rol de más alcance y no se le recorta
+    nada: pasa en talleres chicos donde el dueño también repara.
+    """
+    grupos = set(get_groups(claims))
+    return 'MECANICO' in grupos and not (grupos & {'ADMIN', 'SUPER_ADMIN', 'ASESOR'})
+
+
 def get_user_allowed_sucursales(claims: Dict[str, Any], tenant_db) -> Optional[Set[str]]:
     """
     Devuelve el conjunto de sucursal_id permitidos para este usuario.

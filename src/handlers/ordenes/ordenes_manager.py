@@ -5,7 +5,7 @@ from datetime import datetime
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.infrastructure.database import get_tenant_db, MongoDBConnection
-from src.shared.utils.auth_utils import try_parse_id, get_claims, is_admin
+from src.shared.utils.auth_utils import try_parse_id, get_claims, is_admin, es_mecanico
 from src.shared.utils.date_utils import iso_utc
 from src.shared.utils.os_events import (
     append_os_event,
@@ -41,6 +41,61 @@ logger = Logger()
 #   (estado, pagada, saldo_pendiente) puede quedar fuera de todas las pestañas
 #   y desaparecer de la vista, que es lo que pasaba antes.
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Mecánicos: la orden sin dinero
+#
+# Un usuario del grupo MECANICO no ve importes ni puede mover nada que cueste.
+# Se aplica en el servidor, no sólo escondiéndolo en pantalla: si los precios
+# viajan al dispositivo, se leen en la consola del navegador.
+#
+# Lo que SÍ conserva es el estatus de cada trabajo (aprobado / rechazado /
+# pendiente): es lo que le dice qué tiene autorizado hacer.
+# ---------------------------------------------------------------------------
+
+# Campos con importe dentro de cada item de `puntosArreglar`.
+_ITEM_CAMPOS_DINERO = (
+    'precioVenta', 'precio_venta', 'precioCompra', 'precio_compra',
+    'subtotal', 'costo', 'costo_proveedor', 'descuento', 'importe',
+)
+
+# Campos con importe a nivel de la orden.
+_ORDEN_CAMPOS_DINERO = (
+    'total', 'subtotal', 'iva', 'anticipo', 'costo_revision',
+    'saldo_pendiente', 'monto_credito', 'pago_info',
+)
+
+
+def _sin_importes(orden: dict) -> dict:
+    """Devuelve la orden sin un solo número de dinero. Muta y devuelve el mismo dict."""
+    for campo in _ORDEN_CAMPOS_DINERO:
+        orden.pop(campo, None)
+
+    for punto in orden.get('puntosArreglar') or []:
+        for item in punto.get('items') or []:
+            for campo in _ITEM_CAMPOS_DINERO:
+                item.pop(campo, None)
+
+    # `inventario` es la lista de refacciones surtidas; conserva costos por línea.
+    for entrada in orden.get('inventario') or []:
+        if isinstance(entrada, dict):
+            for campo in _ITEM_CAMPOS_DINERO:
+                entrada.pop(campo, None)
+
+    return orden
+
+
+# Lo único que un MECANICO puede escribir en la orden. Cualquier otro campo del
+# body se ignora en silencio. `puntosArreglar` queda FUERA a propósito por dos
+# razones: sus items traen precios, y como al mecánico se los borramos al leer,
+# aceptar su versión del arreglo borraría los importes de la orden.
+_CAMPOS_MECANICO = [
+    'estado', 'falla_reportada', 'diagnostico',
+    'kilometraje', 'nivel_tanque', 'testigos_encendidos',
+    'proximo_cambio_bujias', 'proximo_cambio_aceite',
+    'proximo_cambio_bujias_fecha', 'proximo_cambio_aceite_fecha',
+]
+
 
 _ESTADOS_COBRABLES = ['FINALIZADO', 'ENTREGADO']
 
@@ -612,6 +667,11 @@ def create_orden_handler(event, context):
         body = json.loads(event.get('body', '{}'))
         db = get_tenant_db(tenant_id)
 
+        # El mecánico puede abrir una orden, pero no ponerle precio: sus importes
+        # se descartan y la orden nace en cero para que el asesor la cotice.
+        if es_mecanico(claims):
+            body = _sin_importes(body)
+
         # 0. Validar sucursalId
         sucursal_id_os = body.get("sucursalId")
         if not sucursal_id_os:
@@ -1137,7 +1197,11 @@ def list_ordenes_handler(event, context):
                         ev['createdAt'] = iso_utc(ev['createdAt'])
 
             ordenes.append(o)
-            
+
+        # Al mecánico la lista le llega sin importes.
+        if es_mecanico(claims):
+            ordenes = [_sin_importes(o) for o in ordenes]
+
         response_data = {
             "items": ordenes,
             "total": total,
@@ -1203,6 +1267,9 @@ def get_orden_handler(event, context):
             orden['cliente_link_enviado'] = db['cotizacion_acceso'].count_documents(
                 {'orden_id': orden['id']}, limit=1
             ) > 0
+
+        if es_mecanico(claims):
+            orden = _sin_importes(orden)
 
         return create_response(200, "Orden obtenida", orden)
     except Exception as e:
@@ -1405,6 +1472,11 @@ def update_orden_handler(event, context):
         if 'sucursalId' in body:
             body['sucursal_id'] = body.pop('sucursalId')
 
+        # El mecánico sólo escribe los campos de su trabajo. Todo lo que cuesta
+        # —items, anticipo, costo de revisión— se ignora aunque venga en el body.
+        if es_mecanico(claims):
+            campos_permitidos = _CAMPOS_MECANICO
+
         for campo in campos_permitidos:
             if campo in body:
                 update_data[campo] = body[campo]
@@ -1586,7 +1658,12 @@ def update_orden_handler(event, context):
                 vs['createdAt'] = iso_utc(vs['createdAt'])
             if 'updatedAt' in vs and isinstance(vs['updatedAt'], datetime):
                 vs['updatedAt'] = iso_utc(vs['updatedAt'])
-        
+
+        # La orden que regresa tras guardar también va sin importes: el front la
+        # usa para refrescar la pantalla.
+        if es_mecanico(claims):
+            orden = _sin_importes(orden)
+
         return create_response(200, "Orden actualizada", orden)
     except Exception as e:
         return handle_exception(e)
