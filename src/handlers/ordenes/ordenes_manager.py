@@ -1043,6 +1043,13 @@ def list_ordenes_handler(event, context):
         if cliente_id_filter:
             and_conditions.append({'cliente_snapshot.id': cliente_id_filter})
 
+        # Órdenes asignadas a un mecánico. El filtro se aplica en la consulta (y no en el
+        # front) para que el total y la paginación sean los de "mis órdenes"; si no, la
+        # pestaña diría 40 y la pantalla mostraría 3.
+        mecanico_id_filter = query_params.get('mecanico_id')
+        if mecanico_id_filter:
+            and_conditions.append({'mecanico_id': mecanico_id_filter})
+
         # `estado` admite CSV (p.ej. "RECEPCION,COTIZADO") para listar cotizaciones pendientes.
         estado_filter = query_params.get('estado')
         if estado_filter:
