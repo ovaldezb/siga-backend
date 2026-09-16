@@ -73,11 +73,22 @@ provider:
     COGNITO_CLIENT_ID: !Ref CognitoUserPoolClient
     S3_MEDIA_BUCKET: ${self:service}-${self:provider.stage}-media
     S3_EVIDENCIA_BUCKET: ${self:service}-${self:provider.stage}-evidencia
-    # Default mock para dev/staging. El GH secret CLIENT_LINK_SECRET sobreescribe este
-    # valor en el pipeline (deploy-dev.yml lo appendea al .env antes de `sls deploy`).
-    # ANTES DE PRODUCCIÓN: setear CLIENT_LINK_SECRET en repo secrets y rotar este default.
-    CLIENT_LINK_SECRET: ${env:CLIENT_LINK_SECRET, 'mock-dev-secret-NOT-FOR-PROD-rotate-via-gh-secret-2026'}
+    # Firma de los enlaces públicos (cotización del cliente y portal de flotilla).
+    # dev: GH secret CLIENT_LINK_SECRET, que deploy-dev.yml appendea al .env.
+    # prod: viene dentro del secret ENV_FILE_PROD.
+    # El default vacío es a propósito: en local `public_link.get_secret()` cae a un
+    # fallback de desarrollo y loguea warning. NO poner aquí un secreto hardcodeado
+    # (antes había un 'mock-dev-secret-…' que parecía legítimo y firmaba de verdad).
+    CLIENT_LINK_SECRET: ${env:CLIENT_LINK_SECRET, ''}
     CLIENT_LINK_BASE_URL: ${env:CLIENT_LINK_BASE_URL, ''}
+    # URL del SPA por stage (hash routing). El portal de flotilla arma su enlace con
+    # esto + '#/flotilla/portal'.
+    # OJO: no declarar aquí FLOTILLA_PORTAL_BASE_URL como ${env:...}. deploy-prod.yml
+    # valida que TODA variable ${env:...} de este archivo exista en ENV_FILE_PROD y
+    # aborta el deploy si falta (default incluido). El override sigue soportado en
+    # `flotilla_portal_manager._build_portal_url`: si algún día se necesita, hay que
+    # declararlo aquí Y agregarlo al secret ENV_FILE_PROD en el mismo cambio.
+    APP_URL: ${self:custom.appUrls.${self:provider.stage}}
     # Sentry — DSN vacío deja el SDK deshabilitado (sin tráfico ni costo).
     # Setear SENTRY_DSN en GH Actions secrets para activar reporte de errores 5xx.
     SENTRY_DSN: ${env:SENTRY_DSN, ''}
@@ -512,6 +523,79 @@ functions:
           method: delete
           authorizer:
             name: cognitoAuthorizer
+
+  # --- Portal público de flotilla (historial 360° versión cliente) ---
+  # Los tres primeros son internos (asesor): generar/rotar, consultar y revocar.
+  flotillas_portal_link_create:
+    handler: src/handlers/flotillas/flotilla_portal_manager.create_portal_link_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /flotillas/{id}/portal-link
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  flotillas_portal_link_get:
+    handler: src/handlers/flotillas/flotilla_portal_manager.get_portal_link_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /flotillas/{id}/portal-link
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  flotillas_portal_link_revoke:
+    handler: src/handlers/flotillas/flotilla_portal_manager.revoke_portal_link_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /flotillas/{id}/portal-link
+          method: delete
+          authorizer:
+            name: cognitoAuthorizer
+
+  # Públicos: SIN authorizer. La autorización es el token HMAC + PIN y el alcance
+  # se recorta a los clientes de la flotilla dentro del handler. Solo lectura.
+  public_flotilla_challenge:
+    handler: src/handlers/flotillas/flotilla_portal_manager.public_challenge_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /public/flotilla/challenge
+          method: get
+
+  public_flotilla_verify:
+    handler: src/handlers/flotillas/flotilla_portal_manager.public_verify_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /public/flotilla/verify
+          method: post
+
+  public_flotilla_resumen:
+    handler: src/handlers/flotillas/flotilla_portal_manager.public_resumen_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /public/flotilla
+          method: get
+
+  public_flotilla_vehiculo:
+    handler: src/handlers/flotillas/flotilla_portal_manager.public_vehiculo_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /public/flotilla/vehiculo
+          method: get
 
   items_list:
     handler: src/handlers/inventario/items_manager.list_items_handler
@@ -1476,6 +1560,31 @@ functions:
       - httpApi:
           path: /ventas/cxc
           method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  # Piezas vendidas fuera de inventario a las que les falta el precio de entrada.
+  # La ruta va ANTES que /ventas/{id} en intención, pero httpApi resuelve por
+  # especificidad, así que /ventas/costos-pendientes no choca con el path param.
+  ventas_costos_pendientes:
+    handler: src/handlers/ventas/ventas_manager.list_costos_pendientes_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /ventas/costos-pendientes
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  ventas_actualizar_costos:
+    handler: src/handlers/ventas/ventas_manager.actualizar_costos_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /ventas/{id}/costos
+          method: put
           authorizer:
             name: cognitoAuthorizer
 

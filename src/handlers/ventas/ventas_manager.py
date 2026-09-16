@@ -2,7 +2,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
-from src.shared.utils.auth_utils import try_parse_id, get_claims, is_admin
+from src.shared.utils.auth_utils import try_parse_id, get_claims, is_admin, es_mecanico
 from src.shared.infrastructure.database import get_tenant_db, MongoDBConnection
 from src.shared.utils.indexes import ensure_indexes
 from src.handlers.admin.folios_manager import _get_next_folio_internal
@@ -51,6 +51,9 @@ def create_venta_handler(event, context):
         tenant_id = claims.get('custom:tenant_id')
         if not tenant_id:
             return create_response(403, "No autorizado")
+
+        if es_mecanico(claims):
+            return create_response(403, "Tu usuario no tiene acceso a la informacion de cobros.")
 
         usuario_id = claims.get('sub', 'unknown')
         usuario_nombre = claims.get('name') or claims.get('email') or 'unknown'
@@ -223,6 +226,14 @@ def create_venta_handler(event, context):
                 if 'costo_unitario_snapshot' not in item:
                     item['costo_unitario_snapshot'] = float(item.get('costo_proveedor') or item.get('precio_compra') or 0)
                 item['es_externo'] = True # Aseguramos flag para el paso 5
+
+                # Pieza capturada a mano que se vendió sin saber en cuánto se compró:
+                # queda pendiente de costear. Hasta que se capture, su costo cuenta
+                # como 0 y la utilidad del periodo se ve más alta de lo real, así que
+                # la marca alimenta la lista "Por costear" y el aviso de los reportes.
+                # La mano de obra no lleva costo de compra: nunca se marca.
+                if producto.get('tipo') != 'SERVICIO' and item['costo_unitario_snapshot'] <= 0:
+                    item['costo_pendiente'] = True
 
         # 3.6 VALIDAR CRÉDITO SI APLICA (acepta crédito como método único o dentro de pagos[])
         metodo_pago = body.get('metodo_pago', 'EFECTIVO').upper()
@@ -672,6 +683,9 @@ def registrar_abono_handler(event, context):
         if not tenant_id:
             return create_response(403, "No autorizado")
 
+        if es_mecanico(claims):
+            return create_response(403, "Tu usuario no tiene acceso a la informacion de cobros.")
+
         usuario_id = claims.get('sub', 'unknown')
         usuario_nombre = claims.get('name') or claims.get('email') or 'unknown'
         venta_id = event['pathParameters']['id']
@@ -805,6 +819,9 @@ def list_cxc_handler(event, context):
         if not tenant_id:
             return create_response(403, "No autorizado")
 
+        if es_mecanico(claims):
+            return create_response(403, "Tu usuario no tiene acceso a la informacion de cobros.")
+
         query_params = event.get('queryStringParameters') or {}
         sucursal_id = query_params.get('sucursal_id')
         cliente_id = query_params.get('cliente_id')
@@ -845,6 +862,9 @@ def list_ventas_handler(event, context):
         claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         if not tenant_id: return create_response(403, "No autorizado")
+
+        if es_mecanico(claims):
+            return create_response(403, "Tu usuario no tiene acceso a la informacion de cobros.")
 
         query_params = event.get('queryStringParameters') or {}
         sucursal_id = query_params.get('sucursal_id')
@@ -898,6 +918,9 @@ def get_venta_by_id_handler(event, context):
         tenant_id = claims.get('custom:tenant_id')
         if not tenant_id:
             return create_response(403, "No autorizado")
+
+        if es_mecanico(claims):
+            return create_response(403, "Tu usuario no tiene acceso a la informacion de cobros.")
 
         from src.shared.utils.auth_utils import parse_object_id
         venta_id = event.get('pathParameters', {}).get('id')
@@ -967,6 +990,9 @@ def update_metodo_pago_handler(event, context):
         tenant_id = claims.get('custom:tenant_id')
         if not tenant_id:
             return create_response(403, "No autorizado")
+
+        if es_mecanico(claims):
+            return create_response(403, "Tu usuario no tiene acceso a la informacion de cobros.")
         # Es un ajuste sobre dinero ya cobrado: sólo administración lo puede hacer.
         if not is_admin(claims):
             return create_response(
@@ -1126,5 +1152,241 @@ def update_metodo_pago_handler(event, context):
         logger.info(f"Método de pago de la venta {venta.get('folio')} corregido por {usuario}")
         return create_response(200, "Método de pago actualizado", actualizada)
 
+    except Exception as e:
+        return handle_exception(e)
+
+
+# ---------------------------------------------------------------------------
+# Piezas fuera de inventario: costear después de la venta
+#
+# Se venden piezas que no están en el catálogo (se capturan a mano en el POS con
+# nombre, número de parte y precio de salida). El precio de entrada muchas veces
+# no se sabe al momento: llega con la factura del proveedor días después.
+#
+# Mientras tanto la línea queda marcada con `costo_pendiente` y su costo cuenta
+# como 0, así que la utilidad del periodo se ve más alta de lo real. Por eso hay
+# lista dedicada y aviso en los reportes.
+#
+# Al capturar el costo se actualiza `costo_unitario_snapshot`, que es el campo del
+# que la contabilidad saca el margen en todos sus reportes — no hay agregado que
+# reconstruir, los números se recalculan solos.
+# ---------------------------------------------------------------------------
+
+def _linea_por_costear(item: dict) -> bool:
+    return bool(item.get('costo_pendiente'))
+
+
+@logger.inject_lambda_context
+def list_costos_pendientes_handler(event, context):
+    """GET /ventas/costos-pendientes — Piezas vendidas a las que les falta el costo.
+
+    Devuelve una fila por línea (no por venta): la línea es lo que se captura.
+    """
+    try:
+        claims = get_claims(event)
+        tenant_id = claims.get('custom:tenant_id')
+        if not tenant_id:
+            return create_response(403, "No autorizado")
+
+        if es_mecanico(claims):
+            return create_response(403, "Tu usuario no tiene acceso a la informacion de cobros.")
+
+        query_params = event.get('queryStringParameters') or {}
+        sucursal_id = query_params.get('sucursal_id')
+
+        db = get_tenant_db(tenant_id)
+        ensure_indexes(db, tenant_id)
+
+        query = {"items.costo_pendiente": True, "estado": {"$nin": ["CANCELADA", "ANULADA"]}}
+        if sucursal_id:
+            query["sucursal_id"] = sucursal_id
+
+        pendientes = []
+        importe_venta_total = 0.0
+        for venta in db["ventas"].find(query).sort("createdAt", -1).limit(500):
+            venta_id = str(venta['_id'])
+            fecha = venta.get('createdAt')
+            if isinstance(fecha, datetime):
+                fecha = iso_utc(fecha)
+            for idx, item in enumerate(venta.get('items') or []):
+                if not _linea_por_costear(item):
+                    continue
+                producto = item.get('producto') or {}
+                cantidad = int(item.get('cantidad') or 1)
+                precio = float(item.get('precio_unitario') or 0)
+                importe_venta_total += precio * cantidad
+                pendientes.append({
+                    "venta_id": venta_id,
+                    "folio": venta.get('folio'),
+                    "fecha": fecha,
+                    "sucursal_id": venta.get('sucursal_id'),
+                    "cliente_nombre": venta.get('cliente_nombre'),
+                    "item_idx": idx,
+                    "nombre": producto.get('nombre') or item.get('nombre') or 'Pieza sin nombre',
+                    "no_parte": producto.get('no_parte') or item.get('no_parte') or '',
+                    "cantidad": cantidad,
+                    "precio_unitario": precio,
+                    "importe_venta": round(precio * cantidad, 2),
+                    "proveedor_id": item.get('proveedor_id') or producto.get('proveedor_id'),
+                    "proveedor_nombre": item.get('proveedor_nombre') or producto.get('proveedor_nombre'),
+                })
+
+        return create_response(200, "Piezas por costear", {
+            "items": pendientes,
+            "count": len(pendientes),
+            "importe_venta_total": round(importe_venta_total, 2),
+        })
+    except Exception as e:
+        return handle_exception(e)
+
+
+@logger.inject_lambda_context
+def actualizar_costos_handler(event, context):
+    """PUT /ventas/{id}/costos — Captura el precio de entrada de piezas ya vendidas.
+
+    Body: {costos: [{item_idx, costo_unitario, proveedor_id?}]}
+
+    Si la línea trae proveedor se genera la compra con su cuenta por pagar: es
+    hasta este momento que se sabe cuánto se le debe. La compra se marca
+    `en_costo_venta` para que el P&L no reste dos veces el mismo costo — ya está
+    dentro del costo de venta vía `costo_unitario_snapshot`.
+    """
+    try:
+        claims = get_claims(event)
+        tenant_id = claims.get('custom:tenant_id')
+        if not tenant_id:
+            return create_response(403, "No autorizado")
+
+        if es_mecanico(claims):
+            return create_response(403, "Tu usuario no tiene acceso a la informacion de cobros.")
+
+        venta_id = event['pathParameters']['id']
+        try:
+            venta_oid = ObjectId(venta_id)
+        except (InvalidId, TypeError):
+            return create_response(400, "Id de venta inválido.")
+
+        body = json.loads(event.get('body') or '{}')
+        costos = body.get('costos') or []
+        if not isinstance(costos, list) or not costos:
+            return create_response(400, "Se requiere al menos un costo a capturar.")
+
+        db = get_tenant_db(tenant_id)
+        venta = db["ventas"].find_one({"_id": venta_oid})
+        if not venta:
+            return create_response(404, "Venta no encontrada.")
+        if venta.get('estado') in ("CANCELADA", "ANULADA"):
+            return create_response(409, "La venta está cancelada; no se le puede capturar costo.")
+
+        items = venta.get('items') or []
+        usuario = claims.get('email') or 'system'
+        ahora = datetime.utcnow()
+
+        actualizadas = 0
+        lineas_con_proveedor = {}
+        for captura in costos:
+            try:
+                idx = int(captura.get('item_idx'))
+                costo = float(captura.get('costo_unitario'))
+            except (TypeError, ValueError):
+                continue
+            if idx < 0 or idx >= len(items) or costo < 0:
+                continue
+
+            item = items[idx]
+            if not _linea_por_costear(item):
+                # Ya fue costeada (o nunca lo necesitó): no se pisa un costo bueno.
+                continue
+
+            item['costo_unitario_snapshot'] = round(costo, 2)
+            item['costo_pendiente'] = False
+            item['costeo'] = {
+                'capturado_por': usuario,
+                'capturado_en': iso_utc(ahora),
+            }
+            actualizadas += 1
+
+            proveedor_id = captura.get('proveedor_id') or item.get('proveedor_id')
+            if proveedor_id and costo > 0:
+                item['proveedor_id'] = proveedor_id
+                lineas_con_proveedor.setdefault(proveedor_id, []).append(item)
+
+        if actualizadas == 0:
+            return create_response(400, "Ninguna de las líneas indicadas estaba pendiente de costo.")
+
+        compras_a_insertar = []
+        for proveedor_id, lineas in lineas_con_proveedor.items():
+            try:
+                proveedor = db["proveedores"].find_one({"_id": ObjectId(proveedor_id)})
+            except (InvalidId, TypeError):
+                proveedor = None
+            if not proveedor:
+                continue
+
+            compra_items = []
+            base = 0.0
+            for linea in lineas:
+                producto = linea.get('producto') or {}
+                cantidad = int(linea.get('cantidad') or 1)
+                costo_u = float(linea.get('costo_unitario_snapshot') or 0)
+                base_ln = round(cantidad * costo_u, 2)
+                base += base_ln
+                compra_items.append({
+                    "item_id": producto.get('id', 'manual'),
+                    "nombre": producto.get('nombre') or linea.get('nombre') or 'Pieza externa',
+                    "no_parte": producto.get('no_parte') or linea.get('no_parte') or '',
+                    "cantidad": cantidad,
+                    "costo_unitario": costo_u,
+                    "costo_unitario_neto": costo_u,
+                    "costo_incluye_iva": False,
+                    "iva_exento": False,
+                    "subtotal_linea": base_ln,
+                    "iva_linea": round(base_ln * IVA_RATE, 2),
+                    "total_linea": round(base_ln * (1 + IVA_RATE), 2),
+                    "afecta_inventario": False,
+                    "en_costo_venta": True,
+                })
+
+            subtotal = round(base, 2)
+            iva_total = round(base * IVA_RATE, 2)
+            total = round(subtotal + iva_total, 2)
+            compras_a_insertar.append({
+                "folio": _get_next_folio_internal(tenant_id, "compra", venta.get('sucursal_id')),
+                "proveedor_id": proveedor_id,
+                "proveedor_snapshot": {"id": proveedor_id, "nombre": proveedor.get('nombre'),
+                                       "rfc": proveedor.get('rfc')},
+                "sucursal_id": venta.get('sucursal_id'),
+                "fecha_factura": iso_utc(ahora),
+                "items": compra_items,
+                "subtotal": subtotal,
+                "iva": iva_total,
+                "descuento": 0.0,
+                "total": total,
+                "saldo_pendiente": total,
+                "abonos": [],
+                "estado": "RECIBIDA",
+                "notas": f"Generada al costear piezas externas de la venta {venta.get('folio')}",
+                "origen": "COSTEO_VENTA",
+                "venta_id": venta_id,
+                "tenant_id": tenant_id,
+                "createdAt": ahora,
+            })
+
+        db["ventas"].update_one(
+            {"_id": venta_oid},
+            {"$set": {"items": items, "updatedAt": ahora}},
+        )
+        if compras_a_insertar:
+            db["compras"].insert_many(compras_a_insertar)
+
+        pendientes_restantes = sum(1 for it in items if _linea_por_costear(it))
+        logger.info(
+            f"Costeadas {actualizadas} linea(s) de la venta {venta.get('folio')} por {usuario}"
+        )
+        return create_response(200, "Costos capturados", {
+            "actualizadas": actualizadas,
+            "pendientes_restantes": pendientes_restantes,
+            "compras_generadas": [c['folio'] for c in compras_a_insertar],
+        })
     except Exception as e:
         return handle_exception(e)

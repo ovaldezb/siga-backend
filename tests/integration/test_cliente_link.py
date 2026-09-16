@@ -326,3 +326,34 @@ def test_manual_decision_stamps_source_manual(mock_db):
     assert bal['decision_source'] == 'manual'
     assert bal['decided_by'] == 'asesor@taller.com'
     assert bal['decided_at']
+
+
+# ---------- secreto de firma: en prod no se firma con el fallback ----------
+
+def test_get_secret_falla_cerrado_en_prod_sin_secreto():
+    """Sin CLIENT_LINK_SECRET, producción revienta en vez de firmar con el fallback.
+
+    El fallback es 'dev-fallback-' + MONGO_HOST: cualquiera que conozca el host puede
+    reproducirlo y fabricar un token para la cotización de cualquier cliente o para el
+    portal de una flotilla. Falla cerrado para que se note en el deploy, no después.
+    """
+    from src.shared.utils import public_link
+
+    with patch.dict(os.environ, {'CLIENT_LINK_SECRET': '', 'STAGE': 'prod'}, clear=False):
+        with pytest.raises(RuntimeError, match='CLIENT_LINK_SECRET'):
+            public_link.get_secret()
+
+
+def test_get_secret_usa_fallback_fuera_de_prod():
+    """En dev/local sigue habiendo fallback: correr sin secreto no debe bloquear a nadie."""
+    from src.shared.utils import public_link
+
+    with patch.dict(os.environ, {'CLIENT_LINK_SECRET': '', 'STAGE': 'dev', 'MONGO_HOST': 'h'}, clear=False):
+        assert public_link.get_secret() == b'dev-fallback-h'
+
+
+def test_get_secret_respeta_el_valor_configurado_en_prod():
+    from src.shared.utils import public_link
+
+    with patch.dict(os.environ, {'CLIENT_LINK_SECRET': 'secreto-real', 'STAGE': 'prod'}, clear=False):
+        assert public_link.get_secret() == b'secreto-real'

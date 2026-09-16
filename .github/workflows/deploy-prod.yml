@@ -69,6 +69,21 @@ jobs:
       - name: Parse and Load .env
         run: |
           echo "${{ secrets.ENV_FILE_PROD }}" > .env
+          # Firma de los enlaces públicos (cotización del cliente y portal de flotilla).
+          # Si ENV_FILE_PROD ya lo trae CON valor, se respeta: rotarlo invalidaría todas
+          # las cotizaciones y portales vivos. Sólo si falta o viene vacío se toma del
+          # secret dedicado CLIENT_LINK_SECRET_PROD, que se rota sin reeditar el bundle.
+          # Sin esto, un valor vacío no rompía el deploy: `public_link.get_secret()` caía
+          # a un fallback derivado de MONGO_HOST y firmaba producción con él.
+          if ! grep -qE '^CLIENT_LINK_SECRET=.+' .env; then
+            sed -i '/^CLIENT_LINK_SECRET=[[:space:]]*$/d' .env
+            if [ -n "${{ secrets.CLIENT_LINK_SECRET_PROD }}" ]; then
+              echo "CLIENT_LINK_SECRET=${{ secrets.CLIENT_LINK_SECRET_PROD }}" >> .env
+              echo "CLIENT_LINK_SECRET tomado del secret dedicado (ENV_FILE_PROD no lo traía)."
+            fi
+          else
+            echo "CLIENT_LINK_SECRET viene de ENV_FILE_PROD; se respeta."
+          fi
           # Opcional: Inyectar las variables directamente al entorno de GitHub Actions (por si otro script las necesita)
           while IFS= read -r line || [ -n "$line" ]; do
             if [[ -n "$line" && "$line" != \#* ]]; then
@@ -80,7 +95,12 @@ jobs:
         run: |
           python -c '
           import re, sys, os
+          # Variables que no basta con que existan: vacías rompen o degradan producción
+          # en silencio (CLIENT_LINK_SECRET vacío hace que los enlaces públicos se firmen
+          # con un fallback de desarrollo derivado de MONGO_HOST).
+          REQUIERE_VALOR = {"CLIENT_LINK_SECRET"}
           env_keys = set()
+          vacias = set()
           if os.path.exists(".env"):
               with open(".env") as f:
                   for line in f:
@@ -88,7 +108,10 @@ jobs:
                       if line and not line.startswith("#"):
                           parts = line.split("=", 1)
                           if len(parts) >= 1:
-                              env_keys.add(parts[0].strip())
+                              clave = parts[0].strip()
+                              env_keys.add(clave)
+                              if len(parts) < 2 or not parts[1].strip():
+                                  vacias.add(clave)
 
           with open("serverless.yml") as f:
               content = f.read()
@@ -100,6 +123,16 @@ jobs:
               for m in sorted(missing):
                   print(f"  - {m}")
               sys.exit(1)
+          sin_valor = sorted(REQUIERE_VALOR & vacias)
+          if sin_valor:
+              print("ERROR: Estas variables existen pero estan VACIAS, y en produccion no pueden estarlo:")
+              for m in sin_valor:
+                  print(f"  - {m}")
+              print("Cargalas en ENV_FILE_PROD, o deja el secret dedicado CLIENT_LINK_SECRET_PROD con valor.")
+              sys.exit(1)
+          otras_vacias = sorted(vacias & matches)
+          if otras_vacias:
+              print("AVISO: variables declaradas pero vacias (revisar si es a proposito): " + ", ".join(otras_vacias))
           print("OK: Todas las variables estan en ENV_FILE_PROD")
           '
 

@@ -40,6 +40,13 @@ def ensure_indexes(db, tenant_id: str) -> None:
             [("orden_id", 1)], unique=True, name="uniq_cotizacion_orden"
         )
 
+        # flotilla_acceso: una entrada por flotilla (portal del cliente flotillero).
+        # El unique protege el upsert de create_portal_link: dos asesores rotando el
+        # enlace a la vez no pueden dejar dos nonces vivos para la misma flotilla.
+        db.flotilla_acceso.create_index(
+            [("flotilla_id", 1)], unique=True, name="uniq_flotilla_acceso"
+        )
+
         # citas: el listing ordena por (fecha desc, horaInicio desc, createdAt desc)
         # con scope sucursal_id; sin índice compuesto el sort cae a memoria (>10k docs).
         db.citas.create_index(
@@ -68,6 +75,13 @@ def ensure_indexes(db, tenant_id: str) -> None:
             [("saldo_pendiente", 1)],
             name="ventas_saldo_pendiente",
             partialFilterExpression={"saldo_pendiente": {"$gt": 0}},
+        )
+        # Piezas vendidas fuera de inventario a las que les falta el precio de entrada.
+        # La lista "Por costear" y el aviso de los reportes filtran por esta marca.
+        db.ventas.create_index(
+            [("items.costo_pendiente", 1)],
+            name="ventas_costo_pendiente",
+            partialFilterExpression={"items.costo_pendiente": True},
         )
 
         # compras: reportes contables y historial por proveedor.
