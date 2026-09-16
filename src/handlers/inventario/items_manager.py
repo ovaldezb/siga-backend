@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import datetime
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
@@ -23,6 +24,27 @@ CAMPOS_CATALOGO_COMPARTIDOS = (
     "descripcion_clave_sat", "descripcion_unidad_sat", "maneja_inventario",
     "activo", "icon",
 )
+
+
+# Campos por los que busca el buscador del catálogo. El orden no importa (es un $or),
+# pero sí que estén todos: el asesor teclea lo que tiene a la mano —el número de parte
+# de la caja, la marca de la refacción o el nombre del proveedor—, no el nombre exacto
+# con el que se dio de alta el artículo.
+CAMPOS_BUSQUEDA = ("nombre", "no_parte", "marca", "proveedor", "categoria", "descripcion")
+
+
+def _condiciones_busqueda(search: str) -> list:
+    """Condiciones Mongo para el texto del buscador, una por palabra (AND entre ellas).
+
+    "filtro aceite" exige que ambas palabras aparezcan en algún campo del artículo, así
+    el segundo término acota en vez de ampliar. Cada término se escapa: antes la cadena
+    entraba cruda al regex y un "(" o un "+" del número de parte reventaba la consulta.
+    """
+    terminos = [t for t in search.strip().split() if t][:6]
+    return [
+        {'$or': [{campo: {"$regex": re.escape(termino), "$options": "i"}} for campo in CAMPOS_BUSQUEDA]}
+        for termino in terminos
+    ]
 
 
 def _sucursales_tenant(db):
@@ -218,11 +240,8 @@ def list_items_handler(event, context):
                 {'maneja_inventario': {'$ne': False}}
             ]})
 
-        if search:
-            and_conditions.append({'$or': [
-                {"nombre": {"$regex": search, "$options": "i"}},
-                {"no_parte": {"$regex": search, "$options": "i"}}
-            ]})
+        if search and search.strip():
+            and_conditions.extend(_condiciones_busqueda(search))
             
         if and_conditions:
             query['$and'] = and_conditions
