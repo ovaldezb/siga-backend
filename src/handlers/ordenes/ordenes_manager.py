@@ -1039,9 +1039,15 @@ def list_ordenes_handler(event, context):
             filter_query['vehiculo_id'] = vehiculo_id_filter
 
         # Detalle de cliente: filtrar OS por cliente_snapshot.id (como se persiste).
+        # Admite CSV: la ficha de flotilla necesita las OS de todos sus clientes y antes
+        # pedía una página por cliente (una flotilla de 30 clientes eran 60 peticiones).
         cliente_id_filter = query_params.get('cliente_id')
         if cliente_id_filter:
-            and_conditions.append({'cliente_snapshot.id': cliente_id_filter})
+            cliente_ids = [c.strip() for c in cliente_id_filter.split(',') if c.strip()]
+            if len(cliente_ids) == 1:
+                and_conditions.append({'cliente_snapshot.id': cliente_ids[0]})
+            elif cliente_ids:
+                and_conditions.append({'cliente_snapshot.id': {'$in': cliente_ids}})
 
         # Órdenes asignadas a un mecánico. El filtro se aplica en la consulta (y no en el
         # front) para que el total y la paginación sean los de "mis órdenes"; si no, la
