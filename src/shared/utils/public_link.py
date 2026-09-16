@@ -26,6 +26,16 @@ logger = Logger()
 def get_secret() -> bytes:
     s = os.environ.get('CLIENT_LINK_SECRET', '')
     if not s:
+        # En producción se falla cerrado. El fallback es derivable por cualquiera que
+        # conozca el host de Mongo, así que usarlo allá equivale a firmar los enlaces
+        # públicos con un secreto conocido: quien lo adivine puede fabricar un token
+        # para la cotización de cualquier cliente o para el portal de una flotilla.
+        # Mejor que el endpoint devuelva 500 y se note, a que firme y nadie se entere.
+        if os.environ.get('STAGE', '').lower() == 'prod':
+            raise RuntimeError(
+                'CLIENT_LINK_SECRET no configurado en producción: no se firman enlaces '
+                'públicos con el fallback de desarrollo.'
+            )
         # Fallback dev-only para no romper local sin SSM. Logueamos warning para detectarlo.
         s = 'dev-fallback-' + os.environ.get('MONGO_HOST', 'localhost')
         logger.warning('CLIENT_LINK_SECRET no configurado; usando fallback de desarrollo')
