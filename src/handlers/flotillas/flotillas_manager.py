@@ -28,6 +28,10 @@ ALLOWED_FIELDS = {
 # Estados de OS considerados "abiertos" para el agregado del resumen.
 ESTADOS_PENDIENTES = ["RECEPCION", "COTIZADO", "APROBADO", "EN_PROCESO"]
 
+# Tope de unidades que viajan en el detalle. El conteo (`num_vehiculos`) es exacto
+# aunque la lista se recorte; el flag `vehiculos_truncados` avisa al UI.
+MAX_VEHICULOS_DETALLE = 300
+
 
 def _serialize(doc: dict) -> dict:
     doc["id"] = str(doc.pop("_id"))
@@ -49,13 +53,31 @@ def list_flotillas_handler(event, context):
         # Enriquecer con conteos agregados (una sola pasada).
         if flotillas:
             ids = [f["id"] for f in flotillas]
-            cliente_counts = list(db.clientes.aggregate([
-                {"$match": {"flotilla_id": {"$in": ids}}},
-                {"$group": {"_id": "$flotilla_id", "count": {"$sum": 1}}},
-            ]))
-            cmap = {c["_id"]: c["count"] for c in cliente_counts}
+            miembros = list(db.clientes.find(
+                {"flotilla_id": {"$in": ids}}, {"flotilla_id": 1}
+            ))
+            cmap: dict[str, list[str]] = {}
+            for m in miembros:
+                cmap.setdefault(m["flotilla_id"], []).append(str(m["_id"]))
+
+            # Unidades por flotilla: una sola agregación para todas, agrupando por
+            # cliente. La tarjeta del listado muestra el parque vehicular sin tener
+            # que abrir el detalle — era la pregunta más repetida del asesor.
+            todos_los_clientes = [cid for lista in cmap.values() for cid in lista]
+            vmap = {}
+            if todos_los_clientes:
+                vmap = {
+                    v["_id"]: v["count"]
+                    for v in db.vehiculos.aggregate([
+                        {"$match": {"cliente_id": {"$in": todos_los_clientes}}},
+                        {"$group": {"_id": "$cliente_id", "count": {"$sum": 1}}},
+                    ])
+                }
+
             for f in flotillas:
-                f["num_clientes"] = cmap.get(f["id"], 0)
+                miembros_f = cmap.get(f["id"], [])
+                f["num_clientes"] = len(miembros_f)
+                f["num_vehiculos"] = sum(vmap.get(cid, 0) for cid in miembros_f)
 
         return create_response(200, "Flotillas obtenidas", flotillas)
     except Exception as e:
@@ -85,17 +107,46 @@ def get_flotilla_handler(event, context):
         clientes = list(db.clientes.find(
             {"flotilla_id": flot_id},
             {"nombre": 1, "apellido_paterno": 1, "apellido_materno": 1,
-             "telefono": 1, "email": 1, "rfc": 1}
+             "telefono": 1, "email": 1, "rfc": 1,
+             "limite_credito": 1, "dias_credito": 1}
         ))
         for c in clientes:
             c["id"] = str(c.pop("_id"))
+            c["limite_credito"] = float(c.get("limite_credito") or 0)
+            c["dias_credito"] = int(c.get("dias_credito") or 0)
+            c["saldo_credito"] = 0.0
+            c["num_vehiculos"] = 0
         cliente_ids = [c["id"] for c in clientes]
+        cmap = {c["id"]: c for c in clientes}
 
-        # Vehículos agregados.
-        num_vehiculos = (
-            db.vehiculos.count_documents({"cliente_id": {"$in": cliente_ids}})
-            if cliente_ids else 0
-        )
+        # Vehículos de la flotilla. Se devuelve la lista, no sólo el conteo: la
+        # ficha necesita enseñar QUÉ unidades la componen — un vehículo pertenece a
+        # la flotilla a través de su dueño, y sin verlas nadie entendía la liga.
+        num_vehiculos = 0
+        vehiculos = []
+        if cliente_ids:
+            # El conteo va por agregación aparte para que no dependa del tope de la
+            # lista: una flotilla con más unidades que MAX_VEHICULOS_DETALLE sigue
+            # reportando su parque vehicular completo.
+            for row in db.vehiculos.aggregate([
+                {"$match": {"cliente_id": {"$in": cliente_ids}}},
+                {"$group": {"_id": "$cliente_id", "count": {"$sum": 1}}},
+            ]):
+                num_vehiculos += int(row["count"])
+                if row["_id"] in cmap:
+                    cmap[row["_id"]]["num_vehiculos"] = int(row["count"])
+
+            for v in db.vehiculos.find(
+                {"cliente_id": {"$in": cliente_ids}},
+                {"marca": 1, "modelo": 1, "anio": 1, "placas": 1, "color": 1,
+                 "kilometraje": 1, "cliente_id": 1},
+            ).limit(MAX_VEHICULOS_DETALLE):
+                v["id"] = str(v.pop("_id"))
+                duenio = cmap.get(v.get("cliente_id"), {})
+                v["cliente_nombre"] = " ".join(filter(None, [
+                    duenio.get("nombre"), duenio.get("apellido_paterno"),
+                ])).strip()
+                vehiculos.append(v)
 
         # OS pendientes y monto en pipeline.
         os_pend = 0
@@ -138,6 +189,34 @@ def get_flotilla_handler(event, context):
                 os_finalizadas = int(agg2[0]["count"])
                 monto_facturable = float(agg2[0]["monto"])
 
+        # Crédito REAL de la flotilla. No hay línea de crédito a nivel flotilla: la
+        # autoriza `ventas_manager` cliente por cliente contra `limite_credito`, y lo
+        # consumido es la CxC viva (`ventas.saldo_pendiente > 0`) — mismo criterio
+        # que usan clientes_manager y el POS. La flotilla sólo agrega a sus miembros;
+        # antes aquí había un límite fijo de demostración que no era de nadie.
+        credito_usado = 0.0
+        if cliente_ids:
+            for row in db.ventas.aggregate([
+                {"$match": {
+                    "cliente_id": {"$in": cliente_ids},
+                    "saldo_pendiente": {"$gt": 0},
+                }},
+                {"$group": {"_id": "$cliente_id", "saldo": {"$sum": "$saldo_pendiente"}}},
+            ]):
+                saldo = round(float(row["saldo"]), 2)
+                credito_usado += saldo
+                if row["_id"] in cmap:
+                    cmap[row["_id"]]["saldo_credito"] = saldo
+
+        credito_limite = round(sum(c["limite_credito"] for c in clientes), 2)
+        credito_usado = round(credito_usado, 2)
+        flotilla["credito_limite"] = credito_limite
+        flotilla["credito_usado"] = credito_usado
+        flotilla["credito_disponible"] = round(credito_limite - credito_usado, 2)
+        flotilla["clientes_con_credito"] = sum(1 for c in clientes if c["limite_credito"] > 0)
+
+        flotilla["vehiculos"] = vehiculos
+        flotilla["vehiculos_truncados"] = num_vehiculos > len(vehiculos)
         flotilla["clientes"] = clientes
         flotilla["num_clientes"] = len(clientes)
         flotilla["num_vehiculos"] = num_vehiculos
