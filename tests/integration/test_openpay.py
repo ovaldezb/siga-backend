@@ -26,7 +26,9 @@ def test_create_taller_with_openpay(mock_db):
         "id": "tr_987654321",
         "payment_method": {
             "clabe": "012345678901234567",
-            "bank": "STP"
+            "bank": "BBVA Bancomer",
+            "agreement": "1422286",
+            "name": "00406475954759329265"
         }
     }
 
@@ -40,6 +42,9 @@ def test_create_taller_with_openpay(mock_db):
         data = json.loads(response['body'])['data']
         assert data['openpayCustomerId'] == "cus_123456789"
         assert data['openpayClabe'] == "012345678901234567"
+        assert data['openpayBank'] == "BBVA Bancomer"
+        assert data['openpayAgreement'] == "1422286"
+        assert data['openpayReference'] == "00406475954759329265"
         assert data['openpaySpeiChargeId'] == "tr_987654321"
 
 def test_procesar_pago_suscripcion_openpay_card(mock_db):
@@ -124,7 +129,10 @@ def test_openpay_spei_webhook_success(mock_db):
     mock_new_spei = {
         "id": "tr_spei_222",
         "payment_method": {
-            "clabe": "012345678901234567"
+            "clabe": "012345678901234567",
+            "bank": "BBVA Bancomer",
+            "agreement": "1422286",
+            "name": "00406475954759329265"
         }
     }
 
@@ -139,6 +147,9 @@ def test_openpay_spei_webhook_success(mock_db):
         
         taller = db_platform.talleres.find_one({"tenantId": "taller_webhook"})
         assert taller["openpaySpeiChargeId"] == "tr_spei_222" # Se generó el siguiente cargo SPEI
+        assert taller["openpayBank"] == "BBVA Bancomer"
+        assert taller["openpayAgreement"] == "1422286"
+        assert taller["openpayReference"] == "00406475954759329265"
 
 def test_procesar_pago_suscripcion_openpay_3ds_pending(mock_db):
     """Verifica que si Openpay responde charge_pending con url 3DS, se guarde PENDIENTE y retorne la url."""
