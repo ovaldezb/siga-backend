@@ -137,6 +137,9 @@ def create_taller_handler(event, context):
         # Openpay customer & CLABE assignment
         openpay_customer_id = ""
         openpay_clabe = ""
+        openpay_bank = ""
+        openpay_agreement = ""
+        openpay_reference = ""
         openpay_spei_charge_id = ""
         
         try:
@@ -168,8 +171,11 @@ def create_taller_handler(event, context):
                 openpay_spei_charge_id = spei_res.get("id", "")
                 payment_method = spei_res.get("payment_method", {})
                 openpay_clabe = payment_method.get("clabe", "")
+                openpay_bank = payment_method.get("bank", "BBVA Bancomer")
+                openpay_agreement = payment_method.get("agreement", "1422286")
+                openpay_reference = payment_method.get("name") or payment_method.get("reference") or spei_res.get("reference") or ""
                 
-                logger.info(f"Openpay CLABE asignada exitosamente para el taller {tenant_id}: {openpay_clabe}")
+                logger.info(f"Openpay CLABE asignada exitosamente para el taller {tenant_id}: {openpay_clabe} (Banco: {openpay_bank}, Ref: {openpay_reference})")
         except Exception as op_err:
             logger.error(f"Error al inicializar Openpay al crear taller: {str(op_err)}")
             # No bloqueamos el flujo principal en caso de falla de Openpay Sandbox o falta de credenciales
@@ -195,6 +201,9 @@ def create_taller_handler(event, context):
             "sucursales": body.get("sucursales"),
             "openpayCustomerId": openpay_customer_id,
             "openpayClabe": openpay_clabe,
+            "openpayBank": openpay_bank,
+            "openpayAgreement": openpay_agreement,
+            "openpayReference": openpay_reference,
             "openpaySpeiChargeId": openpay_spei_charge_id,
             "createdAt": datetime.utcnow()
         }
@@ -256,7 +265,7 @@ def get_my_modulos_handler(event, context):
         db = get_platform_db()
         taller = db["talleres"].find_one(
             {"tenantId": tenant_id}, 
-            {"_id": 0, "modulos": 1, "estado": 1, "logoUrl": 1, "nombreComercial": 1, "direccion": 1, "adminTelefono": 1, "proximaFechaCorte": 1, "proximaFechaPago": 1, "precioSuscripcion": 1, "mesesCargo": 1, "diasPrueba": 1, "fechaSuscripcion": 1, "usuarios": 1, "sucursales": 1, "openpayClabe": 1}
+            {"_id": 0, "modulos": 1, "estado": 1, "logoUrl": 1, "nombreComercial": 1, "direccion": 1, "adminTelefono": 1, "proximaFechaCorte": 1, "proximaFechaPago": 1, "precioSuscripcion": 1, "mesesCargo": 1, "diasPrueba": 1, "fechaSuscripcion": 1, "usuarios": 1, "sucursales": 1, "openpayClabe": 1, "openpayBank": 1, "openpayAgreement": 1, "openpayReference": 1}
         )
 
         if not taller:
@@ -309,7 +318,10 @@ def get_my_modulos_handler(event, context):
             "fechaSuscripcion": f_suscripcion,
             "usuarios": taller.get("usuarios"),
             "sucursales": taller.get("sucursales"),
-            "openpayClabe": taller.get("openpayClabe", "")
+            "openpayClabe": taller.get("openpayClabe", ""),
+            "openpayBank": taller.get("openpayBank", "BBVA Bancomer"),
+            "openpayAgreement": taller.get("openpayAgreement", "1422286"),
+            "openpayReference": taller.get("openpayReference", "")
         })
 
     except Exception as e:
@@ -573,6 +585,9 @@ def enrolar_openpay_handler(event, context):
             new_spei_charge_id = spei_res.get("id", "")
             payment_method = spei_res.get("payment_method", {})
             new_clabe = payment_method.get("clabe", "")
+            new_bank = payment_method.get("bank", "BBVA Bancomer")
+            new_agreement = payment_method.get("agreement", "1422286")
+            new_reference = payment_method.get("name") or payment_method.get("reference") or spei_res.get("reference") or ""
         except Exception as spei_err:
             logger.error(f"Error al crear cargo SPEI en Openpay para el taller {tenant_id}: {str(spei_err)}")
             return create_response(400, f"Error al generar CLABE en Openpay: {str(spei_err)}")
@@ -583,15 +598,21 @@ def enrolar_openpay_handler(event, context):
             {"$set": {
                 "openpayCustomerId": new_customer_id,
                 "openpayClabe": new_clabe,
+                "openpayBank": new_bank,
+                "openpayAgreement": new_agreement,
+                "openpayReference": new_reference,
                 "openpaySpeiChargeId": new_spei_charge_id
             }}
         )
 
-        logger.info(f"Taller {tenant_id} enrolado exitosamente en Openpay. Customer: {new_customer_id}, CLABE: {new_clabe}")
+        logger.info(f"Taller {tenant_id} enrolado exitosamente en Openpay. Customer: {new_customer_id}, CLABE: {new_clabe}, Banco: {new_bank}, Ref: {new_reference}")
 
         return create_response(200, "Taller enrolado exitosamente en Openpay", {
             "openpayCustomerId": new_customer_id,
             "openpayClabe": new_clabe,
+            "openpayBank": new_bank,
+            "openpayAgreement": new_agreement,
+            "openpayReference": new_reference,
             "openpaySpeiChargeId": new_spei_charge_id
         })
 

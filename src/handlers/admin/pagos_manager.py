@@ -643,6 +643,9 @@ def openpay_webhook_handler(event, context):
             # Generar un NUEVO cargo SPEI para el siguiente mes
             openpay_spei_charge_id = ""
             openpay_clabe = taller.get("openpayClabe", "")
+            openpay_bank = taller.get("openpayBank", "BBVA Bancomer")
+            openpay_agreement = taller.get("openpayAgreement", "1422286")
+            openpay_reference = taller.get("openpayReference", "")
             
             try:
                 from src.shared.utils import openpay_client
@@ -663,6 +666,9 @@ def openpay_webhook_handler(event, context):
                 openpay_spei_charge_id = spei_res.get("id", "")
                 payment_method = spei_res.get("payment_method", {})
                 openpay_clabe = payment_method.get("clabe", "")
+                openpay_bank = payment_method.get("bank", "BBVA Bancomer")
+                openpay_agreement = payment_method.get("agreement", "1422286")
+                openpay_reference = payment_method.get("name") or payment_method.get("reference") or spei_res.get("reference") or ""
             except Exception as new_spei_err:
                 logger.error(f"Error al generar siguiente cargo SPEI para el taller {tenant_id}: {str(new_spei_err)}")
                 
@@ -673,7 +679,10 @@ def openpay_webhook_handler(event, context):
                     "proximaFechaPago": nueva_pago,
                     "estado": "ACTIVO",
                     "openpaySpeiChargeId": openpay_spei_charge_id,
-                    "openpayClabe": openpay_clabe
+                    "openpayClabe": openpay_clabe,
+                    "openpayBank": openpay_bank,
+                    "openpayAgreement": openpay_agreement,
+                    "openpayReference": openpay_reference
                 }}
             )
             logger.info(f"Suscripcion extendida exitosamente para el taller {tenant_id} via SPEI Webhook.")
