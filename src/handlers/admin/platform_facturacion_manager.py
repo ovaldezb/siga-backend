@@ -34,6 +34,17 @@ FACTURA_DESCRIPCION = "Servicio de hospedaje de aplicación MekanicsManager"
 FACTURA_OBJETO_IMP = "02"
 
 
+def limpiar_razon_social(nombre: str) -> str:
+    """Para CFDI 4.0, el SAT (reglas CFDI40139 y CFDI40145) exige que el nombre de
+    personas morales NO incluya el régimen de capital / tipo societario (ej. omitir 'SA DE CV').
+    """
+    if not nombre:
+        return ""
+    nombre = nombre.strip().upper()
+    patron = r'(?:,\s*|\s+)(S\.?\s*A\.?\s*P\.?\s*I\.?\s*(?:DE\s+C\.?\s*V\.?)?|S\.?\s*A\.?\s*DE\s+C\.?\s*V\.?|S\.?\s*DE\s+R\.?\s*L\.?\s*(?:DE\s+C\.?\s*V\.?)?|S\.?\s*A\.?|S\.?\s*C\.?|S\.?\s*N\.?\s*C\.?|S\.?\s*C\.?\s*S\.?|A\.?\s*C\.?|S\.?\s*A\.?\s*S\.?)\.?$'
+    return re.sub(patron, '', nombre, flags=re.IGNORECASE).strip()
+
+
 # ==============================================================================
 # 1. CSD (Certificados de Sello Digital) para la Plataforma
 # ==============================================================================
@@ -453,7 +464,7 @@ def facturar_pago_suscripcion_handler(event, context):
         # 3. Validar datos fiscales del taller (Receptor)
         datos_fiscales = taller.get("datosFiscales") or {}
         rfc_receptor = (datos_fiscales.get("rfc") or "").strip().upper()
-        nombre_receptor = (datos_fiscales.get("razonSocial") or taller.get("nombreComercial") or "").strip().upper()
+        nombre_receptor = limpiar_razon_social(datos_fiscales.get("razonSocial") or taller.get("nombreComercial") or "")
         cp_receptor = (datos_fiscales.get("codigoPostal") or "").strip()
         regimen_receptor = (datos_fiscales.get("regimenFiscal") or "").strip()
         uso_cfdi = (datos_fiscales.get("usoCfdi") or "G03").strip().upper()
@@ -470,7 +481,7 @@ def facturar_pago_suscripcion_handler(event, context):
             sucursal = db["sucursales"].find_one() or {}
 
         emisor_rfc = (sucursal.get("rfc") or "").strip().upper()
-        emisor_nombre = (sucursal.get("nombre") or "MEKANICS MANAGER").strip().upper()
+        emisor_nombre = limpiar_razon_social(sucursal.get("nombre") or "MEKANICS MANAGER")
         emisor_regimen = (sucursal.get("regimen_fiscal") or "").strip()
         lugar_expedicion = (sucursal.get("codigo_postal") or "").strip()
         serie = sucursal.get("serie", "F")
