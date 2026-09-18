@@ -694,7 +694,8 @@ def facturar_pago_suscripcion_handler(event, context):
                 direccion=sucursal.get("direccion", ""),
                 empresa=emisor_nombre,
                 regimen_fiscal_emisor=emisor_regimen,
-                regimen_fiscal_receptor=regimen_receptor
+                regimen_fiscal_receptor=regimen_receptor,
+                mostrar_observaciones=False
             )
             pdf_bytes = pdf_gen.generate_pdf()
             pdf_b64 = base64.b64encode(pdf_bytes).decode("utf-8")
@@ -826,7 +827,8 @@ def get_platform_factura_pdf_handler(event, context):
             direccion=sucursal.get("direccion", ""),
             empresa=sucursal.get("nombre", "MEKANICS MANAGER"),
             regimen_fiscal_emisor=sucursal.get("regimen_fiscal", ""),
-            regimen_fiscal_receptor=factura.get("regimen_fiscal_receptor", "")
+            regimen_fiscal_receptor=factura.get("regimen_fiscal_receptor", ""),
+            mostrar_observaciones=False
         )
         pdf_bytes = pdf_gen.generate_pdf()
         pdf_b64 = base64.b64encode(pdf_bytes).decode("utf-8")

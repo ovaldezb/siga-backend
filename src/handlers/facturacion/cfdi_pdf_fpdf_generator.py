@@ -70,7 +70,7 @@ class _FPDFSeguro(FPDF):
 
 
 class CFDIPDF_FPDF_Generator():
-    def __init__(self, xml_string: str, qrCode: str, cadena_original_sat: str, noTicket: str, fecha_hora_venta: str, direccion: str, empresa: str, regimen_fiscal_emisor: str, regimen_fiscal_receptor: str, logo_path: str = None) -> None:
+    def __init__(self, xml_string: str, qrCode: str, cadena_original_sat: str, noTicket: str, fecha_hora_venta: str, direccion: str, empresa: str, regimen_fiscal_emisor: str, regimen_fiscal_receptor: str, logo_path: str = None, mostrar_observaciones: bool = True) -> None:
         self.xml_string = xml_string
         self.qrCode = qrCode
         self.cadena_original_sat = cadena_original_sat
@@ -81,6 +81,7 @@ class CFDIPDF_FPDF_Generator():
         self.regimen_fiscal_emisor = regimen_fiscal_emisor
         self.regimen_fiscal_receptor = regimen_fiscal_receptor
         self.logo_path = logo_path
+        self.mostrar_observaciones = mostrar_observaciones
         self.root = ET.fromstring(xml_string)
         self.data = self._parse_cfdi()
 
@@ -355,11 +356,14 @@ class CFDIPDF_FPDF_Generator():
                 pdf.cell(30, 5, '$' + f"{pagado_dr:,.2f}", align='R', border=0)
                 pdf.cell(30, 5, '$' + f"{insoluto_dr:,.2f}", align='R', border='R', ln=True)
 
-            pdf.set_font("Arial", 'B', 7)
-            pdf.cell(25, 9, 'OBSERVACIONES:', border='LT')
-            pdf.set_font("Arial", '', 7)
-            obs_txt = ('Complemento para recepción de pagos (CFDI 4.0)' + (f' - Ref: {self.noTicket}' if self.noTicket else ''))
-            pdf.cell(125, 9, obs_txt[:70], border='T')
+            if self.mostrar_observaciones:
+                pdf.set_font("Arial", 'B', 7)
+                pdf.cell(25, 9, 'OBSERVACIONES:', border='LT')
+                pdf.set_font("Arial", '', 7)
+                obs_txt = ('Complemento para recepción de pagos (CFDI 4.0)' + (f' - Ref: {self.noTicket}' if self.noTicket else ''))
+                pdf.cell(125, 9, obs_txt[:70], border='T')
+            else:
+                pdf.cell(150, 9, '', border='LT')
             pdf.set_font("Arial", 'B', 7)
             pdf.cell(20, 4.5, 'Subtotal:', border='LRTB', align='C')
             pdf.set_font("Arial", '', 7)
@@ -408,10 +412,13 @@ class CFDIPDF_FPDF_Generator():
                 impuesto_total += importe_impuesto
                 pdf.cell(20, 5, '$' + f"{safe_float(concepto.get('Importe', 0.0)):,.2f}", align='C', border='R', ln=True)
 
-            pdf.set_font("Arial", 'B', 7)
-            pdf.cell(25, 9, 'OBSERVACIONES:', border='LT')
-            pdf.set_font("Arial", '', 7)
-            pdf.cell(125, 9, 'Esta factura ampara el documento ' + self.noTicket, border='T')
+            if self.mostrar_observaciones:
+                pdf.set_font("Arial", 'B', 7)
+                pdf.cell(25, 9, 'OBSERVACIONES:', border='LT')
+                pdf.set_font("Arial", '', 7)
+                pdf.cell(125, 9, 'Esta factura ampara el documento ' + (self.noTicket or ''), border='T')
+            else:
+                pdf.cell(150, 9, '', border='LT')
             pdf.set_font("Arial", 'B', 7)
             pdf.cell(20, 4.5, 'Subtotal:', border='LRTB', align='C')
             pdf.set_font("Arial", '', 7)
