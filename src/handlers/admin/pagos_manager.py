@@ -383,7 +383,10 @@ def obtener_historial_pagos_handler(event, context):
                 "fecha": iso_utc(doc.get("fechaPago")),
                 "metodo": doc.get("metodo"),
                 "estado": doc.get("estado"),
-                "tokenClip": doc.get("folioClip")
+                "tokenClip": doc.get("folioClip"),
+                "facturado": bool(doc.get("facturado", False)),
+                "facturaId": str(doc["facturaId"]) if doc.get("facturaId") else None,
+                "uuid": doc.get("uuid")
             })
 
         paginated_data = {
