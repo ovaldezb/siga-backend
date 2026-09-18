@@ -403,6 +403,28 @@ functions:
           authorizer:
             name: cognitoAuthorizer
 
+  factura_complementos_list:
+    handler: src.handlers.facturacion.factura_manager.get_factura_complementos_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /facturas/{id}/complementos
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  factura_timbrar_complemento:
+    handler: src.handlers.facturacion.factura_manager.timbrar_complemento_pago_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /facturas/{id}/complemento-pago
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
   clientes_list:
     handler: src/handlers/clientes/clientes_manager.list_clientes_handler
     layers:
