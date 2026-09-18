@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import requests
 import xml.dom.minidom
 import xml.etree.ElementTree as ET
@@ -20,6 +21,8 @@ import tempfile
 logger = Logger()
 
 SW_URL = os.getenv("SW_URL")
+VALID_MOTIVOS_CANCELACION = {"01", "02", "03", "04"}
+UUID_REGEX = re.compile(r'^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$')
 
 def extraer_datos_cfdi(cfdi_xml_str):
     """Extrae datos fiscales clave de un XML de CFDI (3.3 o 4.0)."""
@@ -1078,4 +1081,207 @@ def timbrar_complemento_pago_handler(event, context):
 
     except Exception as e:
         logger.exception("Error al timbrar complemento de pago")
+        return handle_exception(e)
+
+@logger.inject_lambda_context
+def cancelar_factura_handler(event, context):
+    """POST /facturas/{id}/cancelar — Cancela un CFDI ante el SAT usando SW Sapien."""
+    try:
+        claims = get_claims(event)
+        tenant_id = claims.get('custom:tenant_id')
+        if not tenant_id:
+            return create_response(403, "No se encontró un tenantId asociado.")
+
+        path_params = event.get('pathParameters') or {}
+        factura_id = path_params.get('id')
+        if not factura_id:
+            return create_response(400, "Falta el identificador de la factura en la ruta.")
+
+        factura_oid, err = parse_object_id(factura_id)
+        if err:
+            return create_response(400, f"Identificador de factura no válido: {err}")
+
+        body = event.get('body')
+        if isinstance(body, str):
+            try:
+                body = json.loads(body)
+            except Exception:
+                body = {}
+        elif not isinstance(body, dict):
+            body = {}
+
+        motivo = str(body.get("motivo") or "").strip()
+        folio_sustitucion = str(body.get("folio_sustitucion") or "").strip()
+
+        if motivo not in VALID_MOTIVOS_CANCELACION:
+            return create_response(400, "Motivo de cancelación inválido. Debe ser 01, 02, 03 o 04.")
+
+        db = get_tenant_db(tenant_id)
+        factura = db["facturasemitidas"].find_one({"_id": factura_oid})
+        if not factura:
+            return create_response(404, "No se encontró la factura a cancelar.")
+
+        uuid_a_cancelar = factura.get("uuid")
+        if not uuid_a_cancelar:
+            return create_response(400, "La factura no cuenta con UUID fiscal asignado.")
+
+        if factura.get("estatus") == "Cancelada":
+            return create_response(400, "La factura ya se encuentra cancelada.")
+
+        # Validación motivo 01: requiere UUID sustituto
+        if motivo == "01":
+            if not folio_sustitucion:
+                return create_response(400, "El motivo 01 requiere especificar el UUID del comprobante que lo sustituye (folio_sustitucion).")
+            if not UUID_REGEX.match(folio_sustitucion):
+                return create_response(400, "El formato del UUID sustituto es inválido.")
+            if folio_sustitucion.lower() == uuid_a_cancelar.lower():
+                return create_response(400, "El UUID sustituto no puede ser igual al UUID de la factura a cancelar.")
+        else:
+            folio_sustitucion = ""
+
+        # Validación fiscal SAT: si es factura ordinaria y tiene complementos vigentes, no se puede cancelar
+        tipo_comprobante = factura.get("tipo_de_comprobante", "I")
+        if tipo_comprobante != "P":
+            complementos_vigentes = db["facturasemitidas"].count_documents({
+                "$or": [
+                    {"factura_padre_id": str(factura_oid)},
+                    {"factura_padre_uuid": uuid_a_cancelar}
+                ],
+                "tipo_de_comprobante": "P",
+                "estatus": {"$ne": "Cancelada"}
+            })
+            if complementos_vigentes > 0:
+                return create_response(
+                    400,
+                    f"No se puede cancelar la factura porque tiene {complementos_vigentes} complemento(s) de pago vigentes asociados. "
+                    "Debe cancelar primero los complementos de pago correspondientes."
+                )
+
+        # Determinar RFC Emisor
+        emisor_rfc = ""
+        if factura.get("cfdi"):
+            datos_xml = extraer_datos_cfdi(factura["cfdi"])
+            emisor_rfc = datos_xml.get("emisor_rfc") or ""
+
+        if not emisor_rfc and factura.get("sucursal"):
+            try:
+                sucursal = db["sucursales"].find_one({"_id": ObjectId(factura["sucursal"])})
+                if sucursal:
+                    emisor_rfc = sucursal.get("rfc") or ""
+            except Exception:
+                pass
+
+        if not emisor_rfc:
+            emisor_rfc = factura.get("emisor_rfc") or ""
+
+        if not emisor_rfc:
+            return create_response(400, "No se pudo determinar el RFC del emisor para solicitar la cancelación ante el SAT.")
+
+        # Consumir API de SW Sapien
+        sw_token = get_sw_token()
+        headers = {
+            "Authorization": f"Bearer {sw_token}"
+        }
+
+        if motivo == "01" and folio_sustitucion:
+            cancel_url = f"{SW_URL}/cfdi33/cancel/{emisor_rfc}/{uuid_a_cancelar}/{motivo}/{folio_sustitucion}"
+        else:
+            cancel_url = f"{SW_URL}/cfdi33/cancel/{emisor_rfc}/{uuid_a_cancelar}/{motivo}"
+
+        response_sw = requests.post(cancel_url, headers=headers)
+
+        if response_sw.status_code != 200:
+            logger.error(f"Error HTTP del PAC al cancelar: status={response_sw.status_code}, body={response_sw.text}")
+            return create_response(response_sw.status_code, f"Error del PAC: {response_sw.text}")
+
+        pac_data = response_sw.json()
+        if pac_data.get("status") == "error":
+            err_msg = pac_data.get("message") or pac_data.get("messageDetail") or "Error al procesar la cancelación en el PAC"
+            return create_response(400, f"Error del PAC: {err_msg}")
+
+        data_content = pac_data.get("data") or {}
+        acuse_xml = data_content.get("acuse") or ""
+        folios = data_content.get("folios") or []
+
+        estatus_sat = ""
+        if folios and isinstance(folios, list):
+            folio_info = folios[0]
+            estatus_sat = str(folio_info.get("estatusUUID") or "")
+            if estatus_sat in ["203", "204", "205"]:
+                resp_text = folio_info.get("respuesta") or f"Rechazo del SAT con código {estatus_sat}"
+                return create_response(400, f"El SAT rechazó la cancelación: {resp_text} (Código {estatus_sat})")
+
+        # Actualizar estatus en la base de datos
+        fecha_cancel = datetime.utcnow()
+        update_data = {
+            "estatus": "Cancelada",
+            "motivo_cancelacion": motivo,
+            "folio_sustitucion": folio_sustitucion if motivo == "01" else "",
+            "fecha_cancelacion": fecha_cancel.isoformat(),
+            "acuse_cancelacion": acuse_xml,
+            "estatus_sat_cancelacion": estatus_sat,
+            "updatedAt": fecha_cancel
+        }
+        db["facturasemitidas"].update_one(
+            {"_id": factura_oid},
+            {"$set": update_data}
+        )
+
+        # Si se canceló un Complemento de Pago (tipo "P"), recalcular saldo_insoluto en la factura padre
+        if tipo_comprobante == "P":
+            factura_padre_id = factura.get("factura_padre_id")
+            if factura_padre_id:
+                try:
+                    factura_padre_oid = ObjectId(factura_padre_id)
+                    factura_padre = db["facturasemitidas"].find_one({"_id": factura_padre_oid})
+                    if factura_padre:
+                        # Sumar montos pagados de los complementos que queden VIGENTES
+                        complementos_activos = list(db["facturasemitidas"].find({
+                            "factura_padre_id": factura_padre_id,
+                            "tipo_de_comprobante": "P",
+                            "estatus": {"$ne": "Cancelada"},
+                            "_id": {"$ne": factura_oid}
+                        }))
+                        total_pagado = sum(float(c.get("imp_pagado") or 0.0) for c in complementos_activos)
+                        total_padre = float(factura_padre.get("total") or 0.0)
+                        nuevo_saldo = max(0.0, round(total_padre - total_pagado, 2))
+                        liquidada = (nuevo_saldo <= 0.001)
+
+                        db["facturasemitidas"].update_one(
+                            {"_id": factura_padre_oid},
+                            {"$set": {
+                                "saldo_insoluto": nuevo_saldo,
+                                "esta_liquidada": liquidada
+                            }}
+                        )
+                except Exception as pad_err:
+                    logger.warning(f"Error recalculando saldo en factura padre tras cancelar complemento: {pad_err}")
+
+        # Si era factura ordinaria vinculada a una venta, liberar el ticket
+        ticket = factura.get("ticket")
+        if tipo_comprobante != "P" and ticket:
+            db["ventas"].update_one(
+                {"folio": ticket},
+                {"$set": {"venta_facturada": False}}
+            )
+            try:
+                db["ventas"].update_one(
+                    {"_id": ObjectId(ticket)},
+                    {"$set": {"venta_facturada": False}}
+                )
+            except Exception:
+                pass
+
+        return create_response(200, "Factura cancelada exitosamente ante el SAT.", {
+            "id": str(factura_oid),
+            "uuid": uuid_a_cancelar,
+            "estatus": "Cancelada",
+            "motivo": motivo,
+            "folio_sustitucion": folio_sustitucion,
+            "estatusSAT": estatus_sat,
+            "acuse": acuse_xml
+        })
+
+    except Exception as e:
+        logger.exception("Error al cancelar factura")
         return handle_exception(e)
