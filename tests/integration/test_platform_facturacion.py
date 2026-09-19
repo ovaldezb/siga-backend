@@ -260,3 +260,15 @@ def test_get_platform_factura_pdf(mock_db):
     body = json.loads(res["body"])
     assert "pdf_cfdi_b64" in body["data"]
     assert len(body["data"]["pdf_cfdi_b64"]) > 50
+
+
+def test_limpiar_razon_social():
+    """Verifica que los regímenes societarios se eliminen correctamente para cumplir CFDI 4.0."""
+    from src.handlers.admin.platform_facturacion_manager import limpiar_razon_social
+    assert limpiar_razon_social("ESCUELA KEMPER URGATE SA DE CV") == "ESCUELA KEMPER URGATE"
+    assert limpiar_razon_social("ESCUELA KEMPER URGATE, S.A. DE C.V.") == "ESCUELA KEMPER URGATE"
+    assert limpiar_razon_social("ESCUELA KEMPER URGATE S.A. DE C.V.") == "ESCUELA KEMPER URGATE"
+    assert limpiar_razon_social("ESCUELA KEMPER URGATE S DE RL DE CV") == "ESCUELA KEMPER URGATE"
+    assert limpiar_razon_social("EMPRESA SAS") == "EMPRESA"
+    assert limpiar_razon_social("JUAN PEREZ LOPEZ") == "JUAN PEREZ LOPEZ"
+
