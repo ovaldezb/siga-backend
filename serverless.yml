@@ -403,6 +403,39 @@ functions:
           authorizer:
             name: cognitoAuthorizer
 
+  factura_complementos_list:
+    handler: src.handlers.facturacion.factura_manager.get_factura_complementos_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /facturas/{id}/complementos
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  factura_timbrar_complemento:
+    handler: src.handlers.facturacion.factura_manager.timbrar_complemento_pago_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /facturas/{id}/complemento-pago
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  factura_cancelar:
+    handler: src.handlers.facturacion.factura_manager.cancelar_factura_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /facturas/{id}/cancelar
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
   clientes_list:
     handler: src/handlers/clientes/clientes_manager.list_clientes_handler
     layers:
@@ -785,6 +818,105 @@ functions:
       - httpApi:
           path: /talleres/{id}/enrolar-openpay
           method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  admin_facturacion_certificados_create:
+    handler: src/handlers/admin/platform_facturacion_manager.create_platform_certificate_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /admin/facturacion/certificados
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  admin_facturacion_certificados_list:
+    handler: src/handlers/admin/platform_facturacion_manager.get_platform_certificates_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /admin/facturacion/certificados
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  admin_facturacion_certificados_update:
+    handler: src/handlers/admin/platform_facturacion_manager.update_platform_certificate_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /admin/facturacion/certificados/{id}
+          method: put
+          authorizer:
+            name: cognitoAuthorizer
+
+  admin_facturacion_certificados_delete:
+    handler: src/handlers/admin/platform_facturacion_manager.delete_platform_certificate_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /admin/facturacion/certificados/{id}
+          method: delete
+          authorizer:
+            name: cognitoAuthorizer
+
+  admin_facturacion_config_get:
+    handler: src/handlers/admin/platform_facturacion_manager.get_platform_emisor_config_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /admin/facturacion/configuracion
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  admin_facturacion_config_save:
+    handler: src/handlers/admin/platform_facturacion_manager.save_platform_emisor_config_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /admin/facturacion/configuracion
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  admin_facturacion_facturar_pago:
+    handler: src/handlers/admin/platform_facturacion_manager.facturar_pago_suscripcion_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /admin/facturacion/facturar-pago
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  admin_facturacion_facturas_list:
+    handler: src/handlers/admin/platform_facturacion_manager.list_platform_facturas_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /admin/facturacion/facturas
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  admin_facturacion_factura_pdf:
+    handler: src/handlers/admin/platform_facturacion_manager.get_platform_factura_pdf_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /admin/facturacion/facturas/{id}/pdf
+          method: get
           authorizer:
             name: cognitoAuthorizer
 

@@ -126,6 +126,30 @@ class CFDIPDF_FPDF_Generator():
         data['sello_sat'] = timbre.attrib.get('SelloSAT', '') if timbre is not None else ''
         data['fecha_timbrado'] = timbre.attrib.get('FechaTimbrado', '') if timbre is not None else ''
         data['NoCertificadoSAT'] = timbre.attrib.get('NoCertificadoSAT', '') if timbre is not None else ''
+
+        # Soporte para Complemento de Pagos 2.0
+        ns_pago = {
+            'cfdi': 'http://www.sat.gob.mx/cfd/4',
+            'pago20': 'http://www.sat.gob.mx/Pagos20'
+        }
+        pagos_node = comprobante.find('cfdi:Complemento/pago20:Pagos', ns_pago)
+        data['pagos_data'] = None
+        if pagos_node is not None:
+            totales_elem = pagos_node.find('pago20:Totales', ns_pago)
+            pago_elem = pagos_node.find('pago20:Pago', ns_pago)
+            pago_info = {
+                'totales': totales_elem.attrib if totales_elem is not None else {},
+                'fecha_pago': pago_elem.attrib.get('FechaPago', '') if pago_elem is not None else '',
+                'forma_pago': pago_elem.attrib.get('FormaDePagoP', '') if pago_elem is not None else '',
+                'moneda': pago_elem.attrib.get('MonedaP', 'MXN') if pago_elem is not None else '',
+                'monto': pago_elem.attrib.get('Monto', '0.00') if pago_elem is not None else '',
+                'doctos_relacionados': []
+            }
+            if pago_elem is not None:
+                for doc in pago_elem.findall('pago20:DoctoRelacionado', ns_pago):
+                    pago_info['doctos_relacionados'].append(doc.attrib)
+            data['pagos_data'] = pago_info
+
         return data
 
     def generate_pdf(self) -> bytes:
@@ -248,13 +272,25 @@ class CFDIPDF_FPDF_Generator():
         ]
 
         tipo_cambio_str = str(self.data.get('tipo_cambio', '1'))
-        formapago_pares = [
-            ("Forma de Pago:", self.data.get('forma_pago', '')),
-            ("Moneda:", self.data.get('moneda', 'MXN')),
-            ("Tipo Cambio:", tipo_cambio_str),
-            ("Método de Pago:", self.data.get('metodo_pago', '')),
-            ("Lugar de Expedición:", self.data.get('lugar_expedicion', '')),
-        ]
+        pago_data = self.data.get('pagos_data')
+
+        if tipo_comp == 'P' and pago_data:
+            formapago_pares = [
+                ("Tipo Comprobante:", "P - Pago"),
+                ("Forma de Pago:", pago_data.get('forma_pago', '')),
+                ("Fecha de Pago:", pago_data.get('fecha_pago', '').replace('T', ' ')),
+                ("Moneda de Pago:", pago_data.get('moneda', 'MXN')),
+                ("Monto Pagado:", '$' + f"{safe_float(pago_data.get('monto', 0.0)):,.2f}"),
+                ("Lugar de Expedición:", self.data.get('lugar_expedicion', ''))
+            ]
+        else:
+            formapago_pares = [
+                ("Forma de Pago:", self.data.get('forma_pago', '')),
+                ("Moneda:", self.data.get('moneda', 'MXN')),
+                ("Tipo Cambio:", tipo_cambio_str),
+                ("Método de Pago:", self.data.get('metodo_pago', '')),
+                ("Lugar de Expedición:", self.data.get('lugar_expedicion', '')),
+            ]
 
         x_rec = 10
         x_pago = 110
@@ -291,57 +327,108 @@ class CFDIPDF_FPDF_Generator():
                 
         pdf.ln(2)
         
-        # 4. Tabla de conceptos
-        pdf.set_font("Arial", 'B', 7.5)
-        pdf.cell(24, 5.5, "Clave Prod/Serv", border=1, align='C')
-        pdf.cell(14, 5.5, "Cantidad", border=1, align='C')
-        pdf.cell(20, 5.5, "Clave Unidad", border=1, align='C')
-        pdf.cell(12, 5.5, "Unidad", border=1, align='C')
-        pdf.cell(60, 5.5, "Descripción", border=1, align='C')
-        pdf.cell(20, 5.5, "Prec Unitario", border=1, align='C')
-        pdf.cell(20, 5.5, "Impuesto", border=1, align='C')
-        pdf.cell(20, 5.5, "Importe", border=1, align='C', ln=True)
-        pdf.set_font("Arial", '', 7)
-        impuesto_total = 0.0
+        if tipo_comp == 'P' and pago_data:
+            # 4. Tabla de Documentos Relacionados (Complemento Pagos 2.0)
+            pdf.set_font("Arial", 'B', 7.5)
+            pdf.cell(65, 5.5, "Folio Fiscal Relacionado (UUID)", border=1, align='C')
+            pdf.cell(20, 5.5, "Serie/Folio", border=1, align='C')
+            pdf.cell(15, 5.5, "Parcialidad", border=1, align='C')
+            pdf.cell(30, 5.5, "Saldo Anterior", border=1, align='C')
+            pdf.cell(30, 5.5, "Importe Pagado", border=1, align='C')
+            pdf.cell(30, 5.5, "Saldo Insoluto", border=1, align='C', ln=True)
+            pdf.set_font("Arial", '', 7)
 
-        for concepto in self.data['conceptos']:
-            desc = concepto.get('Descripcion', '')
-            if len(desc) > 38:
-                desc = desc[:35] + '...'
-            cant_float = safe_float(concepto.get('Cantidad', 0))
-            cant_str = f"{cant_float:.2f}"
-            pdf.cell(24, 5, concepto.get('ClaveProdServ', ''), align='C', border='L')
-            pdf.cell(14, 5, cant_str, align='C', border=0)
-            pdf.cell(20, 5, concepto.get('ClaveUnidad', ''), align='C', border=0)
-            pdf.cell(12, 5, concepto.get('Unidad', ''), align='C', border=0)
-            pdf.cell(60, 5, desc, align='L', border=0)
-            pdf.cell(20, 5, '$' + f"{safe_float(concepto.get('ValorUnitario', 0.0)):,.2f}", align='C', border=0)
-            importe_impuesto = safe_float(concepto['impuestos'].get('Importe', 0.0) or 0.0)
-            pdf.cell(20, 5, '$' + f"{importe_impuesto:,.2f}", align='C', border=0)
-            impuesto_total += importe_impuesto
-            pdf.cell(20, 5, '$' + f"{safe_float(concepto.get('Importe', 0.0)):,.2f}", align='C', border='R', ln=True)
+            monto_pago_total = safe_float(pago_data.get('monto', 0.0))
+            doctos = pago_data.get('doctos_relacionados', [])
+            for doc in doctos:
+                uuid_dr = doc.get('IdDocumento', '')
+                serie_folio_dr = f"{doc.get('Serie', '')} {doc.get('Folio', '')}".strip()
+                parc_dr = str(doc.get('NumParcialidad', '1'))
+                saldo_ant_dr = safe_float(doc.get('ImpSaldoAnt', 0.0))
+                pagado_dr = safe_float(doc.get('ImpPagado', 0.0))
+                insoluto_dr = safe_float(doc.get('ImpSaldoInsoluto', 0.0))
 
-        pdf.set_font("Arial", 'B', 7)
-        pdf.cell(25, 9, 'OBSERVACIONES:', border='LT')
-        pdf.set_font("Arial", '', 7)
-        pdf.cell(125, 9, 'Esta factura ampara el documento ' + self.noTicket, border='T')
-        pdf.set_font("Arial", 'B', 7)
-        pdf.cell(20, 4.5, 'Subtotal:', border='LRTB', align='C')
-        pdf.set_font("Arial", '', 7)
-        pdf.cell(20, 4.5, '$' + f"{safe_float(self.data['subtotal']):,.2f}", border='RTB', align='C', ln=True)
-        pdf.cell(150, 4.5, '', border='LR')
-        pdf.set_font("Arial", 'B', 7)
-        pdf.cell(20, 4.5, 'IVA 16%:', border='LRTB', align='C')
-        pdf.set_font("Arial", '', 7)
-        pdf.cell(20, 4.5, '$' + f"{impuesto_total:,.2f}", border='RTB', align='C', ln=True)
-        pdf.cell(28, 5, 'IMPORTE CON LETRA:', border='LBT')
-        pdf.set_font("Arial", '', 7)
-        pdf.cell(122, 5, num2words(safe_float(self.data['total']), lang='es', to='currency', currency='MXN'), border='RBT')
-        pdf.set_font("Arial", 'B', 7)
-        pdf.cell(20, 5, 'Total:', border='RTB', align='C')
-        pdf.set_font("Arial", '', 7)
-        pdf.cell(20, 5, '$' + f"{safe_float(self.data['total']):,.2f}", border='RTB', align='C', ln=True)
-        pdf.cell(190, 2, '', border='LR', ln=True)
+                pdf.cell(65, 5, uuid_dr, align='C', border='L')
+                pdf.cell(20, 5, serie_folio_dr, align='C', border=0)
+                pdf.cell(15, 5, parc_dr, align='C', border=0)
+                pdf.cell(30, 5, '$' + f"{saldo_ant_dr:,.2f}", align='R', border=0)
+                pdf.cell(30, 5, '$' + f"{pagado_dr:,.2f}", align='R', border=0)
+                pdf.cell(30, 5, '$' + f"{insoluto_dr:,.2f}", align='R', border='R', ln=True)
+
+            pdf.set_font("Arial", 'B', 7)
+            pdf.cell(25, 9, 'OBSERVACIONES:', border='LT')
+            pdf.set_font("Arial", '', 7)
+            obs_txt = ('Complemento para recepción de pagos (CFDI 4.0)' + (f' - Ref: {self.noTicket}' if self.noTicket else ''))
+            pdf.cell(125, 9, obs_txt[:70], border='T')
+            pdf.set_font("Arial", 'B', 7)
+            pdf.cell(20, 4.5, 'Subtotal:', border='LRTB', align='C')
+            pdf.set_font("Arial", '', 7)
+            pdf.cell(20, 4.5, '$0.00', border='RTB', align='C', ln=True)
+            pdf.cell(150, 4.5, '', border='LR')
+            pdf.set_font("Arial", 'B', 7)
+            pdf.cell(20, 4.5, 'Total Pagos:', border='LRTB', align='C')
+            pdf.set_font("Arial", '', 7)
+            pdf.cell(20, 4.5, '$' + f"{monto_pago_total:,.2f}", border='RTB', align='C', ln=True)
+            pdf.cell(28, 5, 'IMPORTE CON LETRA:', border='LBT')
+            pdf.set_font("Arial", '', 7)
+            pdf.cell(122, 5, num2words(monto_pago_total, lang='es', to='currency', currency='MXN'), border='RBT')
+            pdf.set_font("Arial", 'B', 7)
+            pdf.cell(20, 5, 'Total CFDI:', border='RTB', align='C')
+            pdf.set_font("Arial", '', 7)
+            pdf.cell(20, 5, '$0.00', border='RTB', align='C', ln=True)
+            pdf.cell(190, 2, '', border='LR', ln=True)
+        else:
+            # 4. Tabla de conceptos
+            pdf.set_font("Arial", 'B', 7.5)
+            pdf.cell(24, 5.5, "Clave Prod/Serv", border=1, align='C')
+            pdf.cell(14, 5.5, "Cantidad", border=1, align='C')
+            pdf.cell(20, 5.5, "Clave Unidad", border=1, align='C')
+            pdf.cell(12, 5.5, "Unidad", border=1, align='C')
+            pdf.cell(60, 5.5, "Descripción", border=1, align='C')
+            pdf.cell(20, 5.5, "Prec Unitario", border=1, align='C')
+            pdf.cell(20, 5.5, "Impuesto", border=1, align='C')
+            pdf.cell(20, 5.5, "Importe", border=1, align='C', ln=True)
+            pdf.set_font("Arial", '', 7)
+            impuesto_total = 0.0
+
+            for concepto in self.data['conceptos']:
+                desc = concepto.get('Descripcion', '')
+                if len(desc) > 38:
+                    desc = desc[:35] + '...'
+                cant_float = safe_float(concepto.get('Cantidad', 0))
+                cant_str = f"{cant_float:.2f}"
+                pdf.cell(24, 5, concepto.get('ClaveProdServ', ''), align='C', border='L')
+                pdf.cell(14, 5, cant_str, align='C', border=0)
+                pdf.cell(20, 5, concepto.get('ClaveUnidad', ''), align='C', border=0)
+                pdf.cell(12, 5, concepto.get('Unidad', ''), align='C', border=0)
+                pdf.cell(60, 5, desc, align='L', border=0)
+                pdf.cell(20, 5, '$' + f"{safe_float(concepto.get('ValorUnitario', 0.0)):,.2f}", align='C', border=0)
+                importe_impuesto = safe_float(concepto['impuestos'].get('Importe', 0.0) or 0.0)
+                pdf.cell(20, 5, '$' + f"{importe_impuesto:,.2f}", align='C', border=0)
+                impuesto_total += importe_impuesto
+                pdf.cell(20, 5, '$' + f"{safe_float(concepto.get('Importe', 0.0)):,.2f}", align='C', border='R', ln=True)
+
+            pdf.set_font("Arial", 'B', 7)
+            pdf.cell(25, 9, 'OBSERVACIONES:', border='LT')
+            pdf.set_font("Arial", '', 7)
+            pdf.cell(125, 9, 'Esta factura ampara el documento ' + self.noTicket, border='T')
+            pdf.set_font("Arial", 'B', 7)
+            pdf.cell(20, 4.5, 'Subtotal:', border='LRTB', align='C')
+            pdf.set_font("Arial", '', 7)
+            pdf.cell(20, 4.5, '$' + f"{safe_float(self.data['subtotal']):,.2f}", border='RTB', align='C', ln=True)
+            pdf.cell(150, 4.5, '', border='LR')
+            pdf.set_font("Arial", 'B', 7)
+            pdf.cell(20, 4.5, 'IVA 16%:', border='LRTB', align='C')
+            pdf.set_font("Arial", '', 7)
+            pdf.cell(20, 4.5, '$' + f"{impuesto_total:,.2f}", border='RTB', align='C', ln=True)
+            pdf.cell(28, 5, 'IMPORTE CON LETRA:', border='LBT')
+            pdf.set_font("Arial", '', 7)
+            pdf.cell(122, 5, num2words(safe_float(self.data['total']), lang='es', to='currency', currency='MXN'), border='RBT')
+            pdf.set_font("Arial", 'B', 7)
+            pdf.cell(20, 5, 'Total:', border='RTB', align='C')
+            pdf.set_font("Arial", '', 7)
+            pdf.cell(20, 5, '$' + f"{safe_float(self.data['total']):,.2f}", border='RTB', align='C', ln=True)
+            pdf.cell(190, 2, '', border='LR', ln=True)
         
         # Código QR y Timbre Fiscal
         x, y = 10, pdf.get_y()
