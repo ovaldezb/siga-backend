@@ -74,7 +74,8 @@ def _seed_flotilla(mock_db, con_cliente=True):
 
     veh1 = str(db['vehiculos'].insert_one({
         'placas': 'AAA-111', 'marca': 'Nissan', 'modelo': 'NP300', 'anio': 2020,
-        'color': 'Blanco', 'kilometraje': 80000, 'cliente_id': cliente_id,
+        'color': 'Blanco', 'vin': '3N6AD33A0LK000001',
+        'kilometraje': 80000, 'cliente_id': cliente_id,
         'proximo_cambio_aceite': 85000,
     }).inserted_id)
     veh2 = str(db['vehiculos'].insert_one({
@@ -380,6 +381,9 @@ def test_resumen_lista_unidades_con_ultimo_servicio(mock_db):
     assert u1['os_abiertas'] == 0
     assert u1['titular'] == 'Operaciones Norte'
     assert u1['proximo_cambio_aceite'] == 85000
+    assert u1['vin'] == '3N6AD33A0LK000001'
+    u2 = next(u for u in d['unidades'] if u['id'] != veh1)
+    assert u2['vin'] == ''  # sin VIN capturado → string vacío, no null
 
     u2 = next(u for u in d['unidades'] if u['id'] == veh2)
     assert u2['os_abiertas'] == 1
@@ -472,7 +476,12 @@ def test_vehiculo_360_historial_sanitizado(mock_db):
     assert 'Discos' not in nombres
 
     # Los items solo traen campos públicos: ni costos ni ids internos.
-    assert set(items[0]) == {'nombre', 'noParte', 'piezas', 'precioVenta', 'subtotal', 'estado'}
+    assert set(items[0]) == {'nombre', 'piezas', 'precioVenta', 'subtotal', 'estado'}
+    # El número de parte es interno: ni la llave ni el valor salen al cliente.
+    assert 'noParte' not in items[0]
+    assert 'BAL-1' not in json.dumps(d)
+
+    assert d['vehiculo']['vin'] == '3N6AD33A0LK000001'
     for i in items:
         assert 'precioCompra' not in i and 'costo_proveedor' not in i
         assert 900 not in i.values() and 850 not in i.values()

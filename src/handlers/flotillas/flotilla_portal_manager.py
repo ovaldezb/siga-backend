@@ -68,8 +68,11 @@ CITAS_VIGENTES = ["pendiente", "confirmada", "en_proceso"]
 
 # Campos de item visibles al flotillero. Todo lo que no esté aquí se filtra
 # (precioCompra, costo_proveedor, proveedor_id, notas internas, linea_id, etc.).
+# `noParte` queda fuera a propósito: es el código interno del fabricante/proveedor
+# y con él el cliente puede cotizar la misma pieza por fuera. Se filtra aquí y no
+# sólo en la vista para que nunca viaje en el payload.
 _PUBLIC_ITEM_FIELDS = {
-    'nombre', 'descripcion', 'noParte', 'marca',
+    'nombre', 'descripcion', 'marca',
     'piezas', 'precioVenta', 'subtotal', 'tipo',
 }
 
@@ -560,6 +563,7 @@ def public_resumen_handler(event, context):
                 'modelo': v.get('modelo'),
                 'anio': v.get('anio'),
                 'color': v.get('color'),
+                'vin': v.get('vin') or '',
                 'titular': scope['cliente_nombres'].get(v.get('cliente_id'), ''),
                 'kilometraje': v.get('kilometraje') or 0,
                 'proximo_cambio_aceite': v.get('proximo_cambio_aceite') or 0,
@@ -706,7 +710,7 @@ def public_vehiculo_handler(event, context):
                 'modelo': vehiculo.get('modelo'),
                 'anio': vehiculo.get('anio'),
                 'color': vehiculo.get('color'),
-                'vin': vehiculo.get('vin'),
+                'vin': vehiculo.get('vin') or '',
                 'kilometraje': vehiculo.get('kilometraje') or 0,
                 'titular': scope['cliente_nombres'].get(vehiculo.get('cliente_id'), ''),
                 'proximo_cambio_aceite': vehiculo.get('proximo_cambio_aceite') or 0,
