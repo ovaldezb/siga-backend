@@ -1,7 +1,7 @@
 import json
 from bson import ObjectId
 from bson.errors import InvalidId
-from datetime import datetime
+from datetime import datetime, timedelta
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.infrastructure.database import get_tenant_db, MongoDBConnection
@@ -1016,6 +1016,142 @@ def _anios_con_ordenes(db):
     return sorted(anios, reverse=True)
 
 
+# ---------------------------------------------------------------------------
+# Tablero del taller (kanban): una columna por estado vivo de la OS.
+# ---------------------------------------------------------------------------
+
+# ENTREGADO y CANCELADO no son columnas: el auto ya salió del taller.
+_ESTADOS_TABLERO = ['RECEPCION', 'COTIZADO', 'APROBADO', 'EN_PROCESO', 'FINALIZADO']
+
+# Un taller con más autos vivos que esto necesita filtros, no un tablero.
+_TABLERO_MAX_TARJETAS = 300
+
+# Ventana y tope del histórico con el que se calcula el tiempo típico por estado.
+_TABLERO_DIAS_HISTORICO = 90
+_TABLERO_MAX_HISTORICO = 1000
+
+_TABLERO_PROYECCION = {
+    'folio': 1, 'estado': 1, 'createdAt': 1, 'updatedAt': 1, 'bitacora_estados': 1,
+    'cliente_snapshot.nombre': 1, 'cliente_snapshot.apellido_paterno': 1,
+    'cliente_snapshot.telefono': 1,
+    'vehiculo_snapshot.marca': 1, 'vehiculo_snapshot.modelo': 1,
+    'vehiculo_snapshot.anio': 1, 'vehiculo_snapshot.placas': 1, 'vehiculo_snapshot.color': 1,
+    'mecanico_id': 1, 'mecanico_nombre': 1, 'fechaEstimadaEntrega': 1,
+    'total': 1, 'pagada': 1, 'saldo_pendiente': 1, 'falla_reportada': 1,
+}
+
+
+def _a_utc_naive(valor):
+    """datetime o string ISO (con o sin Z/offset) → datetime UTC sin tzinfo. None si no se puede."""
+    if isinstance(valor, datetime):
+        dt = valor
+    elif isinstance(valor, str) and valor:
+        try:
+            dt = datetime.fromisoformat(valor.replace('Z', '+00:00'))
+        except ValueError:
+            return None
+    else:
+        return None
+    if dt.tzinfo is not None:
+        dt = (dt - dt.utcoffset()).replace(tzinfo=None)
+    return dt
+
+
+def _entrada_al_estado(orden: dict):
+    """Cuándo entró la OS a su estado actual: la última entrada de la bitácora con
+    ese estado. OS viejas sin bitácora caen a `createdAt`."""
+    estado = orden.get('estado')
+    for entrada in reversed(orden.get('bitacora_estados') or []):
+        if isinstance(entrada, dict) and entrada.get('estado') == estado:
+            fecha = _a_utc_naive(entrada.get('fecha'))
+            if fecha:
+                return fecha
+    return _a_utc_naive(orden.get('createdAt'))
+
+
+def _horas_tipicas_por_estado(db, sucursal_id, ahora):
+    """Mediana de horas que las OS cerradas recientemente pasaron en cada estado.
+
+    Sale de la bitácora: lo que duró un estado es el tramo hasta la siguiente
+    entrada. Se usa la mediana y no el promedio porque un auto olvidado un mes
+    en el patio arrastraría el promedio y pintaría todo el tablero de verde.
+    """
+    desde = ahora - timedelta(days=_TABLERO_DIAS_HISTORICO)
+    filtro = {
+        'estado': {'$in': ['FINALIZADO', 'ENTREGADO']},
+        '$or': [{'updatedAt': {'$gte': desde}}, {'updatedAt': {'$gte': desde.isoformat()}}],
+    }
+    if sucursal_id:
+        filtro['sucursal_id'] = sucursal_id
+
+    duraciones = {estado: [] for estado in _ESTADOS_TABLERO}
+    cursor = (db['ordenes_servicio'].find(filtro, {'bitacora_estados': 1, '_id': 0})
+              .sort('updatedAt', -1).limit(_TABLERO_MAX_HISTORICO))
+    for orden in cursor:
+        tramos = []
+        for entrada in orden.get('bitacora_estados') or []:
+            if isinstance(entrada, dict):
+                fecha = _a_utc_naive(entrada.get('fecha'))
+                if fecha:
+                    tramos.append((fecha, entrada.get('estado')))
+        tramos.sort(key=lambda t: t[0])
+        for (inicio, estado), (fin, _) in zip(tramos, tramos[1:]):
+            if estado in duraciones and fin > inicio:
+                duraciones[estado].append((fin - inicio).total_seconds() / 3600)
+
+    tipicas = {}
+    for estado, horas in duraciones.items():
+        if not horas:
+            continue
+        horas.sort()
+        mitad = len(horas) // 2
+        mediana = horas[mitad] if len(horas) % 2 else (horas[mitad - 1] + horas[mitad]) / 2
+        tipicas[estado] = {'horas': round(mediana, 1), 'muestras': len(horas)}
+    return tipicas
+
+
+def _tablero_response(db, filter_query, claims, query_params):
+    """GET /ordenes?vista=tablero — tarjetas ligeras de las OS que siguen en el taller.
+
+    Cada tarjeta dice cuánto lleva en su estado; junto con el tiempo típico por
+    estado el front marca en qué columna se atoran los autos.
+    """
+    ahora = datetime.utcnow()
+
+    if not query_params.get('estado'):
+        filter_query.setdefault('$and', []).append({'estado': {'$in': _ESTADOS_TABLERO}})
+
+    total = db['ordenes_servicio'].count_documents(filter_query)
+    cursor = (db['ordenes_servicio'].find(filter_query, _TABLERO_PROYECCION)
+              .sort('createdAt', 1).limit(_TABLERO_MAX_TARJETAS))
+
+    sin_importes = es_mecanico(claims)
+    ordenes = []
+    for o in cursor:
+        o['id'] = str(o.pop('_id'))
+        desde = _entrada_al_estado(o)
+        ingreso = _a_utc_naive(o.get('createdAt'))
+        o['en_estado_desde'] = iso_utc(desde) if desde else None
+        o['horas_en_estado'] = round((ahora - desde).total_seconds() / 3600, 1) if desde else None
+        o['dias_en_taller'] = (ahora - ingreso).days if ingreso else None
+        entrega = _a_utc_naive(o.get('fechaEstimadaEntrega'))
+        o['atrasada'] = bool(entrega and entrega < ahora and o.get('estado') != 'FINALIZADO')
+        o.pop('bitacora_estados', None)
+        for campo in ('createdAt', 'updatedAt'):
+            if isinstance(o.get(campo), datetime):
+                o[campo] = iso_utc(o[campo])
+        if sin_importes:
+            _sin_importes(o)
+        ordenes.append(o)
+
+    return create_response(200, "Tablero recuperado", {
+        'items': ordenes,
+        'total': total,
+        'truncado': total > len(ordenes),
+        'horas_tipicas': _horas_tipicas_por_estado(db, query_params.get('sucursal_id'), ahora),
+    })
+
+
 @logger.inject_lambda_context
 def list_ordenes_handler(event, context):
     try:
@@ -1101,6 +1237,9 @@ def list_ordenes_handler(event, context):
 
         db = get_tenant_db(tenant_id)
         ensure_indexes(db, tenant_id)
+
+        if query_params.get('vista') == 'tablero':
+            return _tablero_response(db, filter_query, claims, query_params)
 
         total = db["ordenes_servicio"].count_documents(filter_query)
         ordenes_cursor = db["ordenes_servicio"].find(filter_query).sort("createdAt", -1).skip(skip).limit(limit)
