@@ -7,6 +7,7 @@ from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.infrastructure.database import get_tenant_db, MongoDBConnection
 from src.shared.utils.auth_utils import try_parse_id, get_claims, is_admin, es_mecanico
 from src.shared.utils.date_utils import iso_utc
+from src.shared.utils.formas_pago_sat import es_credito, forma_pago_de
 from src.shared.utils.os_events import (
     append_os_event,
     list_os_events,
@@ -581,38 +582,65 @@ def _anular_venta_de_os(db, session, orden, claims, motivo, sesion_caja):
         session=session,
     )
 
-    # Dinero que el cliente sí entregó y que sale del cajón: lo cobrado de contado
-    # al momento de la venta, más los abonos en efectivo posteriores (los únicos
-    # que registrar_abono_handler empuja a caja).
-    devolucion = 0.0
-    if venta.get('caja_movimiento_registrado'):
-        devolucion += max(0.0, total - credito)
-    for abono in venta.get('abonos') or []:
-        if str(abono.get('metodo') or '').upper() != 'EFECTIVO':
-            continue
+    # Dinero que el cliente sí entregó y que sale de la caja, separado por forma de
+    # pago para que el corte descuente cada concepto de su renglón: lo cobrado de
+    # contado al momento de la venta, más los abonos que entraron a caja.
+    por_forma = {}  # forma_pago_sat -> monto
+
+    def _sumar(forma, metodo, monto):
         try:
-            devolucion += float(abono.get('monto') or 0)
+            monto = float(monto or 0)
         except (TypeError, ValueError):
-            continue
-    devolucion = round(devolucion, 2)
+            return
+        if monto <= 0:
+            return
+        clave = (forma or '', str(metodo or '').upper())
+        por_forma[clave] = por_forma.get(clave, 0.0) + monto
+
+    if venta.get('caja_movimiento_registrado'):
+        # Si la venta no generó crédito, todo lo que trae entró a caja (incluye métodos
+        # propios con código 99 anteriores al arreglo, que se cobraron como pagados).
+        contado = [p for p in (venta.get('pagos') or []) if credito <= 0 or not es_credito(p)]
+        if contado:
+            for p in contado:
+                _sumar(forma_pago_de(p), p.get('metodo'), p.get('monto'))
+            # El efectivo recibido puede incluir el cambio: se acota a lo cobrado.
+            exceso = sum(por_forma.values()) - max(0.0, total - credito)
+            if exceso > 0.005:
+                for clave in list(por_forma):
+                    if clave[0] == '01':
+                        por_forma[clave] = max(0.0, por_forma[clave] - exceso)
+                        break
+        else:
+            _sumar(venta.get('forma_pago_sat') or '', venta.get('metodo_pago'), max(0.0, total - credito))
+    for abono in venta.get('abonos') or []:
+        # `en_caja` lo pone registrar_abono; los abonos viejos sólo entraban si eran efectivo.
+        entro = abono.get('en_caja') if 'en_caja' in abono else \
+            str(abono.get('metodo') or '').upper() == 'EFECTIVO'
+        if entro:
+            _sumar(forma_pago_de(abono) or '01', abono.get('metodo'), abono.get('monto'))
+    devolucion = round(sum(por_forma.values()), 2)
 
     caja_reversada = False
     if devolucion > 0 and sesion_caja:
+        salidas = [{
+            "id": str(ObjectId()),
+            "tipo": "SALIDA",
+            "monto": round(monto, 2),
+            "metodo": metodo,
+            "forma_pago_sat": forma,
+            "concepto": (f"Cancelación de venta {venta.get('folio')} "
+                         f"(OS {orden.get('folio', '')}){f' ({metodo})' if metodo else ''}"),
+            "venta_id": str(venta_oid),
+            "venta_folio": venta.get('folio'),
+            "fecha": iso_utc(),
+            "usuario_id": claims.get('sub'),
+            "usuario_nombre": usuario,
+        } for (forma, metodo), monto in por_forma.items() if round(monto, 2) > 0]
         db.caja_sesiones.update_one(
             {"_id": sesion_caja["_id"], "estado": "ABIERTA"},
             {
-                "$push": {"movimientos": {
-                    "id": str(ObjectId()),
-                    "tipo": "SALIDA",
-                    "monto": devolucion,
-                    "concepto": (f"Cancelación de venta {venta.get('folio')} "
-                                 f"(OS {orden.get('folio', '')})"),
-                    "venta_id": str(venta_oid),
-                    "venta_folio": venta.get('folio'),
-                    "fecha": iso_utc(),
-                    "usuario_id": claims.get('sub'),
-                    "usuario_nombre": usuario,
-                }},
+                "$push": {"movimientos": {"$each": salidas}},
                 "$inc": {"total_salidas": devolucion},
             },
             session=session,

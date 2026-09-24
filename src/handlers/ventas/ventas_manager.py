@@ -10,7 +10,9 @@ from src.handlers.citas.citas_manager import sync_cita_estado_por_orden
 from bson import ObjectId
 from bson.errors import InvalidId
 from src.shared.utils.date_utils import iso_utc
-from src.shared.utils.formas_pago_sat import resolver_forma_pago_sat
+from src.shared.utils.formas_pago_sat import (
+    resolver_forma_pago_sat, es_credito, forma_pago_de, CODIGO_CREDITO, CATALOGO_FORMA_PAGO,
+)
 
 logger = Logger()
 
@@ -260,13 +262,15 @@ def create_venta_handler(event, context):
         forma_pago_sat = _completar_forma_pago_sat(db, tenant_id, pagos_body, metodo_pago,
                                                    body.get('forma_pago_sat'))
         monto_credito = 0.0
+        # Crédito = código SAT 99, aunque el taller le haya puesto otro id al método
+        # (antes sólo contaba el id 'CREDITO' y esos cobros entraban a caja como pagados).
         for p in pagos_body:
             try:
-                if str(p.get('metodo', '')).upper() == 'CREDITO':
+                if es_credito(p):
                     monto_credito += float(p.get('monto', 0))
             except (ValueError, TypeError):
                 pass
-        if metodo_pago == 'CREDITO' and monto_credito == 0:
+        if (metodo_pago == 'CREDITO' or (not pagos_body and forma_pago_sat == CODIGO_CREDITO)) and monto_credito == 0:
             # Método único = crédito ⇒ todo el total es crédito
             monto_credito = total_calculado
 
@@ -615,7 +619,7 @@ def create_venta_handler(event, context):
                         total_contado = 0.0
                         for p in pagos_body:
                             metodo_p = str(p.get('metodo', '')).upper()
-                            if metodo_p == 'CREDITO':
+                            if es_credito(p):
                                 continue
                             try:
                                 monto_p = float(p.get('monto', 0))
@@ -628,6 +632,7 @@ def create_venta_handler(event, context):
                                 "tipo": "VENTA",
                                 "monto": round(monto_p, 2),
                                 "metodo": metodo_p,
+                                "forma_pago_sat": p.get('forma_pago_sat') or '',
                                 "concepto": f"Venta {folio} ({metodo_p})",
                                 "venta_id": nueva_venta["id"],
                                 "venta_folio": folio,
@@ -640,13 +645,15 @@ def create_venta_handler(event, context):
                                 "usuario_nombre": usuario_nombre,
                             })
                             total_contado += monto_p
-                        if not pagos_caja and metodo_pago != 'CREDITO' and total_calculado - monto_credito > 0:
+                        if (not pagos_caja and metodo_pago != 'CREDITO' and forma_pago_sat != CODIGO_CREDITO
+                                and total_calculado - monto_credito > 0):
                             monto_p = round(total_calculado - monto_credito, 2)
                             pagos_caja.append({
                                 "id": str(ObjectId()),
                                 "tipo": "VENTA",
                                 "monto": monto_p,
                                 "metodo": metodo_pago,
+                                "forma_pago_sat": forma_pago_sat,
                                 "concepto": f"Venta {folio} ({metodo_pago})",
                                 "venta_id": nueva_venta["id"],
                                 "venta_folio": folio,
@@ -716,13 +723,25 @@ def registrar_abono_handler(event, context):
             monto = float(body.get('monto', 0))
         except (TypeError, ValueError):
             return create_response(400, "Monto inválido")
-        metodo = (body.get('metodo') or 'EFECTIVO').upper()
+        metodo = (body.get('metodo') or 'EFECTIVO').strip().upper()
         referencia = body.get('referencia', '')
 
         if monto <= 0:
             return create_response(400, "El monto del abono debe ser mayor a cero.")
 
         db = get_tenant_db(tenant_id)
+
+        # El abono se concilia por su forma de pago SAT: la que mande el cliente o la
+        # del método configurado. Un abono no puede ser "a crédito" (sería no pagar).
+        cfg = db["configuracion"].find_one({"tenant_id": tenant_id}, {"metodos_pago": 1}) or {}
+        forma_pago_sat = str(body.get('forma_pago_sat') or '').strip() or \
+            resolver_forma_pago_sat(metodo, cfg.get('metodos_pago') or [])
+        if not forma_pago_sat:
+            return create_response(400, f"El método '{metodo}' no tiene código SAT; configúralo en Configuración.")
+        if forma_pago_sat not in CATALOGO_FORMA_PAGO:
+            return create_response(400, f"El código SAT '{forma_pago_sat}' no existe en el catálogo c_FormaPago.")
+        if forma_pago_sat == CODIGO_CREDITO:
+            return create_response(400, "Un abono no puede registrarse a crédito: elige con qué pagó el cliente.")
         venta = db["ventas"].find_one({"_id": ObjectId(venta_id)})
         if not venta:
             return create_response(404, "Venta no encontrada.")
@@ -738,11 +757,23 @@ def registrar_abono_handler(event, context):
             "id": str(ObjectId()),
             "monto": round(monto, 2),
             "metodo": metodo,
+            "forma_pago_sat": forma_pago_sat,
             "referencia": referencia,
             "fecha": iso_utc(),
             "usuario_id": usuario_id,
             "usuario_nombre": usuario_nombre,
         }
+
+        # Pre-lectura de caja abierta (fuera de la transacción). Todo abono de contado
+        # entra al turno con su forma de pago, igual que los cobros de venta: el
+        # voucher de terminal o la transferencia también se concilian en el corte.
+        sesion_caja = db.caja_sesiones.find_one({
+            "sucursal_id": venta.get('sucursal_id'),
+            "estado": "ABIERTA",
+        })
+        abono["en_caja"] = bool(sesion_caja)
+        if sesion_caja:
+            abono["caja_sesion_id"] = str(sesion_caja["_id"])
 
         update_doc = {
             "$push": {"abonos": abono},
@@ -751,14 +782,6 @@ def registrar_abono_handler(event, context):
                 "updatedAt": datetime.utcnow()
             }
         }
-
-        # Pre-lectura de caja abierta (fuera de la transacción).
-        sesion_caja = None
-        if metodo == 'EFECTIVO':
-            sesion_caja = db.caja_sesiones.find_one({
-                "sucursal_id": venta.get('sucursal_id'),
-                "estado": "ABIERTA",
-            })
 
         # Transacción atómica: abono + caja (si aplica) + cierre de OS (si saldó).
         client = MongoDBConnection.get_client()
@@ -774,7 +797,11 @@ def registrar_abono_handler(event, context):
                                 "id": str(ObjectId()),
                                 "tipo": "ENTRADA",
                                 "monto": round(monto, 2),
-                                "concepto": f"Abono CxC venta {venta.get('folio')}",
+                                "metodo": metodo,
+                                "forma_pago_sat": forma_pago_sat,
+                                "venta_id": venta_id,
+                                "venta_folio": venta.get('folio'),
+                                "concepto": f"Abono CxC venta {venta.get('folio')} ({metodo})",
                                 "fecha": iso_utc(),
                                 "usuario_id": usuario_id,
                                 "usuario_nombre": usuario_nombre,
@@ -1040,6 +1067,9 @@ def update_metodo_pago_handler(event, context):
         nuevos_pagos = []
         metodo_plano = None
 
+        metodos_cfg = (db["configuracion"].find_one({"tenant_id": tenant_id}, {"metodos_pago": 1}) or {}) \
+            .get('metodos_pago') or []
+
         if pagos_actuales:
             if not isinstance(pagos_body, list) or len(pagos_body) != len(pagos_actuales):
                 return create_response(
@@ -1053,7 +1083,18 @@ def update_metodo_pago_handler(event, context):
                 metodo_nuevo = _normaliza_metodo(entrada.get('metodo')) or metodo_actual
                 if not metodo_nuevo:
                     return create_response(400, "Cada línea de pago requiere un método.")
-                if _METODO_PAGO_BLOQUEADO in (metodo_actual, metodo_nuevo) and metodo_actual != metodo_nuevo:
+                # Crédito se reconoce por id CREDITO o por código SAT 99 (métodos propios).
+                era_credito = es_credito(actual, metodos_cfg)
+                sera_credito = es_credito(
+                    {"metodo": metodo_nuevo,
+                     "forma_pago_sat": entrada.get('forma_pago_sat')
+                     or (actual.get('forma_pago_sat') if metodo_nuevo == metodo_actual else '')},
+                    metodos_cfg)
+                # Un pago "99" que nunca generó cuenta por cobrar (venta con monto_credito 0,
+                # p. ej. métodos propios anteriores al arreglo) sí se puede re-etiquetar:
+                # no mueve CxC, sólo corrige la etiqueta de un cobro que ya se contó pagado.
+                movia_cxc = era_credito and float(venta.get('monto_credito') or 0) > 0
+                if metodo_actual != metodo_nuevo and (movia_cxc or sera_credito):
                     return create_response(
                         409,
                         "No se puede convertir un pago a/desde CRÉDITO desde aquí: eso mueve "
@@ -1136,8 +1177,8 @@ def update_metodo_pago_handler(event, context):
                     movimientos = sesion.get('movimientos') or []
                     # Los movimientos de esta venta se generaron en el mismo orden que
                     # sus pagos de contado, así que se re-etiquetan por posición.
-                    contado = [p for p in nuevos_pagos
-                               if _normaliza_metodo(p.get('metodo')) != _METODO_PAGO_BLOQUEADO]
+                    sin_cxc = float(venta.get('monto_credito') or 0) <= 0
+                    contado = [p for p in nuevos_pagos if sin_cxc or not es_credito(p)]
                     idx = 0
                     tocado = False
                     for mov in movimientos:
@@ -1147,6 +1188,7 @@ def update_metodo_pago_handler(event, context):
                             break
                         metodo_mov = contado[idx]['metodo']
                         mov['metodo'] = metodo_mov
+                        mov['forma_pago_sat'] = contado[idx].get('forma_pago_sat') or ''
                         mov['concepto'] = f"Venta {venta.get('folio')} ({metodo_mov})"
                         idx += 1
                         tocado = True

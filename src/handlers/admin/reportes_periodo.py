@@ -13,13 +13,14 @@ from src.handlers.contabilidad.contabilidad_manager import (
     _filtrar_ventas_vigentes, _oid, _resolve_periodo,
 )
 from src.shared.utils.date_utils import iso_utc
+from src.shared.utils.formas_pago_sat import acumular_por_forma_pago
 
 _ESTADOS_VIVOS = ['RECEPCION', 'COTIZADO', 'APROBADO', 'EN_PROCESO', 'FINALIZADO']
 
 _PROYECCION_VENTA = {
     'cliente_id': 1, 'cliente_nombre': 1, 'items': 1, 'total': 1, 'subtotal': 1,
     'descuento': 1, 'orden_id': 1, 'createdAt': 1, 'estado': 1, 'metodo_pago': 1,
-    'pagos': 1, 'saldo_pendiente': 1,
+    'pagos': 1, 'saldo_pendiente': 1, 'forma_pago_sat': 1,
 }
 
 _TOP = 10
@@ -163,27 +164,16 @@ def _top_clientes(ventas):
     } for c in filas]
 
 
-def _metodos_pago(ventas):
-    """Cómo pagaron las ventas del periodo. El crédito aparece como método: es
-    venta hecha pero dinero que todavía no entra."""
-    metodos = defaultdict(float)
-    for v in ventas:
-        ingreso = _ingreso(v)
-        pagos = [p for p in (v.get('pagos') or []) if isinstance(p, dict) and _num(p.get('monto')) > 0]
-        if not pagos:
-            metodos[(v.get('metodo_pago') or 'SIN REGISTRO').upper()] += ingreso
-            continue
-        suma = sum(_num(p.get('monto')) for p in pagos)
-        # El efectivo recibido puede traer el cambio: se escala para que cuadre con la venta.
-        factor = ingreso / suma if suma > ingreso > 0 else 1.0
-        for p in pagos:
-            metodos[str(p.get('metodo') or 'SIN REGISTRO').upper()] += _num(p.get('monto')) * factor
-    total = sum(metodos.values())
-    filas = [{
-        'metodo': m, 'monto': round(monto, 2),
-        'pct': round(monto / total * 100, 1) if total > 0 else 0.0,
-    } for m, monto in metodos.items() if monto > 0]
-    return sorted(filas, key=lambda f: f['monto'], reverse=True)
+def _metodos_config(db):
+    """Métodos de pago del taller (la BD es del tenant: hay una sola configuración con métodos)."""
+    cfg = db["configuracion"].find_one({"metodos_pago": {"$exists": True}}, {"metodos_pago": 1}) or {}
+    return cfg.get('metodos_pago') or []
+
+
+def _metodos_pago(ventas, metodos_cfg=None):
+    """Cómo pagaron las ventas del periodo, acumulado por forma de pago SAT. El
+    crédito aparece como concepto: es venta hecha pero dinero que todavía no entra."""
+    return acumular_por_forma_pago(ventas, metodos_cfg)
 
 
 def _ordenes_de_ventas(db, ventas):
@@ -387,7 +377,7 @@ def reporte_periodo(db, query_params) -> dict:
         'top_servicios': conceptos['servicios'],
         'top_refacciones': conceptos['refacciones'],
         'top_clientes': _top_clientes(ventas),
-        'metodos_pago': _metodos_pago(ventas),
+        'metodos_pago': _metodos_pago(ventas, _metodos_config(db)),
         'mecanicos': mecanicos,
         'cotizaciones': _embudo_cotizaciones(db, desde, hasta_excl, sucursal_id),
         'tendencia': _tendencia(db, hasta_excl, sucursal_id),

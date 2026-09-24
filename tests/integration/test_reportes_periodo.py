@@ -124,7 +124,33 @@ def test_metodos_de_pago_con_credito_y_cambio(mock_db):
         _venta(datetime(2026, 9, 4), [_linea("C", 1, 500, 0)], metodo_pago="TRANSFERENCIA"),
     ])
     metodos = {m["metodo"]: m["monto"] for m in _reporte()["metodos_pago"]}
-    assert metodos == {"EFECTIVO": 800.0, "TARJETA": 200.0, "CREDITO": 1000.0, "TRANSFERENCIA": 500.0}
+    assert metodos == {"Efectivo": 800.0, "Tarjeta de crédito": 200.0,
+                       "Crédito (por cobrar)": 1000.0, "Transferencia": 500.0}
+
+
+def test_metodos_de_pago_se_acumulan_por_forma_sat(mock_db):
+    """El mismo concepto con ids distintos va a un solo renglón, y dos conceptos con
+    el mismo id (tarjeta crédito/débito) se separan por su código SAT."""
+    db = _db(mock_db)
+    db.configuracion.insert_one({"tenant_id": "x", "metodos_pago": [
+        {"id": "1787351165836", "nombre": "Transferencia SPEI", "codigo_sat": "03"},
+    ]})
+    db.ventas.insert_many([
+        _venta(datetime(2026, 9, 2), [_linea("A", 1, 300, 0)],
+               pagos=[{"metodo": "1787351165836", "monto": 300}]),
+        _venta(datetime(2026, 9, 3), [_linea("B", 1, 700, 0)],
+               pagos=[{"metodo": "TRANSFERENCIA", "monto": 700, "forma_pago_sat": "03"}]),
+        _venta(datetime(2026, 9, 4), [_linea("C", 1, 400, 0)],
+               pagos=[{"metodo": "tarjeta", "monto": 400, "forma_pago_sat": "28"}]),
+        _venta(datetime(2026, 9, 5), [_linea("D", 1, 600, 0)],
+               pagos=[{"metodo": "tarjeta", "monto": 600, "forma_pago_sat": "04"}]),
+    ])
+    filas = {m["metodo"]: (m["forma_pago_sat"], m["monto"]) for m in _reporte()["metodos_pago"]}
+    assert filas == {
+        "Transferencia": ("03", 1000.0),
+        "Tarjeta de débito": ("28", 400.0),
+        "Tarjeta de crédito": ("04", 600.0),
+    }
 
 
 def test_mecanicos_del_periodo_y_carga_actual(mock_db):

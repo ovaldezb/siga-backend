@@ -12,6 +12,9 @@ from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.utils.auth_utils import is_admin, get_claims
 from src.shared.infrastructure.database import get_tenant_db
 from src.shared.utils.date_utils import iso_utc
+from src.shared.utils.formas_pago_sat import (
+    etiqueta_forma_pago, forma_pago_de, resolver_forma_pago_sat, acumular_por_forma_pago,
+)
 
 logger = Logger()
 
@@ -148,6 +151,9 @@ def _construir_contexto_ventas(db, ventas):
     for s in db.sucursales.find({}, {'nombre': 1, 'nombreComercial': 1}):
         sucursales_map[str(s['_id'])] = s.get('nombre') or s.get('nombreComercial')
 
+    cfg = db["configuracion"].find_one({"metodos_pago": {"$exists": True}}, {"metodos_pago": 1}) or {}
+    metodos_cfg = cfg.get('metodos_pago') or []
+
     contexto = {}
     for v in ventas:
         venta_id = str(v.get('_id'))
@@ -156,11 +162,18 @@ def _construir_contexto_ventas(db, ventas):
         cot = cotizaciones_map.get((orden or {}).get('cotizacion_origen_id') or '')
         cid = v.get('cliente_id')
 
-        # Métodos de pago realmente usados (pagos[] es la fuente fina; metodo_pago
-        # es el legacy de un solo método).
-        metodos = [str(p.get('metodo') or '').upper() for p in (v.get('pagos') or []) if p.get('metodo')]
+        # Formas de pago realmente usadas (pagos[] es la fuente fina; metodo_pago es
+        # el legacy de un solo método). Se nombran por su concepto SAT: el id de un
+        # método propio del taller ("1787351150203") no le dice nada al contador.
+        metodos = []
+        for p in (v.get('pagos') or []):
+            if isinstance(p, dict) and p.get('metodo'):
+                etiqueta = etiqueta_forma_pago(forma_pago_de(p, metodos_cfg))
+                if etiqueta not in metodos:
+                    metodos.append(etiqueta)
         if not metodos and v.get('metodo_pago'):
-            metodos = [str(v.get('metodo_pago')).upper()]
+            metodos = [etiqueta_forma_pago(v.get('forma_pago_sat')
+                                           or resolver_forma_pago_sat(v.get('metodo_pago'), metodos_cfg))]
 
         contexto[venta_id] = {
             'orden_id': v.get('orden_id'),
@@ -1526,7 +1539,7 @@ def get_concentrado_ventas_handler(event, context):
             'folio': 1, 'cliente_nombre': 1, 'cliente_id': 1, 'items': 1,
             'subtotal': 1, 'total': 1, 'descuento': 1, 'orden_id': 1, 'sucursal_id': 1,
             'createdAt': 1, 'estado': 1, 'vehiculo_snapshot': 1, 'metodo_pago': 1,
-            'pagos': 1, 'saldo_pendiente': 1, 'usuario_nombre': 1,
+            'pagos': 1, 'saldo_pendiente': 1, 'usuario_nombre': 1, 'forma_pago_sat': 1,
         }))
 
         # Fuera los renglones de OS canceladas: no son ganancia ni pérdida real.
@@ -1534,6 +1547,11 @@ def get_concentrado_ventas_handler(event, context):
 
         # Mismo contexto de ubicación que las otras pestañas (vehículo, OS, cotización).
         ctx_ventas = _construir_contexto_ventas(db, ventas)
+
+        # Conciliación: lo cobrado en el periodo acumulado por forma de pago SAT,
+        # con el mismo criterio que Reportes para que los dos módulos den igual.
+        cfg = db["configuracion"].find_one({"metodos_pago": {"$exists": True}}, {"metodos_pago": 1}) or {}
+        por_forma_pago = acumular_por_forma_pago(ventas, cfg.get('metodos_pago') or [])
 
         renglones = []
         tot_ingreso = 0.0
@@ -1644,6 +1662,7 @@ def get_concentrado_ventas_handler(event, context):
                 'refacciones': grupos['REFACCION'],
                 'servicios': grupos['SERVICIO'],
             },
+            'por_forma_pago': por_forma_pago,
             'renglones': renglones[:2000],
         })
     except Exception as e:
