@@ -5,6 +5,7 @@ from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.infrastructure.database import get_tenant_db
 from src.shared.utils.auth_utils import parse_object_id, is_admin, get_claims
+from src.shared.utils.formas_pago_sat import CATALOGO_FORMA_PAGO, completar_codigos_config, deduplicar_ids
 from bson import ObjectId
 
 logger = Logger()
@@ -22,10 +23,10 @@ def get_config_handler(event, context):
             config = {
                 "tenant_id": tenant_id,
                 "metodos_pago": [
-                    {"id": "efectivo", "nombre": "Efectivo", "icono": "ri-money-dollar-circle-line", "activo": True, "requiere_referencia": False},
-                    {"id": "tarjeta", "nombre": "Tarjeta", "icono": "ri-bank-card-line", "activo": True, "requiere_referencia": True},
-                    {"id": "transferencia", "nombre": "Transferencia", "icono": "ri-exchange-line", "activo": True, "requiere_referencia": True},
-                    {"id": "credito", "nombre": "Crédito", "icono": "ri-hand-coin-line", "activo": True, "requiere_referencia": False}
+                    {"id": "efectivo", "nombre": "Efectivo", "icono": "ri-money-dollar-circle-line", "activo": True, "requiere_referencia": False, "codigo_sat": "01"},
+                    {"id": "tarjeta", "nombre": "Tarjeta", "icono": "ri-bank-card-line", "activo": True, "requiere_referencia": True, "codigo_sat": "04"},
+                    {"id": "transferencia", "nombre": "Transferencia", "icono": "ri-exchange-line", "activo": True, "requiere_referencia": True, "codigo_sat": "03"},
+                    {"id": "credito", "nombre": "Crédito", "icono": "ri-hand-coin-line", "activo": True, "requiere_referencia": False, "codigo_sat": "99"}
                 ],
                 "marcas": [
                     {"id": "bosch",     "nombre": "Bosch",     "activa": True},
@@ -89,6 +90,17 @@ def get_config_handler(event, context):
                 {"$set": {"templates_revision": []}}
             )
 
+        # Migración suave: métodos de pago sin código SAT (talleres anteriores al
+        # campo) o con id repetido. Sólo rellena lo que falta; no pisa lo capturado.
+        metodos, dedup = deduplicar_ids(config.get('metodos_pago') or [])
+        metodos, completados = completar_codigos_config(metodos)
+        if dedup or completados:
+            config['metodos_pago'] = metodos
+            db["configuracion"].update_one(
+                {"tenant_id": tenant_id},
+                {"$set": {"metodos_pago": metodos}}
+            )
+
         if '_id' in config:
             config['id'] = str(config.pop('_id'))
             
@@ -110,7 +122,16 @@ def update_config_handler(event, context):
         body['updatedAt'] = datetime.utcnow()
         if 'id' in body:
             del body['id']
-            
+
+        if isinstance(body.get('metodos_pago'), list):
+            for m in body['metodos_pago']:
+                codigo = str((m or {}).get('codigo_sat') or '').strip()
+                if codigo and codigo not in CATALOGO_FORMA_PAGO:
+                    return create_response(
+                        400, f"El código SAT '{codigo}' del método '{m.get('nombre')}' no existe en el catálogo c_FormaPago.")
+            metodos, _ = deduplicar_ids(body['metodos_pago'])
+            body['metodos_pago'], _ = completar_codigos_config(metodos)
+
         db["configuracion"].update_one(
             {"tenant_id": tenant_id},
             {"$set": body},

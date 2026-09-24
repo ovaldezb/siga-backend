@@ -10,6 +10,7 @@ from src.handlers.citas.citas_manager import sync_cita_estado_por_orden
 from bson import ObjectId
 from bson.errors import InvalidId
 from src.shared.utils.date_utils import iso_utc
+from src.shared.utils.formas_pago_sat import resolver_forma_pago_sat
 
 logger = Logger()
 
@@ -24,6 +25,24 @@ class StockInsuficienteError(Exception):
     def __init__(self, mensaje: str):
         super().__init__(mensaje)
         self.mensaje = mensaje
+
+
+def _completar_forma_pago_sat(db, tenant_id, pagos, metodo_pago, forma_pago_body=None):
+    """Asigna `forma_pago_sat` a cada pago que no lo trae (según el método configurado
+    en el taller) y devuelve la forma de pago de la venta: la que mandó el cliente o,
+    si vino vacía, la del primer pago."""
+    faltan = any(isinstance(p, dict) and not p.get('forma_pago_sat') for p in pagos)
+    metodos_cfg = []
+    if faltan or not forma_pago_body:
+        cfg = db["configuracion"].find_one({"tenant_id": tenant_id}, {"metodos_pago": 1}) or {}
+        metodos_cfg = cfg.get('metodos_pago') or []
+    for p in pagos:
+        if isinstance(p, dict) and not p.get('forma_pago_sat'):
+            p['forma_pago_sat'] = resolver_forma_pago_sat(p.get('metodo'), metodos_cfg)
+    if forma_pago_body:
+        return str(forma_pago_body)
+    primera = next((p.get('forma_pago_sat') for p in pagos if isinstance(p, dict) and p.get('forma_pago_sat')), '')
+    return primera or resolver_forma_pago_sat(metodo_pago, metodos_cfg)
 
 
 def _parse_fecha_cierre(value):
@@ -238,6 +257,8 @@ def create_venta_handler(event, context):
         # 3.6 VALIDAR CRÉDITO SI APLICA (acepta crédito como método único o dentro de pagos[])
         metodo_pago = body.get('metodo_pago', 'EFECTIVO').upper()
         pagos_body = body.get('pagos', []) or []
+        forma_pago_sat = _completar_forma_pago_sat(db, tenant_id, pagos_body, metodo_pago,
+                                                   body.get('forma_pago_sat'))
         monto_credito = 0.0
         for p in pagos_body:
             try:
@@ -316,7 +337,7 @@ def create_venta_handler(event, context):
             "createdAt": created_at,
             "fecha_cierre_manual": bool(fecha_cierre_in),
             "venta_facturada": bool(body.get('venta_facturada', False)),
-            "forma_pago_sat": body.get('forma_pago_sat', ''),
+            "forma_pago_sat": forma_pago_sat,
         }
 
         # 3.9 PRE-CÁLCULO DE BACKOFFICE CxP — antes de la transacción para no llamar a
@@ -1044,6 +1065,9 @@ def update_metodo_pago_handler(event, context):
                     pago['referencia'] = str(entrada.get('referencia') or '')
                 if entrada.get('forma_pago_sat'):
                     pago['forma_pago_sat'] = str(entrada['forma_pago_sat'])
+                elif metodo_nuevo != metodo_actual or not pago.get('forma_pago_sat'):
+                    # Sin código del cliente: el del método viejo ya no aplica.
+                    pago['forma_pago_sat'] = ''
                 nuevos_pagos.append(pago)
         else:
             # Venta antigua sin desglose: sólo tiene el `metodo_pago` plano.
@@ -1085,7 +1109,9 @@ def update_metodo_pago_handler(event, context):
         }
         if nuevos_pagos:
             set_doc["pagos"] = nuevos_pagos
-            primera_sat = next((p.get('forma_pago_sat') for p in nuevos_pagos if p.get('forma_pago_sat')), None)
+            set_doc["forma_pago_sat"] = _completar_forma_pago_sat(db, tenant_id, nuevos_pagos, metodo_resumen)
+        elif metodo_plano:
+            primera_sat = _completar_forma_pago_sat(db, tenant_id, [], metodo_plano)
             if primera_sat:
                 set_doc["forma_pago_sat"] = primera_sat
 
