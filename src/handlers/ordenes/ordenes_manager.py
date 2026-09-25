@@ -1,12 +1,13 @@
 import json
 from bson import ObjectId
 from bson.errors import InvalidId
-from datetime import datetime
+from datetime import datetime, timedelta
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.infrastructure.database import get_tenant_db, MongoDBConnection
 from src.shared.utils.auth_utils import try_parse_id, get_claims, is_admin, es_mecanico
 from src.shared.utils.date_utils import iso_utc
+from src.shared.utils.formas_pago_sat import es_credito, forma_pago_de
 from src.shared.utils.os_events import (
     append_os_event,
     list_os_events,
@@ -581,38 +582,65 @@ def _anular_venta_de_os(db, session, orden, claims, motivo, sesion_caja):
         session=session,
     )
 
-    # Dinero que el cliente sí entregó y que sale del cajón: lo cobrado de contado
-    # al momento de la venta, más los abonos en efectivo posteriores (los únicos
-    # que registrar_abono_handler empuja a caja).
-    devolucion = 0.0
-    if venta.get('caja_movimiento_registrado'):
-        devolucion += max(0.0, total - credito)
-    for abono in venta.get('abonos') or []:
-        if str(abono.get('metodo') or '').upper() != 'EFECTIVO':
-            continue
+    # Dinero que el cliente sí entregó y que sale de la caja, separado por forma de
+    # pago para que el corte descuente cada concepto de su renglón: lo cobrado de
+    # contado al momento de la venta, más los abonos que entraron a caja.
+    por_forma = {}  # forma_pago_sat -> monto
+
+    def _sumar(forma, metodo, monto):
         try:
-            devolucion += float(abono.get('monto') or 0)
+            monto = float(monto or 0)
         except (TypeError, ValueError):
-            continue
-    devolucion = round(devolucion, 2)
+            return
+        if monto <= 0:
+            return
+        clave = (forma or '', str(metodo or '').upper())
+        por_forma[clave] = por_forma.get(clave, 0.0) + monto
+
+    if venta.get('caja_movimiento_registrado'):
+        # Si la venta no generó crédito, todo lo que trae entró a caja (incluye métodos
+        # propios con código 99 anteriores al arreglo, que se cobraron como pagados).
+        contado = [p for p in (venta.get('pagos') or []) if credito <= 0 or not es_credito(p)]
+        if contado:
+            for p in contado:
+                _sumar(forma_pago_de(p), p.get('metodo'), p.get('monto'))
+            # El efectivo recibido puede incluir el cambio: se acota a lo cobrado.
+            exceso = sum(por_forma.values()) - max(0.0, total - credito)
+            if exceso > 0.005:
+                for clave in list(por_forma):
+                    if clave[0] == '01':
+                        por_forma[clave] = max(0.0, por_forma[clave] - exceso)
+                        break
+        else:
+            _sumar(venta.get('forma_pago_sat') or '', venta.get('metodo_pago'), max(0.0, total - credito))
+    for abono in venta.get('abonos') or []:
+        # `en_caja` lo pone registrar_abono; los abonos viejos sólo entraban si eran efectivo.
+        entro = abono.get('en_caja') if 'en_caja' in abono else \
+            str(abono.get('metodo') or '').upper() == 'EFECTIVO'
+        if entro:
+            _sumar(forma_pago_de(abono) or '01', abono.get('metodo'), abono.get('monto'))
+    devolucion = round(sum(por_forma.values()), 2)
 
     caja_reversada = False
     if devolucion > 0 and sesion_caja:
+        salidas = [{
+            "id": str(ObjectId()),
+            "tipo": "SALIDA",
+            "monto": round(monto, 2),
+            "metodo": metodo,
+            "forma_pago_sat": forma,
+            "concepto": (f"Cancelación de venta {venta.get('folio')} "
+                         f"(OS {orden.get('folio', '')}){f' ({metodo})' if metodo else ''}"),
+            "venta_id": str(venta_oid),
+            "venta_folio": venta.get('folio'),
+            "fecha": iso_utc(),
+            "usuario_id": claims.get('sub'),
+            "usuario_nombre": usuario,
+        } for (forma, metodo), monto in por_forma.items() if round(monto, 2) > 0]
         db.caja_sesiones.update_one(
             {"_id": sesion_caja["_id"], "estado": "ABIERTA"},
             {
-                "$push": {"movimientos": {
-                    "id": str(ObjectId()),
-                    "tipo": "SALIDA",
-                    "monto": devolucion,
-                    "concepto": (f"Cancelación de venta {venta.get('folio')} "
-                                 f"(OS {orden.get('folio', '')})"),
-                    "venta_id": str(venta_oid),
-                    "venta_folio": venta.get('folio'),
-                    "fecha": iso_utc(),
-                    "usuario_id": claims.get('sub'),
-                    "usuario_nombre": usuario,
-                }},
+                "$push": {"movimientos": {"$each": salidas}},
                 "$inc": {"total_salidas": devolucion},
             },
             session=session,
@@ -1016,6 +1044,142 @@ def _anios_con_ordenes(db):
     return sorted(anios, reverse=True)
 
 
+# ---------------------------------------------------------------------------
+# Tablero del taller (kanban): una columna por estado vivo de la OS.
+# ---------------------------------------------------------------------------
+
+# ENTREGADO y CANCELADO no son columnas: el auto ya salió del taller.
+_ESTADOS_TABLERO = ['RECEPCION', 'COTIZADO', 'APROBADO', 'EN_PROCESO', 'FINALIZADO']
+
+# Un taller con más autos vivos que esto necesita filtros, no un tablero.
+_TABLERO_MAX_TARJETAS = 300
+
+# Ventana y tope del histórico con el que se calcula el tiempo típico por estado.
+_TABLERO_DIAS_HISTORICO = 90
+_TABLERO_MAX_HISTORICO = 1000
+
+_TABLERO_PROYECCION = {
+    'folio': 1, 'estado': 1, 'createdAt': 1, 'updatedAt': 1, 'bitacora_estados': 1,
+    'cliente_snapshot.nombre': 1, 'cliente_snapshot.apellido_paterno': 1,
+    'cliente_snapshot.telefono': 1,
+    'vehiculo_snapshot.marca': 1, 'vehiculo_snapshot.modelo': 1,
+    'vehiculo_snapshot.anio': 1, 'vehiculo_snapshot.placas': 1, 'vehiculo_snapshot.color': 1,
+    'mecanico_id': 1, 'mecanico_nombre': 1, 'fechaEstimadaEntrega': 1,
+    'total': 1, 'pagada': 1, 'saldo_pendiente': 1, 'falla_reportada': 1,
+}
+
+
+def _a_utc_naive(valor):
+    """datetime o string ISO (con o sin Z/offset) → datetime UTC sin tzinfo. None si no se puede."""
+    if isinstance(valor, datetime):
+        dt = valor
+    elif isinstance(valor, str) and valor:
+        try:
+            dt = datetime.fromisoformat(valor.replace('Z', '+00:00'))
+        except ValueError:
+            return None
+    else:
+        return None
+    if dt.tzinfo is not None:
+        dt = (dt - dt.utcoffset()).replace(tzinfo=None)
+    return dt
+
+
+def _entrada_al_estado(orden: dict):
+    """Cuándo entró la OS a su estado actual: la última entrada de la bitácora con
+    ese estado. OS viejas sin bitácora caen a `createdAt`."""
+    estado = orden.get('estado')
+    for entrada in reversed(orden.get('bitacora_estados') or []):
+        if isinstance(entrada, dict) and entrada.get('estado') == estado:
+            fecha = _a_utc_naive(entrada.get('fecha'))
+            if fecha:
+                return fecha
+    return _a_utc_naive(orden.get('createdAt'))
+
+
+def _horas_tipicas_por_estado(db, sucursal_id, ahora):
+    """Mediana de horas que las OS cerradas recientemente pasaron en cada estado.
+
+    Sale de la bitácora: lo que duró un estado es el tramo hasta la siguiente
+    entrada. Se usa la mediana y no el promedio porque un auto olvidado un mes
+    en el patio arrastraría el promedio y pintaría todo el tablero de verde.
+    """
+    desde = ahora - timedelta(days=_TABLERO_DIAS_HISTORICO)
+    filtro = {
+        'estado': {'$in': ['FINALIZADO', 'ENTREGADO']},
+        '$or': [{'updatedAt': {'$gte': desde}}, {'updatedAt': {'$gte': desde.isoformat()}}],
+    }
+    if sucursal_id:
+        filtro['sucursal_id'] = sucursal_id
+
+    duraciones = {estado: [] for estado in _ESTADOS_TABLERO}
+    cursor = (db['ordenes_servicio'].find(filtro, {'bitacora_estados': 1, '_id': 0})
+              .sort('updatedAt', -1).limit(_TABLERO_MAX_HISTORICO))
+    for orden in cursor:
+        tramos = []
+        for entrada in orden.get('bitacora_estados') or []:
+            if isinstance(entrada, dict):
+                fecha = _a_utc_naive(entrada.get('fecha'))
+                if fecha:
+                    tramos.append((fecha, entrada.get('estado')))
+        tramos.sort(key=lambda t: t[0])
+        for (inicio, estado), (fin, _) in zip(tramos, tramos[1:]):
+            if estado in duraciones and fin > inicio:
+                duraciones[estado].append((fin - inicio).total_seconds() / 3600)
+
+    tipicas = {}
+    for estado, horas in duraciones.items():
+        if not horas:
+            continue
+        horas.sort()
+        mitad = len(horas) // 2
+        mediana = horas[mitad] if len(horas) % 2 else (horas[mitad - 1] + horas[mitad]) / 2
+        tipicas[estado] = {'horas': round(mediana, 1), 'muestras': len(horas)}
+    return tipicas
+
+
+def _tablero_response(db, filter_query, claims, query_params):
+    """GET /ordenes?vista=tablero — tarjetas ligeras de las OS que siguen en el taller.
+
+    Cada tarjeta dice cuánto lleva en su estado; junto con el tiempo típico por
+    estado el front marca en qué columna se atoran los autos.
+    """
+    ahora = datetime.utcnow()
+
+    if not query_params.get('estado'):
+        filter_query.setdefault('$and', []).append({'estado': {'$in': _ESTADOS_TABLERO}})
+
+    total = db['ordenes_servicio'].count_documents(filter_query)
+    cursor = (db['ordenes_servicio'].find(filter_query, _TABLERO_PROYECCION)
+              .sort('createdAt', 1).limit(_TABLERO_MAX_TARJETAS))
+
+    sin_importes = es_mecanico(claims)
+    ordenes = []
+    for o in cursor:
+        o['id'] = str(o.pop('_id'))
+        desde = _entrada_al_estado(o)
+        ingreso = _a_utc_naive(o.get('createdAt'))
+        o['en_estado_desde'] = iso_utc(desde) if desde else None
+        o['horas_en_estado'] = round((ahora - desde).total_seconds() / 3600, 1) if desde else None
+        o['dias_en_taller'] = (ahora - ingreso).days if ingreso else None
+        entrega = _a_utc_naive(o.get('fechaEstimadaEntrega'))
+        o['atrasada'] = bool(entrega and entrega < ahora and o.get('estado') != 'FINALIZADO')
+        o.pop('bitacora_estados', None)
+        for campo in ('createdAt', 'updatedAt'):
+            if isinstance(o.get(campo), datetime):
+                o[campo] = iso_utc(o[campo])
+        if sin_importes:
+            _sin_importes(o)
+        ordenes.append(o)
+
+    return create_response(200, "Tablero recuperado", {
+        'items': ordenes,
+        'total': total,
+        'truncado': total > len(ordenes),
+        'horas_tipicas': _horas_tipicas_por_estado(db, query_params.get('sucursal_id'), ahora),
+    })
+
+
 @logger.inject_lambda_context
 def list_ordenes_handler(event, context):
     try:
@@ -1101,6 +1265,9 @@ def list_ordenes_handler(event, context):
 
         db = get_tenant_db(tenant_id)
         ensure_indexes(db, tenant_id)
+
+        if query_params.get('vista') == 'tablero':
+            return _tablero_response(db, filter_query, claims, query_params)
 
         total = db["ordenes_servicio"].count_documents(filter_query)
         ordenes_cursor = db["ordenes_servicio"].find(filter_query).sort("createdAt", -1).skip(skip).limit(limit)

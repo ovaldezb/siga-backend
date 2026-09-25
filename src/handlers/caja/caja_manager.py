@@ -6,8 +6,15 @@ from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.infrastructure.database import get_tenant_db
 from bson import ObjectId
 from src.shared.utils.date_utils import iso_utc
+from src.shared.utils.formas_pago_sat import esperado_por_concepto
 
 logger = Logger()
+
+
+def _metodos_config(db, tenant_id):
+    """Métodos de pago del taller, para clasificar movimientos viejos sin código SAT."""
+    cfg = db["configuracion"].find_one({"tenant_id": tenant_id}, {"metodos_pago": 1}) or {}
+    return cfg.get("metodos_pago") or []
 
 # Set de tenants donde ya garantizamos los índices durante la vida de este container.
 # Evita pegarle a Mongo en cada apertura de caja (create_index es idempotente pero
@@ -51,7 +58,8 @@ def get_active_caja_handler(event, context):
         
         if not caja:
             return create_response(200, "No hay caja abierta", None)
-            
+
+        caja['esperado_por_concepto'] = esperado_por_concepto(caja, _metodos_config(db, tenant_id))
         caja['id'] = str(caja.pop('_id'))
         return create_response(200, "Caja activa obtenida", caja)
     except Exception as e:
@@ -237,6 +245,12 @@ def cerrar_caja_handler(event, context):
         )
         diferencia = round(monto_final - monto_esperado, 2)
 
+        # Conciliación por concepto: cada renglón del conteo contra lo que el sistema
+        # registró con esa forma de pago. Un total que cuadra puede esconder un
+        # faltante de efectivo compensado con un sobrante de terminal.
+        por_concepto = esperado_por_concepto(sesion, _metodos_config(db, tenant_id))
+        contado = {"efectivo": efectivo_fisico, "tarjeta": tarjeta_fisico, "otros": otros_fisico}
+
         arqueo = {
             "efectivo_fisico": efectivo_fisico,
             "tarjeta_fisico": tarjeta_fisico,
@@ -244,6 +258,10 @@ def cerrar_caja_handler(event, context):
             "total_fisico": monto_final,
             "esperado": monto_esperado,
             "diferencia": diferencia,
+            "esperado_por_concepto": por_concepto,
+            "diferencia_por_concepto": {
+                k: round(contado[k] - por_concepto.get(k, 0.0), 2) for k in contado
+            } if tiene_desglose else None,
             "motivo": motivo,
             "cerrado_por": usuario_nombre or usuario_id,
             "cerrado_at": iso_utc(),
@@ -310,8 +328,14 @@ def list_arqueos_handler(event, context):
         items = []
         total_diferencia = 0.0
         dias_con_diferencia = 0
+        metodos_cfg = _metodos_config(db, tenant_id)
         for s in sesiones:
             s['id'] = str(s.pop('_id'))
+            # Cortes anteriores al desglose: se calcula al vuelo (no se reescribe el arqueo firmado).
+            if not (s.get('arqueo') or {}).get('esperado_por_concepto'):
+                s['esperado_por_concepto'] = esperado_por_concepto(s, metodos_cfg)
+            else:
+                s['esperado_por_concepto'] = s['arqueo']['esperado_por_concepto']
             dif = float(s.get('diferencia', 0) or 0)
             total_diferencia += dif
             if abs(dif) >= 0.01:

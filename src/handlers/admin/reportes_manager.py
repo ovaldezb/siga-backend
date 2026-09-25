@@ -7,6 +7,7 @@ from src.shared.utils.auth_utils import try_parse_id, get_claims, es_mecanico
 from src.shared.infrastructure.database import get_tenant_db
 from src.shared.utils.indexes import ensure_indexes
 from src.shared.utils.date_utils import iso_utc
+from src.handlers.admin.reportes_periodo import reporte_periodo, validar_periodo
 
 logger = Logger()
 
@@ -26,6 +27,14 @@ def get_kpis_handler(event, context):
         
         db = get_tenant_db(tenant_id)
         ensure_indexes(db, tenant_id)
+
+        # Con `desde` y `hasta` es el reporte por periodo de la pantalla Reportes.
+        # Sin ellos, los KPIs de siempre que consume el Dashboard.
+        if query_params.get('desde') or query_params.get('hasta'):
+            error = validar_periodo(query_params)
+            if error:
+                return create_response(400, error)
+            return create_response(200, "Reporte del periodo generado", reporte_periodo(db, query_params))
 
         # Filtro base
         filter_base = {"tenant_id": tenant_id}
@@ -68,7 +77,7 @@ def get_kpis_handler(event, context):
         match_date_expr = {
             "$cond": [
                 {"$eq": [{"$type": "$createdAt"}, "string"]},
-                {"$dateFromString": {"dateString": "$createdAt"}},
+                {"$dateFromString": {"dateString": "$createdAt", "onError": None, "onNull": None}},
                 "$createdAt"
             ]
         }
@@ -156,7 +165,8 @@ def get_kpis_handler(event, context):
             {"$match": filter_base},
             {"$group": {
                 "_id": "$mecanico_id",
-                "nombre": {"$first": "$mecanico_nombre"},
+                # Las OS sin mecánico se agrupan en null: sin esto salían como un renglón en blanco.
+                "nombre": {"$first": {"$ifNull": ["$mecanico_nombre", "Sin asignar"]}},
                 "completadas": {"$sum": {"$cond": [{"$eq": ["$estado", "ENTREGADO"]}, 1, 0]}},
                 "en_proceso": {"$sum": {"$cond": [{"$eq": ["$estado", "EN_PROCESO"]}, 1, 0]}},
                 "_total_entregado_sum": {"$sum": {"$cond": [{"$eq": ["$estado", "ENTREGADO"]}, {"$ifNull": ["$total", 0]}, 0]}},
@@ -191,7 +201,7 @@ def get_kpis_handler(event, context):
         date_expr = {
             "$cond": [
                 {"$eq": [{"$type": "$createdAt"}, "string"]},
-                {"$dateFromString": {"dateString": "$createdAt"}},
+                {"$dateFromString": {"dateString": "$createdAt", "onError": None, "onNull": None}},
                 "$createdAt"
             ]
         }
