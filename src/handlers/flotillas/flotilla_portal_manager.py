@@ -76,6 +76,11 @@ _PUBLIC_ITEM_FIELDS = {
     'piezas', 'precioVenta', 'subtotal', 'tipo',
 }
 
+# Interruptor general "mostrar cotizaciones en el portal" (vive en `flotillas`).
+# Se combina con el de cada OS (`public_link.CAMPO_VISIBILIDAD_OS`): basta con que
+# uno de los dos esté apagado para que la cotización no salga.
+CAMPO_MOSTRAR_COTIZACION = 'portal_mostrar_cotizacion'
+
 
 # ---------- helpers de acceso ----------
 
@@ -234,7 +239,19 @@ def _sanitizar_items(orden: dict) -> list:
     return puntos_pub
 
 
-def _sanitizar_os_detalle(orden: dict, cliente_nombres: dict) -> dict:
+def _mostrar_cotizaciones(flotilla: Optional[dict]) -> bool:
+    """Interruptor general del portal (campo en `flotillas`, no en `flotilla_acceso`,
+    para que sobreviva a rotar o revocar el enlace). Ausente = visible."""
+    return (flotilla or {}).get(CAMPO_MOSTRAR_COTIZACION) is not False
+
+
+def _visible(orden: dict, mostrar_flotilla: bool) -> bool:
+    return mostrar_flotilla and public_link.cotizacion_visible(orden)
+
+
+def _sanitizar_os_detalle(orden: dict, cliente_nombres: dict, visible: bool = True) -> dict:
+    """`visible=False` (el taller ocultó la cotización) deja la orden y su estatus,
+    pero quita items e importes antes de que salgan del backend."""
     cliente_id = (orden.get('cliente_snapshot') or {}).get('id')
     return {
         'id': str(orden['_id']),
@@ -245,14 +262,15 @@ def _sanitizar_os_detalle(orden: dict, cliente_nombres: dict) -> dict:
         'kilometraje': orden.get('kilometraje', 0),
         'falla_reportada': orden.get('falla_reportada'),
         'diagnostico': orden.get('diagnostico'),
-        'total': float(orden.get('total') or 0),
-        'anticipo': float(orden.get('anticipo') or 0),
+        'cotizacion_visible': visible,
+        'total': float(orden.get('total') or 0) if visible else None,
+        'anticipo': float(orden.get('anticipo') or 0) if visible else None,
         'titular': cliente_nombres.get(cliente_id, ''),
         'proximo_cambio_aceite': orden.get('proximo_cambio_aceite') or 0,
         'proximo_cambio_bujias': orden.get('proximo_cambio_bujias') or 0,
         'proximo_cambio_aceite_fecha': orden.get('proximo_cambio_aceite_fecha') or '',
         'proximo_cambio_bujias_fecha': orden.get('proximo_cambio_bujias_fecha') or '',
-        'puntos': _sanitizar_items(orden),
+        'puntos': _sanitizar_items(orden) if visible else [],
     }
 
 
@@ -264,12 +282,17 @@ def create_portal_link_handler(event, context):
 
     Rotar invalida el enlace anterior y emite un PIN nuevo: es la palanca para
     cortar acceso cuando cambia el responsable de la flota del cliente.
+
+    La misma Lambda atiende PATCH (mostrar/ocultar cotizaciones) para no sumar
+    otra función al stack raíz (límite de 500 recursos de CloudFormation).
     """
     try:
         tenant_id, err = _tenant_desde_claims(event)
         if err:
             return err
         claims = get_claims(event)
+        if public_link.http_method(event) == 'PATCH':
+            return _actualizar_visibilidad(event, claims, tenant_id)
 
         flotilla_id = event['pathParameters']['id']
         oid, perr = parse_object_id(flotilla_id)
@@ -279,7 +302,7 @@ def create_portal_link_handler(event, context):
         db = get_tenant_db(tenant_id)
         ensure_indexes(db, tenant_id)
 
-        flotilla = db['flotillas'].find_one({'_id': oid}, {'nombre': 1})
+        flotilla = db['flotillas'].find_one({'_id': oid}, {'nombre': 1, CAMPO_MOSTRAR_COTIZACION: 1})
         if not flotilla:
             return create_response(404, 'Flotilla no encontrada.')
 
@@ -330,9 +353,39 @@ def create_portal_link_handler(event, context):
             'pin': pin,  # solo el asesor lo ve; se comparte por WhatsApp/teléfono
             'expires_at': iso_utc(exp_dt),
             'flotilla_nombre': flotilla.get('nombre'),
+            'mostrar_cotizacion': _mostrar_cotizaciones(flotilla),
         })
     except Exception as e:
         return handle_exception(e)
+
+
+def _actualizar_visibilidad(event, claims, tenant_id: str):
+    """PATCH /flotillas/{id}/portal-link  Body: {mostrar_cotizacion: bool}
+
+    Interruptor general del portal. No rota el enlace ni el PIN. Funciona aunque
+    todavía no exista portal: el taller puede dejarlo decidido antes de generarlo.
+    """
+    flotilla_id = event['pathParameters']['id']
+    oid, perr = parse_object_id(flotilla_id)
+    if perr:
+        return create_response(400, perr)
+    body = json.loads(event.get('body') or '{}')
+    mostrar = public_link.leer_bool(body, 'mostrar_cotizacion')
+    if mostrar is None:
+        return create_response(400, 'mostrar_cotizacion debe ser true o false.')
+
+    db = get_tenant_db(tenant_id)
+    result = db['flotillas'].update_one(
+        {'_id': oid},
+        {'$set': {
+            CAMPO_MOSTRAR_COTIZACION: mostrar,
+            'portal_mostrar_cotizacion_por': claims.get('email') or 'system',
+            'portal_mostrar_cotizacion_en': iso_utc(),
+        }},
+    )
+    if result.matched_count == 0:
+        return create_response(404, 'Flotilla no encontrada.')
+    return create_response(200, 'Visibilidad actualizada', {'mostrar_cotizacion': mostrar})
 
 
 @logger.inject_lambda_context
@@ -347,8 +400,12 @@ def get_portal_link_handler(event, context):
         db = get_tenant_db(tenant_id)
 
         acceso = db['flotilla_acceso'].find_one({'flotilla_id': flotilla_id})
+        oid, perr = parse_object_id(flotilla_id)
+        flotilla = db['flotillas'].find_one({'_id': oid}, {CAMPO_MOSTRAR_COTIZACION: 1}) if not perr else None
         if not acceso:
-            return create_response(404, 'Esta flotilla no tiene portal activo.')
+            # El 404 lleva el interruptor para que la ficha lo pinte aunque no haya portal.
+            return create_response(404, 'Esta flotilla no tiene portal activo.',
+                                   {'mostrar_cotizacion': _mostrar_cotizaciones(flotilla)})
 
         try:
             exp_dt = datetime.fromisoformat((acceso.get('expires_at') or '').rstrip('Z'))
@@ -375,6 +432,7 @@ def get_portal_link_handler(event, context):
             'bloqueado_en': acceso.get('bloqueado_en'),
             'ultimo_acceso': acceso.get('ultimo_acceso'),
             'num_accesos': acceso.get('num_accesos', 0),
+            'mostrar_cotizacion': _mostrar_cotizaciones(flotilla),
         })
     except Exception as e:
         return handle_exception(e)
@@ -520,8 +578,9 @@ def public_resumen_handler(event, context):
 
         oid, perr = parse_object_id(flotilla_id)
         flotilla = db['flotillas'].find_one(
-            {'_id': oid}, {'nombre': 1, 'razon_social': 1}
+            {'_id': oid}, {'nombre': 1, 'razon_social': 1, CAMPO_MOSTRAR_COTIZACION: 1}
         ) if not perr else None
+        mostrar_flotilla = _mostrar_cotizaciones(flotilla)
 
         scope = _scope_flotilla(db, flotilla_id)
 
@@ -530,6 +589,7 @@ def public_resumen_handler(event, context):
         ordenes = _ordenes_de_flotilla(db, scope, {
             'folio': 1, 'estado': 1, 'createdAt': 1, 'kilometraje': 1,
             'total': 1, 'vehiculo_id': 1, 'cliente_snapshot.id': 1, 'facturada': 1,
+            public_link.CAMPO_VISIBILIDAD_OS: 1,
         })
         ordenes.sort(key=_fecha_doc, reverse=True)
 
@@ -577,7 +637,8 @@ def public_resumen_handler(event, context):
                     'fecha': _fecha_doc(ultima),
                     'estado': ultima.get('estado'),
                     'kilometraje': ultima.get('kilometraje', 0),
-                    'total': float(ultima.get('total') or 0),
+                    'total': float(ultima.get('total') or 0)
+                    if _visible(ultima, mostrar_flotilla) else None,
                 } if ultima else None,
             })
         unidades.sort(key=lambda u: (u['placas'] or 'zzz', u['marca'] or ''))
@@ -623,7 +684,11 @@ def public_resumen_handler(event, context):
         # Servicios terminados que el taller aún no factura: el flotillero los usa
         # para saber qué CFDI está esperando.
         sin_facturar = [
-            {'folio': o.get('folio'), 'fecha': _fecha_doc(o), 'total': float(o.get('total') or 0)}
+            {
+                'folio': o.get('folio'),
+                'fecha': _fecha_doc(o),
+                'total': float(o.get('total') or 0) if _visible(o, mostrar_flotilla) else None,
+            }
             for o in ordenes
             if o.get('estado') in ESTADOS_CERRADOS and not o.get('facturada')
         ][:MAX_DOCS_ESTADO_CUENTA]
@@ -632,6 +697,7 @@ def public_resumen_handler(event, context):
             'flotilla': {
                 'nombre': (flotilla or {}).get('nombre') or 'Tu flota',
                 'razon_social': (flotilla or {}).get('razon_social') or '',
+                'mostrar_cotizacion': mostrar_flotilla,
             },
             'kpis': {
                 'unidades': len(unidades),
@@ -683,7 +749,14 @@ def public_vehiculo_handler(event, context):
         ordenes.sort(key=_fecha_doc, reverse=True)
         ordenes = ordenes[:MAX_OS_POR_UNIDAD]
 
-        historial = [_sanitizar_os_detalle(o, scope['cliente_nombres']) for o in ordenes]
+        oid, perr = parse_object_id(flotilla_id)
+        flotilla = db['flotillas'].find_one({'_id': oid}, {CAMPO_MOSTRAR_COTIZACION: 1}) if not perr else None
+        mostrar_flotilla = _mostrar_cotizaciones(flotilla)
+
+        historial = [
+            _sanitizar_os_detalle(o, scope['cliente_nombres'], _visible(o, mostrar_flotilla))
+            for o in ordenes
+        ]
         realizados = [h for h in historial if h['estado'] not in ESTADOS_CANCELADOS]
 
         # Citas vigentes de la unidad: el flotillero quiere saber cuándo entra.
@@ -700,7 +773,8 @@ def public_vehiculo_handler(event, context):
                 {'fecha': 1, 'horaInicio': 1, 'estado': 1, 'servicio': 1},
             ).sort('fecha', 1)
         ]
-        gasto_unidad = sum(h['total'] for h in realizados)
+        # Las OS con cotización oculta no suman: su importe no se publica.
+        gasto_unidad = sum(h['total'] or 0 for h in realizados)
 
         return create_response(200, '360° de la unidad', {
             'vehiculo': {

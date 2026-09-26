@@ -96,3 +96,36 @@ def client_ip(event) -> str:
 def user_agent(event) -> str:
     h = event.get('headers') or {}
     return h.get('User-Agent') or h.get('user-agent') or ''
+
+
+def http_method(event) -> str:
+    """Método HTTP en mayúsculas; httpApi (v2) lo trae en requestContext.http."""
+    rc = event.get('requestContext') or {}
+    return ((rc.get('http') or {}).get('method') or event.get('httpMethod') or '').upper()
+
+
+# ---------- visibilidad de la cotización ----------
+# Una sola regla para los dos enlaces públicos (cliente individual y portal de
+# flotilla): el taller decide por OS si el cliente ve la cotización (items y
+# precios) o sólo la orden y su estatus. Campo ausente = visible, para que las OS
+# anteriores al switch se sigan viendo igual que antes.
+
+CAMPO_VISIBILIDAD_OS = 'cotizacion_visible_cliente'
+
+
+def cotizacion_visible(orden: dict, acceso: Optional[dict] = None) -> bool:
+    """True si la cotización de `orden` puede salir en un enlace público.
+
+    `acceso` es el documento del enlace (p. ej. `flotilla_acceso`); su
+    `mostrar_cotizacion` en False apaga la cotización de todas sus OS aunque cada
+    OS la tenga visible.
+    """
+    if acceso is not None and acceso.get('mostrar_cotizacion') is False:
+        return False
+    return (orden or {}).get(CAMPO_VISIBILIDAD_OS) is not False
+
+
+def leer_bool(body: dict, campo: str) -> Optional[bool]:
+    """Booleano estricto del body; None si falta o no es bool (evita que "false" string cuente como True)."""
+    v = (body or {}).get(campo)
+    return v if isinstance(v, bool) else None
