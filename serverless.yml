@@ -62,6 +62,16 @@ provider:
             - "s3:DeleteObject"
           Resource:
             - !Sub "arn:aws:s3:::${self:service}-${self:provider.stage}-evidencia/*"
+        - Effect: "Allow"
+          Action:
+            - "sqs:SendMessage"
+            - "sqs:ReceiveMessage"
+            - "sqs:DeleteMessage"
+            - "sqs:GetQueueAttributes"
+          Resource:
+            - !GetAtt FacturacionSuscripcionQueue.Arn
+            - !GetAtt FacturacionSuscripcionDLQ.Arn
+
   environment:
     STAGE: ${self:provider.stage}
     ENV: ${env:ENV, 'L'}
@@ -102,6 +112,18 @@ provider:
     OPENPAY_MERCHANT_ID: ${env:OPENPAY_MERCHANT_ID, ''}
     OPENPAY_PRIVATE_KEY: ${env:OPENPAY_PRIVATE_KEY, ''}
     OPENPAY_PRODUCTION_MODE: ${env:OPENPAY_PRODUCTION_MODE, 'false'}
+    # ── Cola SQS de facturación asíncrona ────────────────────────────────────
+    # La URL se auto-inyecta desde el recurso CloudFormation (sin secreto manual).
+    FACTURACION_QUEUE_URL: !Ref FacturacionSuscripcionQueue
+    # ── Servidor de correo SMTP ───────────────────────────────────────────────
+    SMTP_HOST: ${env:SMTP_HOST, ''}
+    SMTP_PORT: ${env:SMTP_PORT, '587'}
+    SMTP_USER: ${env:SMTP_USER, ''}
+    SMTP_PASSWORD: ${env:SMTP_PASSWORD, ''}
+    SMTP_FROM: ${env:SMTP_FROM, ''}
+    SMTP_FROM_NAME: ${env:SMTP_FROM_NAME, 'Mekanics Manager'}
+    SMTP_USE_TLS: ${env:SMTP_USE_TLS, 'true'}
+
   httpApi:
     payload: '1.0'
     cors: true
@@ -325,6 +347,25 @@ functions:
       - httpApi:
           path: /public/webhooks/openpay
           method: post
+
+  # ── Worker asíncrono: timbrado de factura + envío de correo ─────────────
+  # Se dispara automáticamente cuando el webhook de Openpay encola un mensaje
+  # en la cola SQS FIFO tras confirmar un pago de suscripción exitoso.
+  facturacion_suscripcion_worker:
+    handler: src/handlers/admin/facturacion_suscripcion_worker.handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    # El timbrado ante el SAT + PDF + SMTP puede tardar 20-30s en el peor caso.
+    timeout: 60
+    memorySize: 512
+    events:
+      - sqs:
+          arn: !GetAtt FacturacionSuscripcionQueue.Arn
+          # batchSize=1: procesa una factura a la vez para control preciso de errores.
+          batchSize: 1
+          # ReportBatchItemFailures: solo reintenta los mensajes que fallaron,
+          # no todo el lote. Fundamental con batchSize=1 para aprovechar la DLQ.
+          functionResponseType: ReportBatchItemFailures
 
   certificados_create:
     handler: src/handlers/facturacion/certificates_manager.create_certificate_handler
@@ -1975,6 +2016,33 @@ functions:
 
 resources:
   Resources:
+    # ── SQS — Facturación automática de suscripciones ──────────────────────
+    # DLQ: retiene mensajes que fallaron 3 veces consecutivas (maxReceiveCount).
+    FacturacionSuscripcionDLQ:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:service}-${self:provider.stage}-facturacion-suscripcion-dlq.fifo
+        FifoQueue: true
+        # Retener 14 días para diagnóstico y reprocesamiento manual.
+        MessageRetentionPeriod: 1209600
+
+    # Cola principal FIFO — garantiza deduplicación por MessageDeduplicationId (trans_id).
+    FacturacionSuscripcionQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:service}-${self:provider.stage}-facturacion-suscripcion.fifo
+        FifoQueue: true
+        # ContentBasedDeduplication=false: usamos MessageDeduplicationId explícito (trans_id).
+        ContentBasedDeduplication: false
+        # VisibilityTimeout > timeout de la Lambda (60s) para evitar reentrada.
+        VisibilityTimeout: 120
+        # Retención de 4 días para mensajes normales (suficiente para reintentos).
+        MessageRetentionPeriod: 345600
+        RedrivePolicy:
+          deadLetterTargetArn: !GetAtt FacturacionSuscripcionDLQ.Arn
+          # 3 intentos antes de enviar a la DLQ.
+          maxReceiveCount: 3
+
     S3BucketImages:
       Type: AWS::S3::Bucket
       Properties:
