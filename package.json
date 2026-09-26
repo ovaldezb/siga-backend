@@ -1,6 +1,6 @@
 {
   "name": "siga-backend",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "SIGA Backend - Serverless Python API",
   "devDependencies": {
     "serverless": "^3.38.0",
