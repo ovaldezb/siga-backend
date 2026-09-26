@@ -282,17 +282,12 @@ def create_portal_link_handler(event, context):
 
     Rotar invalida el enlace anterior y emite un PIN nuevo: es la palanca para
     cortar acceso cuando cambia el responsable de la flota del cliente.
-
-    La misma Lambda atiende PATCH (mostrar/ocultar cotizaciones) para no sumar
-    otra función al stack raíz (límite de 500 recursos de CloudFormation).
     """
     try:
         tenant_id, err = _tenant_desde_claims(event)
         if err:
             return err
         claims = get_claims(event)
-        if public_link.http_method(event) == 'PATCH':
-            return _actualizar_visibilidad(event, claims, tenant_id)
 
         flotilla_id = event['pathParameters']['id']
         oid, perr = parse_object_id(flotilla_id)
@@ -359,33 +354,42 @@ def create_portal_link_handler(event, context):
         return handle_exception(e)
 
 
-def _actualizar_visibilidad(event, claims, tenant_id: str):
+@logger.inject_lambda_context
+def update_portal_visibilidad_handler(event, context):
     """PATCH /flotillas/{id}/portal-link  Body: {mostrar_cotizacion: bool}
 
     Interruptor general del portal. No rota el enlace ni el PIN. Funciona aunque
     todavía no exista portal: el taller puede dejarlo decidido antes de generarlo.
     """
-    flotilla_id = event['pathParameters']['id']
-    oid, perr = parse_object_id(flotilla_id)
-    if perr:
-        return create_response(400, perr)
-    body = json.loads(event.get('body') or '{}')
-    mostrar = public_link.leer_bool(body, 'mostrar_cotizacion')
-    if mostrar is None:
-        return create_response(400, 'mostrar_cotizacion debe ser true o false.')
+    try:
+        tenant_id, err = _tenant_desde_claims(event)
+        if err:
+            return err
+        claims = get_claims(event)
 
-    db = get_tenant_db(tenant_id)
-    result = db['flotillas'].update_one(
-        {'_id': oid},
-        {'$set': {
-            CAMPO_MOSTRAR_COTIZACION: mostrar,
-            'portal_mostrar_cotizacion_por': claims.get('email') or 'system',
-            'portal_mostrar_cotizacion_en': iso_utc(),
-        }},
-    )
-    if result.matched_count == 0:
-        return create_response(404, 'Flotilla no encontrada.')
-    return create_response(200, 'Visibilidad actualizada', {'mostrar_cotizacion': mostrar})
+        flotilla_id = event['pathParameters']['id']
+        oid, perr = parse_object_id(flotilla_id)
+        if perr:
+            return create_response(400, perr)
+        body = json.loads(event.get('body') or '{}')
+        mostrar = public_link.leer_bool(body, 'mostrar_cotizacion')
+        if mostrar is None:
+            return create_response(400, 'mostrar_cotizacion debe ser true o false.')
+
+        db = get_tenant_db(tenant_id)
+        result = db['flotillas'].update_one(
+            {'_id': oid},
+            {'$set': {
+                CAMPO_MOSTRAR_COTIZACION: mostrar,
+                'portal_mostrar_cotizacion_por': claims.get('email') or 'system',
+                'portal_mostrar_cotizacion_en': iso_utc(),
+            }},
+        )
+        if result.matched_count == 0:
+            return create_response(404, 'Flotilla no encontrada.')
+        return create_response(200, 'Visibilidad actualizada', {'mostrar_cotizacion': mostrar})
+    except Exception as e:
+        return handle_exception(e)
 
 
 @logger.inject_lambda_context

@@ -278,9 +278,8 @@ def test_decidir_blocked_when_orden_is_aprobado(mock_db):
 
 def _patch_visibilidad(orden_id, mostrar):
     ev = _path_event(orden_id)
-    ev['requestContext'] = {**ev['requestContext'], 'http': {'method': 'PATCH'}}
     ev['body'] = json.dumps({'mostrar_cotizacion': mostrar})
-    return clm.create_cliente_link_handler(ev, None)
+    return clm.update_visibilidad_handler(ev, None)
 
 
 def test_patch_visibilidad_guarda_en_la_os_sin_rotar_enlace(mock_db):

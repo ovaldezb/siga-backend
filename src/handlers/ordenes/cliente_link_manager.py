@@ -197,7 +197,8 @@ def _mostrar_cotizacion_os(db, orden_id: str) -> bool:
     return public_link.cotizacion_visible(orden or {})
 
 
-def _actualizar_visibilidad(event, claims, tenant_id: str):
+@logger.inject_lambda_context
+def update_visibilidad_handler(event, context):
     """PATCH /ordenes/{id}/cliente-link  Body: {mostrar_cotizacion: bool}
 
     Muestra u oculta la cotización (items y precios) en los enlaces públicos. Se
@@ -205,44 +206,43 @@ def _actualizar_visibilidad(event, claims, tenant_id: str):
     individual y al portal de flotilla, y sobrevive a rotar o revocar el enlace.
     No toca el nonce (no invalida el enlace vigente).
     """
-    orden_id = event['pathParameters']['id']
-    body = json.loads(event.get('body') or '{}')
-    mostrar = public_link.leer_bool(body, 'mostrar_cotizacion')
-    if mostrar is None:
-        return create_response(400, 'mostrar_cotizacion debe ser true o false.')
     try:
-        oid = ObjectId(orden_id)
-    except Exception:
-        return create_response(400, 'Id de orden inválido.')
+        claims = get_claims(event)
+        tenant_id = claims.get('custom:tenant_id')
+        if not tenant_id:
+            return create_response(403, 'No se encontró un tenantId asociado.')
 
-    db = get_tenant_db(tenant_id)
-    result = db['ordenes_servicio'].update_one(
-        {'_id': oid},
-        {'$set': {
-            public_link.CAMPO_VISIBILIDAD_OS: mostrar,
-            'cotizacion_visible_cliente_por': claims.get('email') or 'system',
-            'cotizacion_visible_cliente_en': iso_utc(),
-        }},
-    )
-    if result.matched_count == 0:
-        return create_response(404, 'Orden no encontrada.')
-    return create_response(200, 'Visibilidad actualizada', {'mostrar_cotizacion': mostrar})
+        orden_id = event['pathParameters']['id']
+        body = json.loads(event.get('body') or '{}')
+        mostrar = public_link.leer_bool(body, 'mostrar_cotizacion')
+        if mostrar is None:
+            return create_response(400, 'mostrar_cotizacion debe ser true o false.')
+        try:
+            oid = ObjectId(orden_id)
+        except Exception:
+            return create_response(400, 'Id de orden inválido.')
+
+        db = get_tenant_db(tenant_id)
+        result = db['ordenes_servicio'].update_one(
+            {'_id': oid},
+            {'$set': {
+                public_link.CAMPO_VISIBILIDAD_OS: mostrar,
+                'cotizacion_visible_cliente_por': claims.get('email') or 'system',
+                'cotizacion_visible_cliente_en': iso_utc(),
+            }},
+        )
+        if result.matched_count == 0:
+            return create_response(404, 'Orden no encontrada.')
+        return create_response(200, 'Visibilidad actualizada', {'mostrar_cotizacion': mostrar})
+    except Exception as e:
+        return handle_exception(e)
 
 
 @logger.inject_lambda_context
 def create_cliente_link_handler(event, context):
-    """POST /ordenes/{id}/cliente-link — Genera o rota el enlace público.
-
-    La misma Lambda atiende PATCH (visibilidad de la cotización) para no sumar
-    otra función al stack raíz (ver límite de 500 recursos de CloudFormation).
-    """
+    """POST /ordenes/{id}/cliente-link — Genera o rota el enlace público."""
     try:
         claims = get_claims(event)
-        if public_link.http_method(event) == 'PATCH':
-            tenant_id = claims.get('custom:tenant_id')
-            if not tenant_id:
-                return create_response(403, 'No se encontró un tenantId asociado.')
-            return _actualizar_visibilidad(event, claims, tenant_id)
         tenant_id = claims.get('custom:tenant_id')
         if not tenant_id:
             return create_response(403, 'No se encontró un tenantId asociado.')

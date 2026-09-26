@@ -569,8 +569,13 @@ functions:
           method: post
           authorizer:
             name: cognitoAuthorizer
-      # PATCH = mostrar/ocultar cotizaciones en el portal. Misma Lambda (despacha
-      # por método) para no sumar una función más al stack raíz.
+
+  # Mostrar/ocultar las cotizaciones en el portal (interruptor general).
+  flotillas_portal_link_visibilidad:
+    handler: src/handlers/flotillas/flotilla_portal_manager.update_portal_visibilidad_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
       - httpApi:
           path: /flotillas/{id}/portal-link
           method: patch
@@ -1136,8 +1141,13 @@ functions:
           method: post
           authorizer:
             name: cognitoAuthorizer
-      # PATCH = mostrar/ocultar la cotización de la OS en los enlaces públicos.
-      # Misma Lambda (despacha por método) para no sumar una función al stack raíz.
+
+  # Mostrar/ocultar la cotización de la OS en los enlaces públicos.
+  cliente_link_visibilidad:
+    handler: src/handlers/ordenes/cliente_link_manager.update_visibilidad_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
       - httpApi:
           path: /ordenes/{id}/cliente-link
           method: patch

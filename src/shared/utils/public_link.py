@@ -98,12 +98,6 @@ def user_agent(event) -> str:
     return h.get('User-Agent') or h.get('user-agent') or ''
 
 
-def http_method(event) -> str:
-    """Método HTTP en mayúsculas; httpApi (v2) lo trae en requestContext.http."""
-    rc = event.get('requestContext') or {}
-    return ((rc.get('http') or {}).get('method') or event.get('httpMethod') or '').upper()
-
-
 # ---------- visibilidad de la cotización ----------
 # Una sola regla para los dos enlaces públicos (cliente individual y portal de
 # flotilla): el taller decide por OS si el cliente ve la cotización (items y

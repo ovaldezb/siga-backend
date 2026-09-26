@@ -504,9 +504,7 @@ def test_vehiculo_360_historial_sanitizado(mock_db):
 # ---------- visibilidad de la cotización ----------
 
 def _patch_visibilidad(flot_id, mostrar):
-    ev = _path_event(flot_id, {'mostrar_cotizacion': mostrar})
-    ev['requestContext'] = {**ev['requestContext'], 'http': {'method': 'PATCH'}}
-    return fpm.create_portal_link_handler(ev, None)
+    return fpm.update_portal_visibilidad_handler(_path_event(flot_id, {'mostrar_cotizacion': mostrar}), None)
 
 
 def test_patch_visibilidad_funciona_sin_portal_y_no_rota(mock_db):
