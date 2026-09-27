@@ -119,10 +119,13 @@ def test_borrar_sucursal_con_usuarios_asignados_da_409(mock_db):
     db = mock_db[f"t_{TENANT}"]
     _crear("Matriz")
     sid = _crear("Norte")
-    db["usuarios"].insert_one({"email": "a@b.com", "sucursales": [sid]})
+    # Formato real del front ([{"sucursal": id}]) y el legacy de id suelto.
+    db["usuarios"].insert_one({"email": "a@b.com", "sucursales": [{"sucursal": sid}]})
+    db["usuarios"].insert_one({"email": "c@d.com", "sucursales": [sid]})
+    db["usuarios"].insert_one({"email": "e@f.com", "sucursales": [{"sucursal": "otra"}]})
     status, body = _borrar(sid)
     assert status == 409
-    assert body["data"]["ligados"] == ["1 usuarios asignados"]
+    assert body["data"]["ligados"] == ["2 usuarios asignados"]
 
 
 def test_borrar_limpia_replicas_sin_existencias(mock_db):

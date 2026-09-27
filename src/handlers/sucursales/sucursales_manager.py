@@ -128,7 +128,14 @@ def _dependencias_sucursal(sid):
         ("inventario_movimientos", {"sucursal_id": sid}, "movimientos de inventario"),
         ("gastos_fijos_mes", {"sucursal_id": sid}, "gastos fijos"),
         ("gastos_variables", {"sucursal_id": sid}, "gastos variables"),
-        ("usuarios", {"sucursales": sid}, "usuarios asignados"),
+        # El front guarda [{"sucursal": id}]; se aceptan también las formas legacy
+        # que lee get_user_allowed_sucursales (id suelto, "id", "sucursal_id").
+        ("usuarios", {"$or": [
+            {"sucursales": sid},
+            {"sucursales.sucursal": sid},
+            {"sucursales.id": sid},
+            {"sucursales.sucursal_id": sid},
+        ]}, "usuarios asignados"),
     ]
 
 
