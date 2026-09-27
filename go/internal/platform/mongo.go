@@ -94,3 +94,10 @@ func TenantDB(tenantID string) (*mongo.Database, error) {
 	}
 	return c.Database("t_" + strings.ReplaceAll(tenantID, "-", "")), nil
 }
+
+// SetClientForTests sustituye el cliente compartido; solo para pruebas de
+// integración contra un Mongo desechable (ver internal/testmongo).
+func SetClientForTests(c *mongo.Client) {
+	clientOnce.Do(func() {})
+	client, clientErr = c, nil
+}

@@ -234,11 +234,13 @@ functions:
           authorizer:
             name: cognitoAuthorizer
 
-  # Control de sesiones concurrentes (máx. 2 por usuario)
+  # Control de sesiones concurrentes (máx. 2 por usuario). En Go: go/cmd/auth_sesiones_*.
   auth_sesiones_registrar:
-    handler: src/handlers/auth/sesiones_manager.registrar_sesion_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/auth_sesiones_registrar.zip
     events:
       - httpApi:
           path: /auth/sesiones
@@ -247,9 +249,11 @@ functions:
             name: cognitoAuthorizer
 
   auth_sesiones_estado:
-    handler: src/handlers/auth/sesiones_manager.estado_sesion_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/auth_sesiones_estado.zip
     events:
       - httpApi:
           path: /auth/sesiones
@@ -258,9 +262,11 @@ functions:
             name: cognitoAuthorizer
 
   auth_sesiones_cerrar:
-    handler: src/handlers/auth/sesiones_manager.cerrar_sesion_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/auth_sesiones_cerrar.zip
     events:
       - httpApi:
           path: /auth/sesiones
@@ -1532,9 +1538,11 @@ functions:
             name: cognitoAuthorizer
 
   autorizaciones_create:
-    handler: src/handlers/ventas/autorizaciones_manager.create_autorizacion_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/autorizaciones_create.zip
     events:
       - httpApi:
           path: /autorizaciones
@@ -1543,9 +1551,11 @@ functions:
             name: cognitoAuthorizer
 
   autorizaciones_list:
-    handler: src/handlers/ventas/autorizaciones_manager.list_autorizaciones_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/autorizaciones_list.zip
     events:
       - httpApi:
           path: /autorizaciones
@@ -1554,9 +1564,11 @@ functions:
             name: cognitoAuthorizer
 
   autorizaciones_update:
-    handler: src/handlers/ventas/autorizaciones_manager.update_autorizacion_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/autorizaciones_update.zip
     events:
       - httpApi:
           path: /autorizaciones/{id}

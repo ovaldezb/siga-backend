@@ -143,3 +143,25 @@ def test_el_limite_es_por_usuario(mock_db):
 def test_device_id_obligatorio(mock_db):
     assert registrar_sesion_handler(_event(), None)['statusCode'] == 400
     assert estado_sesion_handler(_event(), None)['statusCode'] == 400
+
+
+def test_dispositivo_dormido_al_volver_respeta_el_limite(mock_db):
+    """Un dispositivo sin latido >12 h que vuelve entra como login nuevo y poda."""
+    _registrar("dev-1")
+    _sesiones(mock_db).update_one(
+        {"device_id": "dev-1"},
+        {"$set": {"ultimo_acceso": datetime.utcnow() - timedelta(
+            hours=sesiones_manager.VENTANA_INACTIVIDAD_HORAS + 1)}},
+    )
+    _registrar("dev-2")
+    _sesiones(mock_db).update_one(
+        {"device_id": "dev-2"},
+        {"$set": {"ultimo_acceso": datetime.utcnow() - timedelta(minutes=1)}},
+    )
+    _registrar("dev-3")
+
+    body = json.loads(estado_sesion_handler(_event("dev-1", en_body=False), None)['body'])
+    assert body['data']['vigente'] is True
+    assert body['data']['sesiones_activas'] == MAX_SESIONES
+    assert _sesiones(mock_db).count_documents({"revocada_en": None}) == MAX_SESIONES
+    assert _sesiones(mock_db).find_one({"device_id": "dev-2"})['motivo'] == "limite_sesiones"
