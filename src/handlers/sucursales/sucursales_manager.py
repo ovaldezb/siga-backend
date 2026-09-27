@@ -1,6 +1,7 @@
-from src.shared.utils.auth_utils import get_claims
+from src.shared.utils.auth_utils import get_claims, get_groups
 import json
 from bson import ObjectId
+from bson.errors import InvalidId
 from datetime import datetime
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
@@ -111,6 +112,26 @@ def update_sucursal_handler(event, context):
     except Exception as e:
         return handle_exception(e)
 
+# Lo que impide borrar una sucursal: (colección, filtro, etiqueta). Cualquiera de
+# estos documentos quedaría apuntando a un sucursal_id inexistente y desaparecería
+# de listados, reportes y cortes filtrados por sucursal.
+def _dependencias_sucursal(sid):
+    return [
+        ("ordenes_servicio", {"sucursal_id": sid}, "órdenes de servicio"),
+        ("ventas", {"sucursal_id": sid}, "ventas"),
+        ("compras", {"sucursal_id": sid}, "compras"),
+        ("cotizaciones", {"sucursal_id": sid}, "cotizaciones"),
+        ("citas", {"sucursal_id": sid}, "citas"),
+        ("caja_sesiones", {"sucursal_id": sid}, "cortes de caja"),
+        ("traspasos", {"$or": [{"origen_id": sid}, {"destino_id": sid}]}, "traspasos"),
+        ("items", {"sucursal_id": sid, "stock": {"$gt": 0}}, "productos con existencias"),
+        ("inventario_movimientos", {"sucursal_id": sid}, "movimientos de inventario"),
+        ("gastos_fijos_mes", {"sucursal_id": sid}, "gastos fijos"),
+        ("gastos_variables", {"sucursal_id": sid}, "gastos variables"),
+        ("usuarios", {"sucursales": sid}, "usuarios asignados"),
+    ]
+
+
 @logger.inject_lambda_context
 def delete_sucursal_handler(event, context):
     try:
@@ -118,13 +139,39 @@ def delete_sucursal_handler(event, context):
         tenant_id = claims.get('custom:tenant_id')
         if not tenant_id:
             return create_response(403, "No se encontró un tenantId asociado.")
+        if not ({'ADMIN', 'SUPER_ADMIN'} & set(get_groups(claims))):
+            return create_response(403, "Solo un administrador puede eliminar sucursales.")
 
-        sucursal_id = event['pathParameters']['id']
+        sucursal_id = (event.get('pathParameters') or {}).get('id')
+        try:
+            oid = ObjectId(sucursal_id)
+        except (InvalidId, TypeError):
+            return create_response(400, "Solicitud inválida: id de sucursal inválido")
+
         db = get_tenant_db(tenant_id)
-
-        result = db["sucursales"].delete_one({"_id": ObjectId(sucursal_id)})
-        if result.deleted_count == 0:
+        if not db["sucursales"].find_one({"_id": oid}, {"_id": 1}):
             return create_response(404, "Sucursal no encontrada")
+        if db["sucursales"].count_documents({}) <= 1:
+            return create_response(409, "No se puede eliminar la única sucursal del taller.")
+
+        ligados = []
+        for coleccion, filtro, etiqueta in _dependencias_sucursal(sucursal_id):
+            n = db[coleccion].count_documents(filtro)
+            if n:
+                ligados.append(f"{n} {etiqueta}")
+        if ligados:
+            return create_response(
+                409,
+                "No se puede eliminar la sucursal porque tiene " + ", ".join(ligados)
+                + ". Desactívala en su lugar.",
+                {"ligados": ligados},
+            )
+
+        db["sucursales"].delete_one({"_id": oid})
+        # Sin historial: se limpian su contador de folios y las réplicas del
+        # catálogo sin existencias que el alta de productos crea en cada sucursal.
+        db["folios"].delete_many({"sucursal_id": sucursal_id})
+        db["items"].delete_many({"sucursal_id": sucursal_id})
 
         return create_response(200, "Sucursal eliminada")
     except Exception as e:
