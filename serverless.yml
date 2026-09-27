@@ -1376,9 +1376,11 @@ functions:
 
   # ─── Cotizaciones independientes (no atadas a una OS) ───
   cotizaciones_list:
-    handler: src/handlers/cotizaciones/cotizaciones_manager.list_cotizaciones_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/cotizaciones_list.zip
     events:
       - httpApi:
           path: /cotizaciones
