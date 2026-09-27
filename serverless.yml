@@ -796,9 +796,11 @@ functions:
             name: cognitoAuthorizer
 
   taller_my_modulos:
-    handler: src/handlers/admin/talleres_manager.get_my_modulos_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/taller_my_modulos.zip
     events:
       - httpApi:
           path: /talleres/me/modulos
