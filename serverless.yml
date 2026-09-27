@@ -1258,9 +1258,11 @@ functions:
             name: cognitoAuthorizer
 
   get_vehiculo:
-    handler: src/handlers/vehiculos/vehiculos_manager.get_vehiculo_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/get_vehiculo.zip
     events:
       - httpApi:
           path: /vehiculos/{id}
@@ -1302,9 +1304,11 @@ functions:
             name: cognitoAuthorizer
 
   vehiculos_decode_vin:
-    handler: src/handlers/vehiculos/vehiculos_manager.decode_vin_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/vehiculos_decode_vin.zip
     events:
       - httpApi:
           path: /vehiculos/decode-vin/{vin}
