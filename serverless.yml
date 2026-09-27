@@ -224,9 +224,11 @@ functions:
             name: cognitoAuthorizer
 
   users_me:
-    handler: src/handlers/users/user_manager.get_me_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/users_me.zip
     events:
       - httpApi:
           path: /usuarios/me
@@ -1483,9 +1485,11 @@ functions:
             name: cognitoAuthorizer
 
   sucursales_list:
-    handler: src/handlers/sucursales/sucursales_manager.list_sucursales_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/sucursales_list.zip
     events:
       - httpApi:
           path: /sucursales

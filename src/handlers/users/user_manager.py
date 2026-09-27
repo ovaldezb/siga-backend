@@ -55,7 +55,11 @@ def populate_user_sucursales(user, sucursales_map):
     populated = []
     valid_refs = []
     for item in raw:
-        sid = item.get("sucursal")
+        # El front guarda {"sucursal": id}; un id suelto (legacy) daba 500 con .get.
+        if isinstance(item, dict):
+            sid = item.get("sucursal") or item.get("id") or item.get("sucursal_id")
+        else:
+            sid = item if isinstance(item, str) else None
         if sid and sid in sucursales_map:
             populated.append(sucursales_map[sid])
             valid_refs.append(item)
@@ -228,11 +232,17 @@ def update_user_handler(event, context):
 
 @logger.inject_lambda_context
 def get_me_handler(event, context):
+    """GET /usuarios/me. Handler espejo de go/internal/usuarios (rollback)."""
     try:
         claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         email = claims.get('email')
-        
+        if not tenant_id:
+            return create_response(403, "No se encontró un tenantId asociado.")
+        # Sin email, find_one({"email": None}) podía devolver a otro usuario sin email.
+        if not email:
+            return create_response(401, "Token sin email de usuario.")
+
         tenant_db = get_tenant_db(tenant_id)
         user = tenant_db["usuarios"].find_one({"email": email})
         
