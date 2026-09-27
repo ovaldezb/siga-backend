@@ -113,6 +113,7 @@ def list_vehiculos_handler(event, context):
                         {"$project": {
                             "_id": 0,
                             "createdAt": 1,
+                            "kilometraje": 1,
                             "proximo_cambio_aceite": 1,
                             "proximo_cambio_bujias": 1,
                             "proximo_cambio_aceite_anterior": 1,
@@ -146,6 +147,13 @@ def list_vehiculos_handler(event, context):
                     "cliente_telefono": {"$arrayElemAt": ["$cliente_info.telefono", 0]},
                     "ultima_visita_at": {"$arrayElemAt": ["$ultima_os.createdAt", 0]},
                     # Tomar de la última OS los valores de mantenimiento si no están en el vehículo
+                    # El kilometraje se captura en la OS y casi nunca en el vehículo: sin
+                    # esto km_para_aceite salía vacío y "pronto"/"vencido" no mostraban nada.
+                    "kilometraje": {"$cond": {
+                        "if": {"$gt": [{"$ifNull": ["$kilometraje", 0]}, 0]},
+                        "then": "$kilometraje",
+                        "else": {"$arrayElemAt": ["$ultima_os.kilometraje", 0]}
+                    }},
                     "proximo_cambio_aceite": {"$cond": {
                         "if": {"$gt": [{"$ifNull": ["$proximo_cambio_aceite", 0]}, 0]},
                         "then": "$proximo_cambio_aceite",

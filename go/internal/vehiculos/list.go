@@ -15,7 +15,8 @@ import (
 
 // etapasMantenimiento es el mismo pipeline de list_vehiculos_handler, escrito en
 // el orden de Python para compararlo línea a línea: dueño del vehículo, última
-// OS, próximos cambios (del vehículo o, si faltan, de la última OS), km para el
+// OS, kilometraje y próximos cambios (del vehículo o, si faltan, de la última
+// OS: el kilometraje se captura en la OS y casi nunca en el vehículo), km para el
 // aceite, días desde la última visita y el estado del plan de mantenimiento.
 // Los %d son dias_vencido, km_umbral y dias_pronto.
 //
@@ -45,7 +46,7 @@ const etapasMantenimiento = `{"etapas": [
       {"$sort": {"createdAt": -1}},
       {"$limit": 1},
       {"$project": {
-        "_id": 0, "createdAt": 1,
+        "_id": 0, "createdAt": 1, "kilometraje": 1,
         "proximo_cambio_aceite": 1, "proximo_cambio_bujias": 1,
         "proximo_cambio_aceite_anterior": 1, "proximo_cambio_bujias_anterior": 1,
         "proximo_cambio_aceite_fecha": 1, "proximo_cambio_bujias_fecha": 1,
@@ -66,6 +67,11 @@ const etapasMantenimiento = `{"etapas": [
     }},
     "cliente_telefono": {"$arrayElemAt": ["$cliente_info.telefono", 0]},
     "ultima_visita_at": {"$arrayElemAt": ["$ultima_os.createdAt", 0]},
+    "kilometraje": {"$cond": {
+      "if": {"$gt": [{"$ifNull": ["$kilometraje", 0]}, 0]},
+      "then": "$kilometraje",
+      "else": {"$arrayElemAt": ["$ultima_os.kilometraje", 0]}
+    }},
     "proximo_cambio_aceite": {"$cond": {
       "if": {"$gt": [{"$ifNull": ["$proximo_cambio_aceite", 0]}, 0]},
       "then": "$proximo_cambio_aceite",

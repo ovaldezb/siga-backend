@@ -145,4 +145,31 @@ func TestListContraMongo(t *testing.T) {
 	if s, p = listar(t, tenant, map[string]string{"limit": "100"}); s != 200 || p.Total != 7 {
 		t.Fatalf("todos con legacy: %d %+v", s, p)
 	}
+
+	// El kilometraje se captura en la OS, casi nunca en el vehículo: se toma de
+	// la última OS. Antes km_para_aceite salía vacío y el filtro no mostraba nada.
+	soloOS := bson.NewObjectID()
+	if _, err := db.Collection("vehiculos").InsertOne(ctx, bson.D{
+		{Key: "_id", Value: soloOS}, {Key: "placas", Value: "KM-EN-OS"}, {Key: "createdAt", Value: now.Add(-8 * time.Hour)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Collection("ordenes_servicio").InsertMany(ctx, []any{
+		bson.D{{Key: "vehiculo_id", Value: soloOS.Hex()}, {Key: "createdAt", Value: now.Add(-48 * time.Hour)},
+			{Key: "kilometraje", Value: 70000}, {Key: "proximo_cambio_aceite", Value: 75000}},
+		bson.D{{Key: "vehiculo_id", Value: soloOS.Hex()}, {Key: "createdAt", Value: now.Add(-24 * time.Hour)},
+			{Key: "kilometraje", Value: 74800}, {Key: "proximo_cambio_aceite", Value: 75000}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, p = listar(t, tenant, map[string]string{"mantenimiento": "pronto", "limit": "100"})
+	var kmOS map[string]any
+	for _, v := range p.Items {
+		if v["placas"] == "KM-EN-OS" {
+			kmOS = v
+		}
+	}
+	if kmOS == nil || kmOS["kilometraje"] != 74800.0 || kmOS["km_para_aceite"] != 200.0 {
+		t.Fatalf("kilometraje de la última OS: %v", kmOS)
+	}
 }
