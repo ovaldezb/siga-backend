@@ -163,9 +163,7 @@ func tarjeta(d bson.M, now time.Time, sinImportes bool) map[string]any {
 	}
 	o["atrasada"] = hayEntrega && entrega.Before(now) && o["estado"] != "FINALIZADO"
 	if sinImportes {
-		for _, c := range camposDinero {
-			delete(o, c)
-		}
+		quitarImportes(o)
 	}
 	return o
 }

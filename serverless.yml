@@ -1112,9 +1112,11 @@ functions:
             name: cognitoAuthorizer
 
   ordenes_get:
-    handler: src/handlers/ordenes/ordenes_manager.get_orden_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/ordenes_get.zip
     events:
       - httpApi:
           path: /ordenes/{id}
