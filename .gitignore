@@ -12,3 +12,4 @@ restore_db.sh
 migrar_cotizaciones.py
 migrar_cotizaciones.sh
 .serverless-cache
+.bin

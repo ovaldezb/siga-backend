@@ -4,7 +4,7 @@ from datetime import datetime
 from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.infrastructure.database import get_tenant_db
-from src.shared.utils.auth_utils import parse_object_id, is_admin, get_claims
+from src.shared.utils.auth_utils import parse_object_id, is_admin, get_claims, get_groups
 from src.shared.utils.formas_pago_sat import CATALOGO_FORMA_PAGO, completar_codigos_config, deduplicar_ids
 from bson import ObjectId
 
@@ -341,19 +341,35 @@ def upsert_marcas_productos_handler(event, context):
          - update: requiere marca.id; actualiza nombre y/o activa
          - delete: requiere marca.id
 
-    Solo escribe el campo `marcas`, sin tocar el resto de la configuración."""
+    Solo escribe el campo `marcas`, sin tocar el resto de la configuración.
+
+    `add` también lo puede usar el ASESOR: es el alta en línea desde el formulario
+    de producto (Inventario / Nueva compra). Editar, borrar o reemplazar el catálogo
+    sigue siendo sólo de admin.
+
+    `semilla` (opcional, sólo con `add`): catálogo que la UI está mostrando. Se usa
+    únicamente si el tenant aún no tiene marcas guardadas — la UI muestra unas por
+    defecto y, sin esto, la primera alta dejaría el catálogo con una sola marca."""
     try:
         claims = get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
         if not tenant_id:
             return create_response(403, "No autorizado")
-        if not is_admin(claims):
-            return create_response(403, "No tiene permisos para modificar el catálogo de marcas.")
 
         body = json.loads(event.get('body', '{}'))
+        es_alta_puntual = (
+            not isinstance(body.get('marcas'), list)
+            and (body.get('accion') or '').strip().lower() == 'add'
+        )
+        puede_alta = 'ASESOR' in get_groups(claims)
+        if not is_admin(claims) and not (es_alta_puntual and puede_alta):
+            return create_response(403, "No tiene permisos para modificar el catálogo de marcas.")
+
         db = get_tenant_db(tenant_id)
         config = db["configuracion"].find_one({"tenant_id": tenant_id}, {"marcas": 1}) or {}
         marcas = config.get('marcas') or []
+        if not marcas and es_alta_puntual and isinstance(body.get('semilla'), list):
+            marcas = _normalizar_marcas(body['semilla'])
 
         # Modo 1: reemplazo total del catálogo.
         if isinstance(body.get('marcas'), list):
@@ -369,11 +385,18 @@ def upsert_marcas_productos_handler(event, context):
                 if not nombre:
                     return create_response(400, "El nombre de la marca es obligatorio.")
                 nuevo_id = marca_id or _slug_marca(nombre)
-                dup = any(m.get('id') == nuevo_id or (m.get('nombre', '').strip().lower() == nombre.lower())
-                          for m in marcas)
+                dup = next((m for m in marcas
+                            if m.get('id') == nuevo_id
+                            or m.get('nombre', '').strip().lower() == nombre.lower()), None)
+                if dup and dup.get('activa', True):
+                    # Devuelve la existente: el alta en línea la selecciona en vez de fallar.
+                    return create_response(409, f"La marca '{nombre}' ya existe.",
+                                           {"marcas": marcas, "existente": dup})
                 if dup:
-                    return create_response(409, f"La marca '{nombre}' ya existe.")
-                marcas.append({"id": nuevo_id, "nombre": nombre, "activa": bool(marca.get('activa', True))})
+                    # Estaba desactivada: darla de alta otra vez es reactivarla, no duplicarla.
+                    dup['activa'] = True
+                else:
+                    marcas.append({"id": nuevo_id, "nombre": nombre, "activa": bool(marca.get('activa', True))})
 
             elif accion == 'update':
                 if not marca_id:

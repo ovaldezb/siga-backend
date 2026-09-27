@@ -197,6 +197,7 @@ def create_taller_handler(event, context):
             "adminApellido": body["adminApellido"],
             "adminTelefono": body.get("adminTelefono"),
             "vendedor": body.get("vendedor"),
+            "requiereFactura": bool(body.get("requiereFactura", False)),
             "datosFiscales": body.get("datosFiscales", {}),
             "usuarios": body.get("usuarios"),
             "sucursales": body.get("sucursales"),
@@ -362,6 +363,7 @@ def update_taller_handler(event, context):
             "vendedor": body.get("vendedor"),
             "usuarios": body.get("usuarios"),
             "sucursales": body.get("sucursales"),
+            "requiereFactura": body.get("requiereFactura"),
             "datosFiscales": body.get("datosFiscales"),
             "updatedAt": datetime.utcnow()
         }

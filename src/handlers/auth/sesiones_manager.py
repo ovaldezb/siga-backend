@@ -169,8 +169,8 @@ def estado_sesion_handler(event, context):
     """GET /auth/sesiones?device_id=… — latido: dice si esta sesión sigue vigente.
 
     Un dispositivo sin registro (sesión abierta antes de que existiera el control)
-    se da de alta aquí mismo en vez de expulsarse, para no cerrarle la sesión a
-    nadie por el simple hecho del despliegue.
+    o dormido fuera de la ventana se da de alta aquí mismo como login nuevo, en vez
+    de expulsarse. Handler espejo de go/internal/sesiones (rollback).
     """
     try:
         user_sub, email, tenant_id = _identidad(event)
@@ -185,8 +185,17 @@ def estado_sesion_handler(event, context):
         col = _coleccion()
         doc = col.find_one({"user_sub": user_sub, "device_id": device_id})
 
-        if not doc:
-            activas, _ = _registrar(col, user_sub, email, tenant_id, device_id, "", ahora)
+        # Sin registro o dormido (sin latido dentro de la ventana) = login nuevo: entra
+        # y poda las sobrantes. Refrescarlo sin podar dejaba tres sesiones vivas.
+        dormido = bool(doc) and not doc.get("revocada_en") and (
+            doc.get("ultimo_acceso") is None
+            or doc["ultimo_acceso"] < ahora - timedelta(hours=VENTANA_INACTIVIDAD_HORAS)
+        )
+        if not doc or dormido:
+            activas, _ = _registrar(
+                col, user_sub, email, tenant_id, device_id,
+                (doc or {}).get("user_agent") or "", ahora
+            )
             return create_response(200, "Sesión registrada", {
                 "vigente": True,
                 "sesiones_activas": activas,

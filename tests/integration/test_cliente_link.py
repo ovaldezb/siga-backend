@@ -274,6 +274,76 @@ def test_decidir_blocked_when_orden_is_aprobado(mock_db):
     assert resp['statusCode'] == 409
 
 
+# ---------- visibilidad de la cotización ----------
+
+def _patch_visibilidad(orden_id, mostrar):
+    ev = _path_event(orden_id)
+    ev['body'] = json.dumps({'mostrar_cotizacion': mostrar})
+    return clm.update_visibilidad_handler(ev, None)
+
+
+def test_patch_visibilidad_guarda_en_la_os_sin_rotar_enlace(mock_db):
+    orden_id, token, _ = _bootstrap_session(mock_db)
+    db = mock_db[f't_{TENANT}']
+    nonce_antes = db['cotizacion_acceso'].find_one({'orden_id': orden_id})['nonce']
+
+    resp = _patch_visibilidad(orden_id, False)
+    assert resp['statusCode'] == 200
+    assert json.loads(resp['body'])['data']['mostrar_cotizacion'] is False
+
+    orden = db['ordenes_servicio'].find_one({'_id': ObjectId(orden_id)})
+    assert orden['cotizacion_visible_cliente'] is False
+    assert db['cotizacion_acceso'].find_one({'orden_id': orden_id})['nonce'] == nonce_antes
+
+    get = clm.get_cliente_link_handler(_path_event(orden_id), None)
+    assert json.loads(get['body'])['data']['mostrar_cotizacion'] is False
+
+
+def test_patch_visibilidad_rechaza_valor_no_booleano(mock_db):
+    orden_id = _seed_orden(mock_db)
+    resp = _patch_visibilidad(orden_id, 'false')
+    assert resp['statusCode'] == 400
+
+
+def test_get_link_404_trae_visibilidad(mock_db):
+    orden_id = _seed_orden(mock_db)
+    _patch_visibilidad(orden_id, False)
+    resp = clm.get_cliente_link_handler(_path_event(orden_id), None)
+    assert resp['statusCode'] == 404
+    assert json.loads(resp['body'])['data']['mostrar_cotizacion'] is False
+
+
+def test_cotizacion_oculta_muestra_orden_y_estatus_sin_items(mock_db):
+    orden_id, _, session_token = _bootstrap_session(mock_db)
+    _patch_visibilidad(orden_id, False)
+    resp = clm.public_get_cotizacion_handler({'queryStringParameters': {'session_token': session_token}}, None)
+    assert resp['statusCode'] == 200
+    data = json.loads(resp['body'])['data']
+    assert data['folio'] == 'OS-001'
+    assert data['estado'] == 'COTIZADO'
+    assert data['cotizacion_visible'] is False
+    assert data['puntosArreglar'] == []
+    assert data['editable'] is False
+
+
+def test_decidir_bloqueado_si_cotizacion_oculta(mock_db):
+    orden_id, _, session_token = _bootstrap_session(mock_db)
+    _patch_visibilidad(orden_id, False)
+    ev = {'body': json.dumps({
+        'session_token': session_token,
+        'decisiones': [{'punto_idx': 0, 'item_idx': 0, 'decision': 'aprobado'}],
+    })}
+    assert clm.public_decidir_handler(ev, None)['statusCode'] == 403
+
+
+def test_cotizacion_visible_por_defecto(mock_db):
+    _, _, session_token = _bootstrap_session(mock_db)
+    resp = clm.public_get_cotizacion_handler({'queryStringParameters': {'session_token': session_token}}, None)
+    data = json.loads(resp['body'])['data']
+    assert data['cotizacion_visible'] is True
+    assert len(data['puntosArreglar']) == 2
+
+
 def test_decidir_ignores_no_cobrar_items(mock_db):
     _, _, session_token = _bootstrap_session(mock_db)
     # Intenta decidir sobre el item index 1 del punto 0 (que es no_cobrar)

@@ -187,6 +187,57 @@ def _build_link_url(token: str) -> str:
 
 # ---------- handlers internos (con Cognito) ----------
 
+def _mostrar_cotizacion_os(db, orden_id: str) -> bool:
+    try:
+        orden = db['ordenes_servicio'].find_one(
+            {'_id': ObjectId(orden_id)}, {public_link.CAMPO_VISIBILIDAD_OS: 1}
+        )
+    except Exception:
+        return True
+    return public_link.cotizacion_visible(orden or {})
+
+
+@logger.inject_lambda_context
+def update_visibilidad_handler(event, context):
+    """PATCH /ordenes/{id}/cliente-link  Body: {mostrar_cotizacion: bool}
+
+    Muestra u oculta la cotización (items y precios) en los enlaces públicos. Se
+    guarda en la OS, no en el enlace: así aplica igual al link del cliente
+    individual y al portal de flotilla, y sobrevive a rotar o revocar el enlace.
+    No toca el nonce (no invalida el enlace vigente).
+    """
+    try:
+        claims = get_claims(event)
+        tenant_id = claims.get('custom:tenant_id')
+        if not tenant_id:
+            return create_response(403, 'No se encontró un tenantId asociado.')
+
+        orden_id = event['pathParameters']['id']
+        body = json.loads(event.get('body') or '{}')
+        mostrar = public_link.leer_bool(body, 'mostrar_cotizacion')
+        if mostrar is None:
+            return create_response(400, 'mostrar_cotizacion debe ser true o false.')
+        try:
+            oid = ObjectId(orden_id)
+        except Exception:
+            return create_response(400, 'Id de orden inválido.')
+
+        db = get_tenant_db(tenant_id)
+        result = db['ordenes_servicio'].update_one(
+            {'_id': oid},
+            {'$set': {
+                public_link.CAMPO_VISIBILIDAD_OS: mostrar,
+                'cotizacion_visible_cliente_por': claims.get('email') or 'system',
+                'cotizacion_visible_cliente_en': iso_utc(),
+            }},
+        )
+        if result.matched_count == 0:
+            return create_response(404, 'Orden no encontrada.')
+        return create_response(200, 'Visibilidad actualizada', {'mostrar_cotizacion': mostrar})
+    except Exception as e:
+        return handle_exception(e)
+
+
 @logger.inject_lambda_context
 def create_cliente_link_handler(event, context):
     """POST /ordenes/{id}/cliente-link — Genera o rota el enlace público."""
@@ -251,6 +302,7 @@ def create_cliente_link_handler(event, context):
             'challenge_prompt': ch['prompt'],
             'challenge_expected': ch['expected_plain'],  # solo asesor lo ve
             'degraded': ch['degraded'],
+            'mostrar_cotizacion': public_link.cotizacion_visible(orden),
         })
     except Exception as e:
         return handle_exception(e)
@@ -270,7 +322,9 @@ def get_cliente_link_handler(event, context):
 
         acceso = db['cotizacion_acceso'].find_one({'orden_id': orden_id})
         if not acceso:
-            return create_response(404, 'No hay enlace vigente. Genera uno nuevo.')
+            # El 404 lleva el interruptor para que el modal lo pinte aunque no haya enlace.
+            return create_response(404, 'No hay enlace vigente. Genera uno nuevo.',
+                                   {'mostrar_cotizacion': _mostrar_cotizacion_os(db, orden_id)})
 
         _, placa, telefono = _get_orden_y_datos(db, orden_id)
         spec = (acceso.get('challenge') or {}).get('spec') or []
@@ -300,6 +354,7 @@ def get_cliente_link_handler(event, context):
             'challenge_prompt': (acceso.get('challenge') or {}).get('prompt'),
             'challenge_expected': expected_plain,
             'degraded': (acceso.get('challenge') or {}).get('degraded', False),
+            'mostrar_cotizacion': _mostrar_cotizacion_os(db, orden_id),
         })
     except Exception as e:
         return handle_exception(e)
@@ -558,7 +613,13 @@ def public_get_cotizacion_handler(event, context):
             return create_response(404, 'Cotización no encontrada.')
 
         publica = _sanitize_orden(orden, db)
-        publica['editable'] = orden.get('estado') in ('RECEPCION', 'COTIZADO')
+        visible = public_link.cotizacion_visible(orden)
+        publica['cotizacion_visible'] = visible
+        if not visible:
+            # El taller ocultó la cotización: el cliente sigue viendo su orden y el
+            # estatus, pero ni items ni precios viajan en el payload.
+            publica['puntosArreglar'] = []
+        publica['editable'] = visible and orden.get('estado') in ('RECEPCION', 'COTIZADO')
         return create_response(200, 'Cotización', publica)
     except Exception as e:
         return handle_exception(e)
@@ -593,6 +654,8 @@ def public_decidir_handler(event, context):
         orden = db['ordenes_servicio'].find_one({'_id': ObjectId(orden_id)})
         if not orden:
             return create_response(404, 'Cotización no encontrada.')
+        if not public_link.cotizacion_visible(orden):
+            return create_response(403, 'El taller no ha publicado la cotización de esta orden.')
         if orden.get('estado') not in ('RECEPCION', 'COTIZADO'):
             return create_response(409, 'La cotización ya no se puede modificar (orden en proceso o cerrada).')
 

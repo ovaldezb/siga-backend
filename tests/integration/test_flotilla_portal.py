@@ -501,6 +501,62 @@ def test_vehiculo_360_historial_sanitizado(mock_db):
     assert prohibidas.isdisjoint(set(_llaves(d)))
 
 
+# ---------- visibilidad de la cotización ----------
+
+def _patch_visibilidad(flot_id, mostrar):
+    return fpm.update_portal_visibilidad_handler(_path_event(flot_id, {'mostrar_cotizacion': mostrar}), None)
+
+
+def test_patch_visibilidad_funciona_sin_portal_y_no_rota(mock_db):
+    flot_id, _, _ = _seed_flotilla(mock_db)
+    resp = _patch_visibilidad(flot_id, False)
+    assert resp['statusCode'] == 200
+    assert _data(resp)['mostrar_cotizacion'] is False
+    assert _db(mock_db)['flotilla_acceso'].find_one({'flotilla_id': flot_id}) is None
+
+    get = fpm.get_portal_link_handler(_path_event(flot_id), None)
+    assert get['statusCode'] == 404
+    assert _data(get)['mostrar_cotizacion'] is False
+
+    token, _p, _s = _abrir_portal(mock_db, flot_id)
+    nonce = _db(mock_db)['flotilla_acceso'].find_one({'flotilla_id': flot_id})['nonce']
+    _patch_visibilidad(flot_id, True)
+    assert _db(mock_db)['flotilla_acceso'].find_one({'flotilla_id': flot_id})['nonce'] == nonce
+
+
+def test_portal_con_cotizaciones_ocultas_muestra_estatus_sin_importes(mock_db):
+    flot_id, _cli, (veh1, _veh2) = _seed_flotilla(mock_db)
+    _patch_visibilidad(flot_id, False)
+    _t, _p, sess = _abrir_portal(mock_db, flot_id)
+
+    d = _data(fpm.public_vehiculo_handler(_sess_event(sess, vehiculo_id=veh1), None))
+    os100 = d['historial'][0]
+    assert os100['folio'] == 'OS-100'
+    assert os100['estado'] == 'ENTREGADO'
+    assert os100['cotizacion_visible'] is False
+    assert os100['puntos'] == []
+    assert os100['total'] is None and os100['anticipo'] is None
+    assert 'Balatas' not in json.dumps(d)
+
+    r = _data(fpm.public_resumen_handler(_sess_event(sess), None))
+    assert r['flotilla']['mostrar_cotizacion'] is False
+    u1 = next(u for u in r['unidades'] if u['id'] == veh1)
+    assert u1['ultimo_servicio']['estado'] == 'ENTREGADO'
+    assert u1['ultimo_servicio']['total'] is None
+
+
+def test_os_oculta_individualmente_en_portal(mock_db):
+    flot_id, _cli, (veh1, _veh2) = _seed_flotilla(mock_db)
+    _db(mock_db)['ordenes_servicio'].update_one({'folio': 'OS-100'}, {'$set': {'cotizacion_visible_cliente': False}})
+    _t, _p, sess = _abrir_portal(mock_db, flot_id)
+
+    d = _data(fpm.public_vehiculo_handler(_sess_event(sess, vehiculo_id=veh1), None))
+    os100 = d['historial'][0]
+    assert os100['cotizacion_visible'] is False
+    assert os100['puntos'] == []
+    assert d['metricas']['gasto_total'] == 0
+
+
 def test_vehiculo_360_incluye_citas_vigentes(mock_db):
     flot_id, cliente_id, (veh1, _v2) = _seed_flotilla(mock_db)
     db = _db(mock_db)
