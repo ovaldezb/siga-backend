@@ -43,6 +43,12 @@ jobs:
       # ensucia el log con el warning de Node. Un paso `run` no depende de Node, así
       # que cumple "solo Node 24 / cero actions Node 20". tonistiigi/binfmt es justo
       # lo que esa action ejecuta por dentro.
+      # Lambdas en Go (go/cmd/*). setup-go@v6 ya corre en Node 24.
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
       - name: Set up QEMU (arm64) for cross-arch layer build
         run: docker run --rm --privileged tonistiigi/binfmt:latest --install arm64
 
@@ -59,6 +65,13 @@ jobs:
           AWS_SECRET_ACCESS_KEY: testing
         run: pytest
 
+      - name: Test Go lambdas
+        working-directory: go
+        run: go test ./...
+
+      # Compila los binarios arm64 que serverless.yml referencia en .bin/*.zip.
+      - name: Build Go lambdas (arm64)
+        run: bash scripts/build-go.sh
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:

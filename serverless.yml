@@ -165,6 +165,8 @@ package:
     - '!.venv/**'
     - '!.serverless-cache/**'
     - '!.pytest_cache/**'
+    - '!go/**'
+    - '!.bin/**'
     - '!package.json'
     - '!package-lock.json'
     - '!requirements.txt'
@@ -932,10 +934,14 @@ functions:
           authorizer:
             name: cognitoAuthorizer
 
+  # Lambdas en Go (go/cmd/<funcion>): binario arm64 compilado por scripts/build-go.sh,
+  # que debe correr antes de `sls deploy`. Sin layer de Python.
   search_sat_catalogos:
-    handler: src/handlers/catalogos/sat_manager.search_sat_catalogos_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/search_sat_catalogos.zip
     events:
       - httpApi:
           path: /catalogos/sat/{tipoBusqueda}
@@ -944,9 +950,11 @@ functions:
             name: cognitoAuthorizer
 
   list_marcas:
-    handler: src/handlers/catalogos/autos_manager.list_marcas_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/list_marcas.zip
     events:
       - httpApi:
           path: /catalogos/autos/marcas
@@ -988,9 +996,11 @@ functions:
             name: cognitoAuthorizer
 
   list_modelos:
-    handler: src/handlers/catalogos/autos_manager.list_modelos_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/list_modelos.zip
     events:
       - httpApi:
           path: /catalogos/autos/modelos
