@@ -1,4 +1,5 @@
 import json
+import re
 from bson import ObjectId
 from datetime import datetime
 from aws_lambda_powertools import Logger
@@ -67,7 +68,8 @@ def list_vehiculos_handler(event, context):
             filtro["cliente_id"] = cliente_id
 
         if search:
-            regex = {"$regex": search, "$options": "i"}
+            # Literal: un "(" en la búsqueda reventaba la consulta con 500.
+            regex = {"$regex": re.escape(search), "$options": "i"}
             search_filters = [
                 {"marca": regex},
                 {"modelo": regex},
@@ -91,7 +93,9 @@ def list_vehiculos_handler(event, context):
                     "pipeline": [
                         {"$match": {"$expr": {"$or": [
                             {"$eq": ["$_id", "$$cid"]},
-                            {"$eq": ["$_id", {"$toObjectId": "$$cid"}]}
+                            # $convert y no $toObjectId: un cliente_id vacío o legacy
+                            # tronaba toda la consulta.
+                            {"$eq": ["$_id", {"$convert": {"input": "$$cid", "to": "objectId", "onError": None, "onNull": None}}]}
                         ]}}},
                         {"$project": {"nombre": 1, "apellido_paterno": 1, "apellido_materno": 1, "telefono": 1}}
                     ],
@@ -155,12 +159,18 @@ def list_vehiculos_handler(event, context):
                     # Fechas de próximo cambio (strings YYYY-MM): tomar del vehículo si
                     # existe (no vacío), si no de la última OS. Coexisten con los km.
                     "proximo_cambio_aceite_fecha": {"$cond": {
-                        "if": {"$gt": [{"$strLenCP": {"$ifNull": ["$proximo_cambio_aceite_fecha", ""]}}, 0]},
+                        "if": {"$and": [
+                            {"$eq": [{"$type": "$proximo_cambio_aceite_fecha"}, "string"]},
+                            {"$gt": [{"$strLenCP": "$proximo_cambio_aceite_fecha"}, 0]}
+                        ]},
                         "then": "$proximo_cambio_aceite_fecha",
                         "else": {"$arrayElemAt": ["$ultima_os.proximo_cambio_aceite_fecha", 0]}
                     }},
                     "proximo_cambio_bujias_fecha": {"$cond": {
-                        "if": {"$gt": [{"$strLenCP": {"$ifNull": ["$proximo_cambio_bujias_fecha", ""]}}, 0]},
+                        "if": {"$and": [
+                            {"$eq": [{"$type": "$proximo_cambio_bujias_fecha"}, "string"]},
+                            {"$gt": [{"$strLenCP": "$proximo_cambio_bujias_fecha"}, 0]}
+                        ]},
                         "then": "$proximo_cambio_bujias_fecha",
                         "else": {"$arrayElemAt": ["$ultima_os.proximo_cambio_bujias_fecha", 0]}
                     }}
@@ -168,27 +178,34 @@ def list_vehiculos_handler(event, context):
             },
             {
                 "$addFields": {
-                    "km_para_aceite": {
-                        "$cond": {
+                    # Kilometraje o próximo cambio guardados como texto y OS con
+                    # createdAt en texto tronaban toda la consulta (con el filtro de
+                    # mantenimiento corre sobre toda la flota): se convierten y, si no
+                    # se puede, cuentan como sin dato.
+                    "km_para_aceite": {"$let": {
+                        "vars": {
+                            "p": {"$cond": [{"$isNumber": "$proximo_cambio_aceite"}, "$proximo_cambio_aceite",
+                                  {"$convert": {"input": "$proximo_cambio_aceite", "to": "double", "onError": None, "onNull": None}}]},
+                            "k": {"$cond": [{"$isNumber": "$kilometraje"}, "$kilometraje",
+                                  {"$convert": {"input": "$kilometraje", "to": "double", "onError": None, "onNull": None}}]},
+                        },
+                        "in": {"$cond": {
                             "if": {"$and": [
-                                {"$gt": [{"$ifNull": ["$proximo_cambio_aceite", 0]}, 0]},
-                                {"$gt": [{"$ifNull": ["$kilometraje", 0]}, 0]}
+                                {"$gt": [{"$ifNull": ["$$p", 0]}, 0]},
+                                {"$gt": [{"$ifNull": ["$$k", 0]}, 0]}
                             ]},
-                            "then": {"$subtract": ["$proximo_cambio_aceite", "$kilometraje"]},
+                            "then": {"$subtract": ["$$p", "$$k"]},
                             "else": None
-                        }
-                    },
-                    "dias_desde_ultima_visita": {
-                        "$cond": {
-                            "if": {"$ifNull": ["$ultima_visita_at", False]},
-                            "then": {"$dateDiff": {
-                                "startDate": "$ultima_visita_at",
-                                "endDate": "$$NOW",
-                                "unit": "day"
-                            }},
+                        }}
+                    }},
+                    "dias_desde_ultima_visita": {"$let": {
+                        "vars": {"u": {"$convert": {"input": "$ultima_visita_at", "to": "date", "onError": None, "onNull": None}}},
+                        "in": {"$cond": {
+                            "if": {"$ifNull": ["$$u", False]},
+                            "then": {"$dateDiff": {"startDate": "$$u", "endDate": "$$NOW", "unit": "day"}},
                             "else": None
-                        }
-                    }
+                        }}
+                    }}
                 }
             },
             {

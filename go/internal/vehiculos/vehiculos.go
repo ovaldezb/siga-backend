@@ -1,7 +1,7 @@
-// Package vehiculos atiende el detalle de un vehículo y la decodificación de VIN
-// (port de get_vehiculo_handler y decode_vin_handler en
-// src/handlers/vehiculos/vehiculos_manager.py). El listado y el CRUD siguen en
-// Python.
+// Package vehiculos atiende el listado, el detalle de un vehículo y la
+// decodificación de VIN (port de list_vehiculos_handler, get_vehiculo_handler y
+// decode_vin_handler en src/handlers/vehiculos/vehiculos_manager.py). El CRUD
+// sigue en Python.
 package vehiculos
 
 import (
@@ -48,19 +48,24 @@ func Get(ctx context.Context, req platform.Request) (platform.Response, error) {
 		return platform.JSON(req, 404, "Vehículo no encontrado.", nil), nil
 	}
 
-	v := platform.Doc(filas[0])
+	return platform.JSON(req, 200, "Vehículo obtenido", serializar(filas[0])), nil
+}
+
+// serializar: _id → id, sucursal_id → sucursalId y fechas ISO. Documentos viejos
+// guardaban el año como 'año'; manda 'anio' si existe.
+func serializar(d bson.M) map[string]any {
+	v := platform.Doc(d)
 	if s, ok := v["sucursal_id"]; ok {
 		v["sucursalId"] = s
 		delete(v, "sucursal_id")
 	}
-	// Documentos viejos guardaban el año como 'año'; manda 'anio' si existe.
 	if anio, ok := v["año"]; ok {
 		if _, hay := v["anio"]; !hay {
 			v["anio"] = anio
 		}
 		delete(v, "año")
 	}
-	return platform.JSON(req, 200, "Vehículo obtenido", v), nil
+	return v
 }
 
 // pipelineDetalle es el mismo aggregate de Python: cliente_id se guarda como

@@ -449,9 +449,11 @@ functions:
             name: cognitoAuthorizer
 
   clientes_list:
-    handler: src/handlers/clientes/clientes_manager.list_clientes_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/clientes_list.zip
     events:
       - httpApi:
           path: /clientes
@@ -1264,9 +1266,11 @@ functions:
           method: post
 
   list_vehiculos:
-    handler: src/handlers/vehiculos/vehiculos_manager.list_vehiculos_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/list_vehiculos.zip
     events:
       - httpApi:
           path: /vehiculos
@@ -1334,9 +1338,11 @@ functions:
             name: cognitoAuthorizer
 
   citas_list:
-    handler: src/handlers/citas/citas_manager.list_citas_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/citas_list.zip
     events:
       - httpApi:
           path: /citas
