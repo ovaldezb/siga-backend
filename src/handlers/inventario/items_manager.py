@@ -192,6 +192,8 @@ def list_items_handler(event, context):
     try:
         claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
+        if not tenant_id:
+            return create_response(403, "No se encontró un tenantId asociado.")
 
         query_params = event.get('queryStringParameters') or {}
         tipo = query_params.get('tipo')

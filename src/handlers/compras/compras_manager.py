@@ -2,6 +2,7 @@
    recálculo de costo promedio ponderado, CxP y pagos a proveedor."""
 
 import json
+import re
 from datetime import datetime
 from aws_lambda_powertools import Logger
 from bson import ObjectId
@@ -338,7 +339,7 @@ def list_compras_handler(event, context):
         if qp.get('estado'):
             query['estado'] = qp['estado'].upper()
         if qp.get('search'):
-            s = qp['search']
+            s = re.escape(qp['search'])  # literal: un '(' del folio reventaba la consulta
             query['$or'] = [
                 {"folio": {"$regex": s, "$options": "i"}},
                 {"referencia_proveedor": {"$regex": s, "$options": "i"}},

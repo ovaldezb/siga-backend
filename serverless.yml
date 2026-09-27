@@ -191,9 +191,11 @@ functions:
           method: get
 
   users_list:
-    handler: src/handlers/users/user_manager.list_users_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/users_list.zip
     events:
       - httpApi:
           path: /usuarios
@@ -515,9 +517,11 @@ functions:
             name: cognitoAuthorizer
 
   flotillas_list:
-    handler: src/handlers/flotillas/flotillas_manager.list_flotillas_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/flotillas_list.zip
     events:
       - httpApi:
           path: /flotillas
@@ -655,9 +659,11 @@ functions:
           method: get
 
   items_list:
-    handler: src/handlers/inventario/items_manager.list_items_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/items_list.zip
     events:
       - httpApi:
           path: /items
@@ -1446,9 +1452,11 @@ functions:
             name: cognitoAuthorizer
 
   proveedores_list:
-    handler: src/handlers/proveedores/proveedores_manager.list_proveedores_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/proveedores_list.zip
     events:
       - httpApi:
           path: /proveedores
@@ -1828,9 +1836,11 @@ functions:
             name: cognitoAuthorizer
 
   compras_list:
-    handler: src/handlers/compras/compras_manager.list_compras_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/compras_list.zip
     events:
       - httpApi:
           path: /compras

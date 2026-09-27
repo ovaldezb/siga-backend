@@ -55,16 +55,5 @@ func activa(m any) bool {
 		return false // Python tronaba con .get sobre algo que no es dict
 	}
 	v, ok := marca["activa"]
-	if !ok {
-		return true
-	}
-	switch x := v.(type) {
-	case bool:
-		return x
-	case nil:
-		return false
-	case string:
-		return x != ""
-	}
-	return platform.Numero(v) != 0
+	return !ok || platform.Verdadero(v)
 }

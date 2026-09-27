@@ -164,3 +164,56 @@ func Numero(v any) float64 {
 	}
 	return 0
 }
+
+// Paginacion lee ?page= y ?limit= como int() de Python (espacios y signo
+// permitidos) y calcula el skip. Un valor no numérico o una página que daría
+// skip negativo es un ClientError (400), como el ValueError de pymongo.
+func Paginacion(qp map[string]string, limitePorDefecto int64) (page, limit, skip int64, err error) {
+	entero := func(clave string, defecto int64) (int64, error) {
+		raw, ok := qp[clave]
+		if !ok {
+			return defecto, nil
+		}
+		n, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+		if err != nil {
+			return 0, BadRequest("%s inválido: %q", clave, raw)
+		}
+		return n, nil
+	}
+	if page, err = entero("page", 1); err != nil {
+		return
+	}
+	if limit, err = entero("limit", limitePorDefecto); err != nil {
+		return
+	}
+	if skip = (page - 1) * limit; skip < 0 {
+		err = BadRequest("page inválido: %d", page)
+	}
+	return
+}
+
+// Verdadero replica la veracidad de Python (bool(v)) para valores de Mongo:
+// null, false, 0, "" y listas o documentos vacíos son falsos.
+func Verdadero(v any) bool {
+	switch x := v.(type) {
+	case nil:
+		return false
+	case bool:
+		return x
+	case string:
+		return x != ""
+	case []any:
+		return len(x) > 0
+	case map[string]any:
+		return len(x) > 0
+	case bson.A:
+		return len(x) > 0
+	case bson.D:
+		return len(x) > 0
+	case bson.M:
+		return len(x) > 0
+	case float64, int32, int64, int, bson.Decimal128:
+		return Numero(x) != 0
+	}
+	return true
+}

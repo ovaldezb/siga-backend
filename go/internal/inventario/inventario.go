@@ -1,6 +1,6 @@
-// Package inventario atiende lecturas de inventario (port de get_item_handler
-// en items_manager.py y list_traspasos_handler en traspasos_manager.py). Altas,
-// ajustes, listados de items y traspasos siguen en Python.
+// Package inventario atiende lecturas de inventario (port de get_item_handler y
+// list_items_handler en items_manager.py y list_traspasos_handler en
+// traspasos_manager.py). Altas, ajustes, movimientos y traspasos siguen en Python.
 package inventario
 
 import (

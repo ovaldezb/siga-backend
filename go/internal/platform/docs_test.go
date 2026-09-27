@@ -78,3 +78,34 @@ func TestNumero(t *testing.T) {
 		}
 	}
 }
+
+func TestPaginacion(t *testing.T) {
+	p, l, s, err := Paginacion(map[string]string{}, 20)
+	if err != nil || p != 1 || l != 20 || s != 0 {
+		t.Fatalf("default: %d %d %d %v", p, l, s, err)
+	}
+	p, l, s, err = Paginacion(map[string]string{"page": " 3 ", "limit": "+10"}, 20)
+	if err != nil || p != 3 || l != 10 || s != 20 {
+		t.Fatalf("explícito: %d %d %d %v", p, l, s, err)
+	}
+	for _, qp := range []map[string]string{{"page": "x"}, {"limit": "1.5"}, {"page": "0"}} {
+		if _, _, _, err := Paginacion(qp, 20); err == nil {
+			t.Fatalf("%v debía fallar", qp)
+		} else if _, ok := err.(*ClientError); !ok {
+			t.Fatalf("%v: %T", qp, err)
+		}
+	}
+}
+
+func TestVerdadero(t *testing.T) {
+	for _, v := range []any{nil, false, 0.0, int32(0), int64(0), "", []any{}, map[string]any{}, bson.A{}} {
+		if Verdadero(v) {
+			t.Fatalf("%#v debía ser falso", v)
+		}
+	}
+	for _, v := range []any{true, 1.5, int32(-1), "x", []any{1}, map[string]any{"a": 1}, bson.NewObjectID()} {
+		if !Verdadero(v) {
+			t.Fatalf("%#v debía ser verdadero", v)
+		}
+	}
+}
