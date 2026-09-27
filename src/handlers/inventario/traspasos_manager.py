@@ -129,6 +129,8 @@ def list_traspasos_handler(event, context):
     try:
         claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
+        if not tenant_id:
+            return create_response(403, "No se encontró un tenantId asociado.")
 
         query_params = event.get('queryStringParameters') or {}
         sucursal_id = query_params.get('sucursal_id')

@@ -710,9 +710,11 @@ functions:
             name: cognitoAuthorizer
 
   items_get:
-    handler: src/handlers/inventario/items_manager.get_item_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/items_get.zip
     events:
       - httpApi:
           path: /items/{id}
@@ -1523,9 +1525,11 @@ functions:
             name: cognitoAuthorizer
 
   sucursales_get:
-    handler: src/handlers/sucursales/sucursales_manager.get_sucursal_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/sucursales_get.zip
     events:
       - httpApi:
           path: /sucursales/{id}
@@ -1606,9 +1610,11 @@ functions:
             name: cognitoAuthorizer
 
   traspasos_list:
-    handler: src/handlers/inventario/traspasos_manager.list_traspasos_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/traspasos_list.zip
     events:
       - httpApi:
           path: /inventario/traspasos
@@ -1705,9 +1711,11 @@ functions:
             name: cognitoAuthorizer
 
   catalogos_marcas_productos_list:
-    handler: src.handlers.admin.configuracion_manager.list_marcas_productos_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/catalogos_marcas_productos_list.zip
     events:
       - httpApi:
           path: /catalogos/marcas-productos
@@ -1864,9 +1872,11 @@ functions:
             name: cognitoAuthorizer
 
   compras_cxp:
-    handler: src/handlers/compras/compras_manager.list_cxp_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/compras_cxp.zip
     events:
       - httpApi:
           path: /compras/cxp

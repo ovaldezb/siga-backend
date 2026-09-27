@@ -13,30 +13,13 @@ import (
 	"siga-backend/go/internal/sucursales"
 )
 
-// sucursalRef saca el id de un elemento de usuarios.sucursales. El front guarda
-// {"sucursal": id}; se aceptan también las formas legacy que lee
-// get_user_allowed_sucursales. En Python un id suelto daba 500 (str.get).
-func sucursalRef(item any) string {
-	switch x := item.(type) {
-	case string:
-		return x
-	case map[string]any:
-		for _, k := range []string{"sucursal", "id", "sucursal_id"} {
-			if s, ok := x[k].(string); ok && s != "" {
-				return s
-			}
-		}
-	}
-	return ""
-}
-
 // poblar sustituye las referencias por la sucursal completa y descarta las que
 // apuntan a sucursales que ya no existen, como populate_user_sucursales.
 func poblar(user map[string]any, porID map[string]map[string]any) {
 	crudas, _ := user["sucursales"].([]any)
 	pobladas := make([]map[string]any, 0, len(crudas))
 	for _, item := range crudas {
-		if s, ok := porID[sucursalRef(item)]; ok {
+		if s, ok := porID[platform.SucursalRef(item)]; ok {
 			pobladas = append(pobladas, s)
 		}
 	}

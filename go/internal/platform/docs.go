@@ -2,6 +2,7 @@ package platform
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -143,4 +144,23 @@ func Truncar(s string, n int) string {
 	}
 	r := []rune(s)
 	return string(r[:n])
+}
+
+// Numero lee un número de Mongo como float64 (lo que hacía float() en Python):
+// int32, int64, double o decimal. Ausente o de otro tipo cuenta como 0.
+func Numero(v any) float64 {
+	switch x := v.(type) {
+	case float64:
+		return x
+	case int32:
+		return float64(x)
+	case int64:
+		return float64(x)
+	case int:
+		return float64(x)
+	case bson.Decimal128:
+		r, _ := strconv.ParseFloat(x.String(), 64)
+		return r
+	}
+	return 0
 }

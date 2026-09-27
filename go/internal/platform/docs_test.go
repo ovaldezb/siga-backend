@@ -69,3 +69,12 @@ func TestTruncarPorCaracteres(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestNumero(t *testing.T) {
+	d, _ := bson.ParseDecimal128("1234.565")
+	for v, want := range map[any]float64{int32(3): 3, int64(4): 4, 2.5: 2.5, d: 1234.565, "x": 0} {
+		if got := Numero(v); got != want {
+			t.Fatalf("%v: %v", v, got)
+		}
+	}
+}

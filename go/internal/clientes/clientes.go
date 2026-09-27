@@ -6,7 +6,6 @@ package clientes
 import (
 	"context"
 	"math"
-	"strconv"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -77,22 +76,5 @@ func saldoCredito(ctx context.Context, db *mongo.Database, clienteID string) (fl
 	if len(filas) == 0 {
 		return 0, nil
 	}
-	return math.Round(numero(filas[0]["saldo"])*100) / 100, nil
-}
-
-// numero lee el resultado de $sum, que Mongo devuelve como int32, int64,
-// double o decimal según los valores sumados.
-func numero(v any) float64 {
-	switch x := v.(type) {
-	case float64:
-		return x
-	case int32:
-		return float64(x)
-	case int64:
-		return float64(x)
-	case bson.Decimal128:
-		r, _ := strconv.ParseFloat(x.String(), 64)
-		return r
-	}
-	return 0
+	return math.Round(platform.Numero(filas[0]["saldo"])*100) / 100, nil
 }

@@ -48,15 +48,6 @@ func TestValidacionesSinBaseDeDatos(t *testing.T) {
 	}
 }
 
-func TestNumero(t *testing.T) {
-	d, _ := bson.ParseDecimal128("1234.565")
-	for v, want := range map[any]float64{int32(3): 3, int64(4): 4, 2.5: 2.5, d: 1234.565, "x": 0} {
-		if got := numero(v); got != want {
-			t.Fatalf("%v: %v", v, got)
-		}
-	}
-}
-
 func TestGetContraMongo(t *testing.T) {
 	c := testmongo.Conectar(t, dbName)
 	db := c.Database(dbName)
