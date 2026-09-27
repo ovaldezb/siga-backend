@@ -194,6 +194,8 @@ def get_cliente_handler(event, context):
     try:
         claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
+        if not tenant_id:
+            return create_response(403, "No se encontró un tenantId asociado.")
         cliente_id = event['pathParameters']['id']
 
         object_id, err = parse_object_id(cliente_id)

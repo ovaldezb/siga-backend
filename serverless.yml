@@ -469,9 +469,11 @@ functions:
             name: cognitoAuthorizer
 
   clientes_get:
-    handler: src/handlers/clientes/clientes_manager.get_cliente_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/clientes_get.zip
     events:
       - httpApi:
           path: /clientes/{id}
@@ -752,9 +754,11 @@ functions:
             name: cognitoAuthorizer
 
   list_modulos:
-    handler: src/handlers/admin/modulos_manager.list_modulos_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/list_modulos.zip
     events:
       - httpApi:
           path: /modulos
@@ -1096,9 +1100,11 @@ functions:
             name: cognitoAuthorizer
 
   ordenes_list_events:
-    handler: src/handlers/ordenes/ordenes_manager.list_orden_events_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/ordenes_list_events.zip
     events:
       - httpApi:
           path: /ordenes/{id}/events
@@ -1332,9 +1338,11 @@ functions:
             name: cognitoAuthorizer
 
   citas_get:
-    handler: src/handlers/citas/citas_manager.get_cita_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/citas_get.zip
     events:
       - httpApi:
           path: /citas/{id}
@@ -1388,9 +1396,11 @@ functions:
             name: cognitoAuthorizer
 
   cotizaciones_get:
-    handler: src/handlers/cotizaciones/cotizaciones_manager.get_cotizacion_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/cotizaciones_get.zip
     events:
       - httpApi:
           path: /cotizaciones/{id}
@@ -1454,9 +1464,11 @@ functions:
             name: cognitoAuthorizer
 
   proveedores_get:
-    handler: src/handlers/proveedores/proveedores_manager.get_proveedor_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/proveedores_get.zip
     events:
       - httpApi:
           path: /proveedores/{id}
@@ -1817,9 +1829,11 @@ functions:
             name: cognitoAuthorizer
 
   compras_get:
-    handler: src/handlers/compras/compras_manager.get_compra_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/compras_get.zip
     events:
       - httpApi:
           path: /compras/{id}
