@@ -137,6 +137,21 @@ func IsAdmin(claims map[string]any) bool {
 	return false
 }
 
+// EsMecanico replica es_mecanico: el mecánico puro, que trabaja la orden pero no
+// ve dinero. Si además es ADMIN, SUPER_ADMIN o ASESOR, manda el rol de más alcance.
+func EsMecanico(claims map[string]any) bool {
+	mecanico := false
+	for _, g := range Groups(claims) {
+		switch g {
+		case "MECANICO":
+			mecanico = true
+		case "ADMIN", "SUPER_ADMIN", "ASESOR":
+			return false
+		}
+	}
+	return mecanico
+}
+
 // Truncar corta a n caracteres (no bytes), como s[:n] en Python.
 func Truncar(s string, n int) string {
 	if utf8.RuneCountInString(s) <= n {

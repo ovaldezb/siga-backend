@@ -109,3 +109,12 @@ func TestVerdadero(t *testing.T) {
 		}
 	}
 }
+
+func TestEsMecanico(t *testing.T) {
+	casos := map[string]bool{"[MECANICO]": true, "MECANICO,ASESOR": false, "[ADMIN MECANICO]": false, "[CAJERO]": false, "": false}
+	for grupos, want := range casos {
+		if got := EsMecanico(map[string]any{"cognito:groups": grupos}); got != want {
+			t.Fatalf("%q: %v", grupos, got)
+		}
+	}
+}

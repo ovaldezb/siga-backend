@@ -1052,6 +1052,21 @@ functions:
           authorizer:
             name: cognitoAuthorizer
 
+  # Tablero kanban del taller en Go. GET /ordenes?vista=tablero sigue en Python
+  # para los fronts viejos en caché.
+  ordenes_tablero:
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/ordenes_tablero.zip
+    events:
+      - httpApi:
+          path: /ordenes/tablero
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
   ordenes_update:
     handler: src/handlers/ordenes/ordenes_manager.update_orden_handler
     layers:
