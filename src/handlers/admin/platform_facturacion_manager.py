@@ -2,10 +2,8 @@ import json
 import base64
 import os
 import re
-import tempfile
 import requests
 import xml.dom.minidom
-import xml.etree.ElementTree as ET
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from bson import ObjectId
@@ -21,17 +19,18 @@ from src.shared.utils.auth_utils import get_claims, is_super_admin
 from src.shared.utils.date_utils import iso_utc
 from src.handlers.facturacion.certificates_manager import get_sw_token
 from src.handlers.facturacion.cfdi_pdf_fpdf_generator import CFDIPDF_FPDF_Generator
+from src.shared.constants.facturacion import (
+    FACTURA_CLAVE_PROD_SERV,
+    FACTURA_CLAVE_UNIDAD,
+    FACTURA_UNIDAD,
+    FACTURA_DESCRIPCION,
+    FACTURA_OBJETO_IMP,
+)
 
 logger = Logger()
 
 SW_URL = os.getenv("SW_URL")
 
-# Constantes SAT para Facturación de MekanicsManager
-FACTURA_CLAVE_PROD_SERV = "81112100"
-FACTURA_CLAVE_UNIDAD = "MON"
-FACTURA_UNIDAD = "Mes"
-FACTURA_DESCRIPCION = "Servicio de hospedaje de aplicación MekanicsManager"
-FACTURA_OBJETO_IMP = "02"
 
 
 def limpiar_razon_social(nombre: str) -> str:

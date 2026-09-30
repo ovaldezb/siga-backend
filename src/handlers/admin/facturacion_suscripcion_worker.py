@@ -29,18 +29,18 @@ from src.handlers.facturacion.certificates_manager import get_sw_token
 from src.handlers.facturacion.cfdi_pdf_fpdf_generator import CFDIPDF_FPDF_Generator
 from src.shared.infrastructure.database import get_platform_db
 from src.shared.utils.email_client import send_email
+from src.shared.constants.facturacion import (
+    FACTURA_CLAVE_PROD_SERV,
+    FACTURA_CLAVE_UNIDAD,
+    FACTURA_UNIDAD,
+    FACTURA_DESCRIPCION,
+    FACTURA_OBJETO_IMP,
+)
 
 logger = Logger()
 
 SW_URL = os.getenv("SW_URL", "")
 
-# Constantes SAT para factura de suscripción de plataforma
-# (mismas que usa platform_facturacion_manager)
-FACTURA_CLAVE_PROD_SERV = "81112100"
-FACTURA_CLAVE_UNIDAD = "MON"
-FACTURA_UNIDAD = "Mes"
-FACTURA_DESCRIPCION = "Servicio de hospedaje de aplicación MekanicsManager"
-FACTURA_OBJETO_IMP = "02"
 
 
 @logger.inject_lambda_context
