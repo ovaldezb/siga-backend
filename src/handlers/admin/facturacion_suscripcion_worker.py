@@ -191,13 +191,21 @@ def _procesar_facturacion(body: dict) -> None:
     subtotal_val = round(total_pago / 1.16, 2)
     iva_val      = round(total_pago - subtotal_val, 2)
 
-    metodo_upper = str(metodo).upper()
-    if "CARD" in metodo_upper or "TARJETA" in metodo_upper:
-        forma_pago_sat = "04"
-    elif "SPEI" in metodo_upper or "TRANSFER" in metodo_upper or "BANK" in metodo_upper:
-        forma_pago_sat = "03"
-    else:
-        forma_pago_sat = "04"
+    # Forma de pago SAT: leer del mensaje SQS si viene explícito ('28'=débito, '04'=crédito, '03'=SPEI)
+    forma_pago_sat = body.get("forma_pago_sat")
+    if not forma_pago_sat:
+        metodo_upper = str(metodo).upper()
+        if "DEBIT" in metodo_upper or "DEBITO" in metodo_upper:
+            forma_pago_sat = "28"  # Tarjeta de débito
+        elif "CREDIT" in metodo_upper or "CREDITO" in metodo_upper:
+            forma_pago_sat = "04"  # Tarjeta de crédito
+        elif "CARD" in metodo_upper or "TARJETA" in metodo_upper:
+            forma_pago_sat = "04"  # Tarjeta (default)
+        elif "SPEI" in metodo_upper or "TRANSFER" in metodo_upper or "BANK" in metodo_upper:
+            forma_pago_sat = "03"  # Transferencia electrónica de fondos
+        else:
+            forma_pago_sat = "04"
+
 
     try:
         now_cdmx = datetime.now(ZoneInfo("America/Mexico_City"))

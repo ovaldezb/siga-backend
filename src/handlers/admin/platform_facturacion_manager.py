@@ -519,14 +519,19 @@ def facturar_pago_suscripcion_handler(event, context):
         subtotal_val = round(total_pago / 1.16, 2)
         iva_val = round(total_pago - subtotal_val, 2)
 
-        # Mapeo de forma de pago
+        # Mapeo de forma de pago SAT
         metodo_pago_raw = str(pago.get("metodo", "")).upper()
-        if "CARD" in metodo_pago_raw or "TARJETA" in metodo_pago_raw or pago.get("tokenClip"):
-            forma_pago_sat = "04"
-        elif "SPEI" in metodo_pago_raw or "TRANSFER" in metodo_pago_raw:
-            forma_pago_sat = "03"
+        if "DEBIT" in metodo_pago_raw or "DEBITO" in metodo_pago_raw:
+            forma_pago_sat = "28"  # Tarjeta de débito
+        elif "CREDIT" in metodo_pago_raw or "CREDITO" in metodo_pago_raw:
+            forma_pago_sat = "04"  # Tarjeta de crédito
+        elif "CARD" in metodo_pago_raw or "TARJETA" in metodo_pago_raw or pago.get("tokenClip"):
+            forma_pago_sat = "04"  # Tarjeta (default)
+        elif "SPEI" in metodo_pago_raw or "TRANSFER" in metodo_pago_raw or "BANK" in metodo_pago_raw:
+            forma_pago_sat = "03"  # Transferencia electrónica de fondos
         else:
             forma_pago_sat = "04"
+
 
         try:
             now_cdmx = datetime.now(ZoneInfo("America/Mexico_City"))
