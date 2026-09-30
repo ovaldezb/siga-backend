@@ -359,13 +359,23 @@ def _procesar_facturacion(body: dict) -> None:
     )
 
     # ── 13. Generar PDF ──────────────────────────────────────────────────────
+    # Convertir fechaPago a string ISO — MongoDB lo devuelve como datetime.datetime
+    # pero CFDIPDF_FPDF_Generator espera un string (hace 'if T in fecha_clean').
+    fecha_pago_raw = pago.get("fechaPago")
+    if isinstance(fecha_pago_raw, datetime):
+        fecha_hora_venta_str = fecha_pago_raw.strftime("%Y-%m-%dT%H:%M:%S")
+    elif fecha_pago_raw:
+        fecha_hora_venta_str = str(fecha_pago_raw)
+    else:
+        fecha_hora_venta_str = fecha_emision  # fallback: fecha de timbrado
+
     try:
         pdf_gen = CFDIPDF_FPDF_Generator(
             xml_string=pretty_xml,
             qrCode=factura_res["data"].get("qrCode") or "",
             cadena_original_sat=factura_res["data"].get("cadenaOriginalSAT") or "",
             noTicket=f"PAGO-{pago_id[:8]}",
-            fecha_hora_venta=pago.get("fechaPago"),
+            fecha_hora_venta=fecha_hora_venta_str,
             direccion=sucursal.get("direccion", ""),
             empresa=emisor_nombre,
             regimen_fiscal_emisor=emisor_regimen,
@@ -376,6 +386,7 @@ def _procesar_facturacion(body: dict) -> None:
     except Exception as pdf_err:
         logger.error(f"Error generando PDF para factura {uuid}: {pdf_err}")
         raise  # Relanzar — SQS reintentará; la factura ya está en Mongo pero el correo aún no se envió
+
 
     # ── 14. Enviar correo con PDF y XML adjuntos ──────────────────────────────
     xml_bytes     = pretty_xml.encode("utf-8")
