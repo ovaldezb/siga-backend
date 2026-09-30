@@ -9,11 +9,55 @@ from aws_lambda_powertools import Logger
 from src.shared.utils.response_handler import create_response, handle_exception
 from src.shared.utils.date_utils import iso_utc
 from src.shared.infrastructure.database import get_platform_db
+import boto3
+from botocore.config import Config
 
 logger = Logger()
 
 CLIP_API_KEY = os.environ.get('CLIP_API_KEY', '').strip()
 CLIP_SECRET_KEY = os.environ.get('CLIP_SECRET_KEY', '').strip()
+
+# ── SQS — cola de facturación asíncrona ──────────────────────────────────────
+_sqs_client = boto3.client('sqs', config=Config(connect_timeout=3, read_timeout=5))
+_FACTURACION_QUEUE_URL = os.environ.get('FACTURACION_QUEUE_URL', '').strip()
+
+
+def _encolar_facturacion(
+    tenant_id: str,
+    taller: dict,
+    pago_id: str,
+    monto: float,
+    trans_id: str,
+    metodo: str,
+) -> None:
+    """Encola el timbrado de factura + envío de correo en SQS FIFO.
+
+    Best-effort: si falla, solo loguea. El webhook responde 200 de todas formas.
+    La MessageDeduplicationId (trans_id) evita procesar el mismo pago dos veces.
+    """
+    if not _FACTURACION_QUEUE_URL:
+        logger.warning("FACTURACION_QUEUE_URL no configurada — facturación automática deshabilitada.")
+        return
+    try:
+        mensaje = {
+            "tenant_id": tenant_id,
+            "pago_id": pago_id,
+            "trans_id": trans_id,
+            "admin_email": taller.get("adminEmail", ""),
+            "nombre_taller": taller.get("nombreComercial", ""),
+            "monto": monto,
+            "metodo": metodo,
+        }
+        _sqs_client.send_message(
+            QueueUrl=_FACTURACION_QUEUE_URL,
+            MessageBody=json.dumps(mensaje),
+            MessageGroupId="facturacion-suscripcion",
+            MessageDeduplicationId=trans_id,  # Evita duplicados si Openpay reintenta el webhook
+        )
+        logger.info(f"Trabajo de facturación encolado para trans_id={trans_id}, tenant={tenant_id}")
+    except Exception as sqs_err:
+        logger.error(f"Error al encolar trabajo de facturación (trans_id={trans_id}): {sqs_err}")
+
 
 def add_months(source_date, months):
     month = source_date.month - 1 + months
@@ -591,6 +635,7 @@ def openpay_webhook_handler(event, context):
                             "fechaPago": fecha_actual
                         }}
                     )
+                    pago_id_str = str(pago["_id"])
                 else:
                     pago_doc = {
                         "tallerTenantId": tenant_id,
@@ -602,7 +647,8 @@ def openpay_webhook_handler(event, context):
                         "metodo": metodo_str,
                         "fechaPago": fecha_actual
                     }
-                    db["suscripciones_pagos"].insert_one(pago_doc)
+                    res_insert = db["suscripciones_pagos"].insert_one(pago_doc)
+                    pago_id_str = str(res_insert.inserted_id)
 
                 nueva_corte, nueva_pago = calcular_nuevas_fechas_suscripcion(taller, fecha_actual)
                 db["talleres"].update_one(
@@ -614,7 +660,18 @@ def openpay_webhook_handler(event, context):
                     }}
                 )
                 logger.info(f"Suscripcion extendida exitosamente para el taller {tenant_id} via Tarjeta 3DS Webhook.")
+
+                # Encolar timbrado de factura + envío de correo (asíncrono, best-effort)
+                _encolar_facturacion(
+                    tenant_id=tenant_id,
+                    taller=taller,
+                    pago_id=pago_id_str,
+                    monto=float(amount),
+                    trans_id=trans_id,
+                    metodo=metodo_str,
+                )
                 return create_response(200, "Webhook de tarjeta procesado correctamente")
+
 
             # Caso 2: Cobro SPEI (method == "bank_account")
             taller = db["talleres"].find_one({"openpaySpeiChargeId": trans_id})
@@ -638,7 +695,8 @@ def openpay_webhook_handler(event, context):
                 "metodo": "Transferencia SPEI (Openpay)",
                 "fechaPago": datetime.utcnow()
             }
-            db["suscripciones_pagos"].insert_one(pago_doc)
+            res_spei_pago = db["suscripciones_pagos"].insert_one(pago_doc)
+            pago_id_spei = str(res_spei_pago.inserted_id)
             
             fecha_actual = datetime.utcnow()
             nueva_corte, nueva_pago = calcular_nuevas_fechas_suscripcion(taller, fecha_actual)
@@ -689,6 +747,17 @@ def openpay_webhook_handler(event, context):
                 }}
             )
             logger.info(f"Suscripcion extendida exitosamente para el taller {tenant_id} via SPEI Webhook.")
+
+            # Encolar timbrado de factura + envío de correo (asíncrono, best-effort)
+            _encolar_facturacion(
+                tenant_id=tenant_id,
+                taller=taller,
+                pago_id=pago_id_spei,
+                monto=float(amount),
+                trans_id=trans_id,
+                metodo="Transferencia SPEI (Openpay)",
+            )
+
 
         elif event_type == "charge.failed":
             trans_id = transaction.get("id")
