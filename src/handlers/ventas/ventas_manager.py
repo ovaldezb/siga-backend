@@ -811,11 +811,24 @@ def registrar_abono_handler(event, context):
                         session=session,
                     )
 
-                if nuevo_saldo == 0 and venta.get('orden_id'):
+                orden_oid = None
+                if venta.get('orden_id'):
                     try:
                         orden_oid = ObjectId(venta['orden_id'])
                     except (InvalidId, TypeError):
                         orden_oid = None
+
+                # La OS lleva copia del saldo (pestaña "Por Cobrar", botón Abonar):
+                # todo abono la sincroniza, no sólo el que liquida. Si no, un abono
+                # parcial deja la OS con el saldo previo y no cuadra con la CxC.
+                if orden_oid and nuevo_saldo > 0:
+                    db["ordenes_servicio"].update_one(
+                        {"_id": orden_oid},
+                        {"$set": {"saldo_pendiente": nuevo_saldo, "updatedAt": datetime.utcnow()}},
+                        session=session,
+                    )
+
+                if nuevo_saldo == 0:
                     if orden_oid:
                         # Registrar la transición a ENTREGADO en bitacora_estados (si no
                         # estaba ya) para que la columna "F. Entrega" muestre la fecha.

@@ -175,3 +175,38 @@ def test_abono_que_salda_cierra_orden(mock_db):
     assert os_after["estado"] == "ENTREGADO"
     assert os_after["pagada"] is True
     assert os_after["saldo_pendiente"] == 0
+
+
+def test_abono_parcial_sincroniza_saldo_de_la_orden(mock_db):
+    """Un abono parcial actualiza el saldo de la OS (pestaña Por Cobrar) sin cerrarla."""
+    db = mock_db[f"t_{TENANT}"]
+    item_id = _seed_item(db, stock=10, precio=500.0)
+    cliente_id = _seed_cliente(db, limite_credito=1000.0)
+
+    os_res = db["ordenes_servicio"].insert_one({
+        "folio": "OS-CR-P",
+        "tenant_id": TENANT,
+        "sucursal_id": SUCURSAL,
+        "estado": "APROBADO",
+    })
+    orden_id = str(os_res.inserted_id)
+
+    evt = _venta_credito_event(item_id, cliente_id, precio=500.0)
+    body = json.loads(evt["body"])
+    body["orden_id"] = orden_id
+    evt["body"] = json.dumps(body)
+    venta_resp = create_venta_handler(evt, None)
+    assert venta_resp["statusCode"] == 201, venta_resp["body"]
+    venta_id = json.loads(venta_resp["body"])["data"]["id"]
+
+    abono_evt = {
+        "pathParameters": {"id": venta_id},
+        "body": json.dumps({"monto": 300, "metodo": "EFECTIVO"}),
+        "requestContext": {"authorizer": {"claims": _claims()}},
+    }
+    abono_resp = registrar_abono_handler(abono_evt, None)
+    assert abono_resp["statusCode"] == 200, abono_resp["body"]
+
+    os_after = db["ordenes_servicio"].find_one({"_id": os_res.inserted_id})
+    assert os_after["saldo_pendiente"] == 200.0
+    assert os_after["estado"] != "ENTREGADO"
