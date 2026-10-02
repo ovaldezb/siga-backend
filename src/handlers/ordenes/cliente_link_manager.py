@@ -397,8 +397,10 @@ _user_agent = public_link.user_agent
 
 
 # Campos visibles al cliente. TODO si agregamos descripcion en items, agregarlo aquí.
+# `noParte` queda fuera a propósito (mismo criterio que el portal de flotilla): con
+# el código del fabricante/proveedor el cliente puede cotizar la pieza por fuera.
 _PUBLIC_ITEM_FIELDS = {
-    'item_id', 'nombre', 'descripcion', 'noParte', 'marca',
+    'item_id', 'nombre', 'descripcion', 'marca',
     'piezas', 'precioVenta', 'subtotal',
     'aprobado', 'rechazado', 'decision',
     'tipo',
