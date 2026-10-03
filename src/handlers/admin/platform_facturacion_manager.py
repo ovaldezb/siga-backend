@@ -2,10 +2,8 @@ import json
 import base64
 import os
 import re
-import tempfile
 import requests
 import xml.dom.minidom
-import xml.etree.ElementTree as ET
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from bson import ObjectId
@@ -21,17 +19,18 @@ from src.shared.utils.auth_utils import get_claims, is_super_admin
 from src.shared.utils.date_utils import iso_utc
 from src.handlers.facturacion.certificates_manager import get_sw_token
 from src.handlers.facturacion.cfdi_pdf_fpdf_generator import CFDIPDF_FPDF_Generator
+from src.shared.constants.facturacion import (
+    FACTURA_CLAVE_PROD_SERV,
+    FACTURA_CLAVE_UNIDAD,
+    FACTURA_UNIDAD,
+    FACTURA_DESCRIPCION,
+    FACTURA_OBJETO_IMP,
+)
 
 logger = Logger()
 
 SW_URL = os.getenv("SW_URL")
 
-# Constantes SAT para Facturación de MekanicsManager
-FACTURA_CLAVE_PROD_SERV = "81112100"
-FACTURA_CLAVE_UNIDAD = "MON"
-FACTURA_UNIDAD = "Mes"
-FACTURA_DESCRIPCION = "Servicio de hospedaje de aplicación MekanicsManager"
-FACTURA_OBJETO_IMP = "02"
 
 
 def limpiar_razon_social(nombre: str) -> str:
@@ -520,14 +519,19 @@ def facturar_pago_suscripcion_handler(event, context):
         subtotal_val = round(total_pago / 1.16, 2)
         iva_val = round(total_pago - subtotal_val, 2)
 
-        # Mapeo de forma de pago
+        # Mapeo de forma de pago SAT
         metodo_pago_raw = str(pago.get("metodo", "")).upper()
-        if "CARD" in metodo_pago_raw or "TARJETA" in metodo_pago_raw or pago.get("tokenClip"):
-            forma_pago_sat = "04"
-        elif "SPEI" in metodo_pago_raw or "TRANSFER" in metodo_pago_raw:
-            forma_pago_sat = "03"
+        if "DEBIT" in metodo_pago_raw or "DEBITO" in metodo_pago_raw:
+            forma_pago_sat = "28"  # Tarjeta de débito
+        elif "CREDIT" in metodo_pago_raw or "CREDITO" in metodo_pago_raw:
+            forma_pago_sat = "04"  # Tarjeta de crédito
+        elif "CARD" in metodo_pago_raw or "TARJETA" in metodo_pago_raw or pago.get("tokenClip"):
+            forma_pago_sat = "04"  # Tarjeta (default)
+        elif "SPEI" in metodo_pago_raw or "TRANSFER" in metodo_pago_raw or "BANK" in metodo_pago_raw:
+            forma_pago_sat = "03"  # Transferencia electrónica de fondos
         else:
             forma_pago_sat = "04"
+
 
         try:
             now_cdmx = datetime.now(ZoneInfo("America/Mexico_City"))

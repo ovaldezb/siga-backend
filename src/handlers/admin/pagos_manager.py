@@ -29,6 +29,7 @@ def _encolar_facturacion(
     monto: float,
     trans_id: str,
     metodo: str,
+    forma_pago_sat: str = None,
 ) -> None:
     """Encola el timbrado de factura + envío de correo en SQS FIFO.
 
@@ -47,6 +48,7 @@ def _encolar_facturacion(
             "nombre_taller": taller.get("nombreComercial", ""),
             "monto": monto,
             "metodo": metodo,
+            "forma_pago_sat": forma_pago_sat,
         }
         _sqs_client.send_message(
             QueueUrl=_FACTURACION_QUEUE_URL,
@@ -54,12 +56,39 @@ def _encolar_facturacion(
             MessageGroupId="facturacion-suscripcion",
             MessageDeduplicationId=trans_id,  # Evita duplicados si Openpay reintenta el webhook
         )
-        logger.info(f"Trabajo de facturación encolado para trans_id={trans_id}, tenant={tenant_id}")
+        logger.info(f"Trabajo de facturación encolado para trans_id={trans_id}, tenant={tenant_id}, forma_pago_sat={forma_pago_sat}")
     except Exception as sqs_err:
         logger.error(f"Error al encolar trabajo de facturación (trans_id={trans_id}): {sqs_err}")
 
 
+def _determinar_metodo_tarjeta(card_info: dict) -> tuple:
+    """Retorna (metodo_str, forma_pago_sat) a partir del objeto card de Openpay.
+
+    Mapeo SAT:
+      card.type == 'debit'  -> forma_pago_sat = '28' (Tarjeta de débito)
+      card.type == 'credit' -> forma_pago_sat = '04' (Tarjeta de crédito)
+      otro / desconocido    -> forma_pago_sat = '04' (default seguro)
+    """
+    brand = card_info.get("brand", "VISA").upper()
+    last4 = card_info.get("card_number", "••••")[-4:]
+    card_type = str(card_info.get("type", "")).strip().lower()
+
+    if card_type == "debit":
+        forma_pago_sat = "28"
+        tipo_label = "Tarjeta de Débito"
+    elif card_type == "credit":
+        forma_pago_sat = "04"
+        tipo_label = "Tarjeta de Crédito"
+    else:
+        forma_pago_sat = "04"
+        tipo_label = "Tarjeta"
+
+    metodo_str = f"{tipo_label} (Openpay - {brand} •••• {last4})"
+    return metodo_str, forma_pago_sat
+
+
 def add_months(source_date, months):
+
     month = source_date.month - 1 + months
     year = source_date.year + month // 12
     month = month % 12 + 1
@@ -484,9 +513,8 @@ def confirmar_pago_openpay_handler(event, context):
                 })
 
             card_info = charge_res.get("card", {})
-            brand = card_info.get("brand", "VISA").upper()
-            last4 = card_info.get("card_number", "••••")[-4:]
-            metodo_str = f"Tarjeta (Openpay - {brand} •••• {last4})"
+            metodo_str, _ = _determinar_metodo_tarjeta(card_info)
+
 
             fecha_actual = datetime.utcnow()
             nueva_corte, nueva_pago = calcular_nuevas_fechas_suscripcion(taller, fecha_actual)
@@ -621,9 +649,7 @@ def openpay_webhook_handler(event, context):
                     return create_response(200, "Webhook procesado: cargo ya completado.")
 
                 card_info = transaction.get("card", {})
-                brand = card_info.get("brand", "VISA").upper()
-                last4 = card_info.get("card_number", "••••")[-4:]
-                metodo_str = f"Tarjeta (Openpay - {brand} •••• {last4})"
+                metodo_str, forma_pago_sat_card = _determinar_metodo_tarjeta(card_info)
 
                 fecha_actual = datetime.utcnow()
                 if pago:
@@ -669,7 +695,9 @@ def openpay_webhook_handler(event, context):
                     monto=float(amount),
                     trans_id=trans_id,
                     metodo=metodo_str,
+                    forma_pago_sat=forma_pago_sat_card,
                 )
+
                 return create_response(200, "Webhook de tarjeta procesado correctamente")
 
 
@@ -756,7 +784,9 @@ def openpay_webhook_handler(event, context):
                 monto=float(amount),
                 trans_id=trans_id,
                 metodo="Transferencia SPEI (Openpay)",
+                forma_pago_sat="03",
             )
+
 
 
         elif event_type == "charge.failed":

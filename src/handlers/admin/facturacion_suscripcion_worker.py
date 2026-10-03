@@ -29,18 +29,18 @@ from src.handlers.facturacion.certificates_manager import get_sw_token
 from src.handlers.facturacion.cfdi_pdf_fpdf_generator import CFDIPDF_FPDF_Generator
 from src.shared.infrastructure.database import get_platform_db
 from src.shared.utils.email_client import send_email
+from src.shared.constants.facturacion import (
+    FACTURA_CLAVE_PROD_SERV,
+    FACTURA_CLAVE_UNIDAD,
+    FACTURA_UNIDAD,
+    FACTURA_DESCRIPCION,
+    FACTURA_OBJETO_IMP,
+)
 
 logger = Logger()
 
 SW_URL = os.getenv("SW_URL", "")
 
-# Constantes SAT para factura de suscripción de plataforma
-# (mismas que usa platform_facturacion_manager)
-FACTURA_CLAVE_PROD_SERV = "81112100"
-FACTURA_CLAVE_UNIDAD = "MON"
-FACTURA_UNIDAD = "Mes"
-FACTURA_DESCRIPCION = "Servicio de hospedaje de aplicación MekanicsManager"
-FACTURA_OBJETO_IMP = "02"
 
 
 @logger.inject_lambda_context
@@ -191,13 +191,21 @@ def _procesar_facturacion(body: dict) -> None:
     subtotal_val = round(total_pago / 1.16, 2)
     iva_val      = round(total_pago - subtotal_val, 2)
 
-    metodo_upper = str(metodo).upper()
-    if "CARD" in metodo_upper or "TARJETA" in metodo_upper:
-        forma_pago_sat = "04"
-    elif "SPEI" in metodo_upper or "TRANSFER" in metodo_upper or "BANK" in metodo_upper:
-        forma_pago_sat = "03"
-    else:
-        forma_pago_sat = "04"
+    # Forma de pago SAT: leer del mensaje SQS si viene explícito ('28'=débito, '04'=crédito, '03'=SPEI)
+    forma_pago_sat = body.get("forma_pago_sat")
+    if not forma_pago_sat:
+        metodo_upper = str(metodo).upper()
+        if "DEBIT" in metodo_upper or "DEBITO" in metodo_upper:
+            forma_pago_sat = "28"  # Tarjeta de débito
+        elif "CREDIT" in metodo_upper or "CREDITO" in metodo_upper:
+            forma_pago_sat = "04"  # Tarjeta de crédito
+        elif "CARD" in metodo_upper or "TARJETA" in metodo_upper:
+            forma_pago_sat = "04"  # Tarjeta (default)
+        elif "SPEI" in metodo_upper or "TRANSFER" in metodo_upper or "BANK" in metodo_upper:
+            forma_pago_sat = "03"  # Transferencia electrónica de fondos
+        else:
+            forma_pago_sat = "04"
+
 
     try:
         now_cdmx = datetime.now(ZoneInfo("America/Mexico_City"))
@@ -359,13 +367,23 @@ def _procesar_facturacion(body: dict) -> None:
     )
 
     # ── 13. Generar PDF ──────────────────────────────────────────────────────
+    # Convertir fechaPago a string ISO — MongoDB lo devuelve como datetime.datetime
+    # pero CFDIPDF_FPDF_Generator espera un string (hace 'if T in fecha_clean').
+    fecha_pago_raw = pago.get("fechaPago")
+    if isinstance(fecha_pago_raw, datetime):
+        fecha_hora_venta_str = fecha_pago_raw.strftime("%Y-%m-%dT%H:%M:%S")
+    elif fecha_pago_raw:
+        fecha_hora_venta_str = str(fecha_pago_raw)
+    else:
+        fecha_hora_venta_str = fecha_emision  # fallback: fecha de timbrado
+
     try:
         pdf_gen = CFDIPDF_FPDF_Generator(
             xml_string=pretty_xml,
             qrCode=factura_res["data"].get("qrCode") or "",
             cadena_original_sat=factura_res["data"].get("cadenaOriginalSAT") or "",
             noTicket=f"PAGO-{pago_id[:8]}",
-            fecha_hora_venta=pago.get("fechaPago"),
+            fecha_hora_venta=fecha_hora_venta_str,
             direccion=sucursal.get("direccion", ""),
             empresa=emisor_nombre,
             regimen_fiscal_emisor=emisor_regimen,
@@ -376,6 +394,7 @@ def _procesar_facturacion(body: dict) -> None:
     except Exception as pdf_err:
         logger.error(f"Error generando PDF para factura {uuid}: {pdf_err}")
         raise  # Relanzar — SQS reintentará; la factura ya está en Mongo pero el correo aún no se envió
+
 
     # ── 14. Enviar correo con PDF y XML adjuntos ──────────────────────────────
     xml_bytes     = pretty_xml.encode("utf-8")

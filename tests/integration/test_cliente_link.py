@@ -210,6 +210,9 @@ def test_get_cotizacion_filters_no_cobrar(mock_db):
         for it in p['items']:
             assert 'precioCompra' not in it
             assert 'costo_proveedor' not in it
+            assert 'noParte' not in it
+    # El número de parte es interno: ni la llave ni el valor salen al cliente.
+    assert 'BAL-1' not in resp['body'] and 'AMO-1' not in resp['body']
 
 
 def test_verify_wrong_answer_increments_attempts(mock_db):

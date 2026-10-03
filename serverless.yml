@@ -213,9 +213,11 @@ functions:
           method: get
 
   users_list:
-    handler: src/handlers/users/user_manager.list_users_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/users_list.zip
     events:
       - httpApi:
           path: /usuarios
@@ -488,9 +490,11 @@ functions:
             name: cognitoAuthorizer
 
   clientes_list:
-    handler: src/handlers/clientes/clientes_manager.list_clientes_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/clientes_list.zip
     events:
       - httpApi:
           path: /clientes
@@ -510,9 +514,11 @@ functions:
             name: cognitoAuthorizer
 
   clientes_get:
-    handler: src/handlers/clientes/clientes_manager.get_cliente_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/clientes_get.zip
     events:
       - httpApi:
           path: /clientes/{id}
@@ -554,9 +560,11 @@ functions:
             name: cognitoAuthorizer
 
   flotillas_list:
-    handler: src/handlers/flotillas/flotillas_manager.list_flotillas_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/flotillas_list.zip
     events:
       - httpApi:
           path: /flotillas
@@ -694,9 +702,11 @@ functions:
           method: get
 
   items_list:
-    handler: src/handlers/inventario/items_manager.list_items_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/items_list.zip
     events:
       - httpApi:
           path: /items
@@ -749,9 +759,11 @@ functions:
             name: cognitoAuthorizer
 
   items_get:
-    handler: src/handlers/inventario/items_manager.get_item_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/items_get.zip
     events:
       - httpApi:
           path: /items/{id}
@@ -793,9 +805,11 @@ functions:
             name: cognitoAuthorizer
 
   list_modulos:
-    handler: src/handlers/admin/modulos_manager.list_modulos_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/list_modulos.zip
     events:
       - httpApi:
           path: /modulos
@@ -1081,6 +1095,21 @@ functions:
           authorizer:
             name: cognitoAuthorizer
 
+  # Tablero kanban del taller en Go. GET /ordenes?vista=tablero sigue en Python
+  # para los fronts viejos en caché.
+  ordenes_tablero:
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/ordenes_tablero.zip
+    events:
+      - httpApi:
+          path: /ordenes/tablero
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
   ordenes_update:
     handler: src/handlers/ordenes/ordenes_manager.update_orden_handler
     layers:
@@ -1126,9 +1155,11 @@ functions:
             name: cognitoAuthorizer
 
   ordenes_get:
-    handler: src/handlers/ordenes/ordenes_manager.get_orden_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/ordenes_get.zip
     events:
       - httpApi:
           path: /ordenes/{id}
@@ -1137,9 +1168,11 @@ functions:
             name: cognitoAuthorizer
 
   ordenes_list_events:
-    handler: src/handlers/ordenes/ordenes_manager.list_orden_events_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/ordenes_list_events.zip
     events:
       - httpApi:
           path: /ordenes/{id}/events
@@ -1274,9 +1307,11 @@ functions:
           method: post
 
   list_vehiculos:
-    handler: src/handlers/vehiculos/vehiculos_manager.list_vehiculos_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/list_vehiculos.zip
     events:
       - httpApi:
           path: /vehiculos
@@ -1285,9 +1320,11 @@ functions:
             name: cognitoAuthorizer
 
   get_vehiculo:
-    handler: src/handlers/vehiculos/vehiculos_manager.get_vehiculo_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/get_vehiculo.zip
     events:
       - httpApi:
           path: /vehiculos/{id}
@@ -1329,9 +1366,11 @@ functions:
             name: cognitoAuthorizer
 
   vehiculos_decode_vin:
-    handler: src/handlers/vehiculos/vehiculos_manager.decode_vin_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/vehiculos_decode_vin.zip
     events:
       - httpApi:
           path: /vehiculos/decode-vin/{vin}
@@ -1340,9 +1379,11 @@ functions:
             name: cognitoAuthorizer
 
   citas_list:
-    handler: src/handlers/citas/citas_manager.list_citas_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/citas_list.zip
     events:
       - httpApi:
           path: /citas
@@ -1373,9 +1414,11 @@ functions:
             name: cognitoAuthorizer
 
   citas_get:
-    handler: src/handlers/citas/citas_manager.get_cita_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/citas_get.zip
     events:
       - httpApi:
           path: /citas/{id}
@@ -1407,9 +1450,11 @@ functions:
 
   # ─── Cotizaciones independientes (no atadas a una OS) ───
   cotizaciones_list:
-    handler: src/handlers/cotizaciones/cotizaciones_manager.list_cotizaciones_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/cotizaciones_list.zip
     events:
       - httpApi:
           path: /cotizaciones
@@ -1429,9 +1474,11 @@ functions:
             name: cognitoAuthorizer
 
   cotizaciones_get:
-    handler: src/handlers/cotizaciones/cotizaciones_manager.get_cotizacion_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/cotizaciones_get.zip
     events:
       - httpApi:
           path: /cotizaciones/{id}
@@ -1473,9 +1520,11 @@ functions:
             name: cognitoAuthorizer
 
   proveedores_list:
-    handler: src/handlers/proveedores/proveedores_manager.list_proveedores_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/proveedores_list.zip
     events:
       - httpApi:
           path: /proveedores
@@ -1495,9 +1544,11 @@ functions:
             name: cognitoAuthorizer
 
   proveedores_get:
-    handler: src/handlers/proveedores/proveedores_manager.get_proveedor_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/proveedores_get.zip
     events:
       - httpApi:
           path: /proveedores/{id}
@@ -1552,9 +1603,11 @@ functions:
             name: cognitoAuthorizer
 
   sucursales_get:
-    handler: src/handlers/sucursales/sucursales_manager.get_sucursal_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/sucursales_get.zip
     events:
       - httpApi:
           path: /sucursales/{id}
@@ -1635,9 +1688,11 @@ functions:
             name: cognitoAuthorizer
 
   traspasos_list:
-    handler: src/handlers/inventario/traspasos_manager.list_traspasos_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/traspasos_list.zip
     events:
       - httpApi:
           path: /inventario/traspasos
@@ -1734,9 +1789,11 @@ functions:
             name: cognitoAuthorizer
 
   catalogos_marcas_productos_list:
-    handler: src.handlers.admin.configuracion_manager.list_marcas_productos_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/catalogos_marcas_productos_list.zip
     events:
       - httpApi:
           path: /catalogos/marcas-productos
@@ -1847,9 +1904,11 @@ functions:
             name: cognitoAuthorizer
 
   compras_list:
-    handler: src/handlers/compras/compras_manager.list_compras_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/compras_list.zip
     events:
       - httpApi:
           path: /compras
@@ -1858,9 +1917,11 @@ functions:
             name: cognitoAuthorizer
 
   compras_get:
-    handler: src/handlers/compras/compras_manager.get_compra_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/compras_get.zip
     events:
       - httpApi:
           path: /compras/{id}
@@ -1891,9 +1952,11 @@ functions:
             name: cognitoAuthorizer
 
   compras_cxp:
-    handler: src/handlers/compras/compras_manager.list_cxp_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/compras_cxp.zip
     events:
       - httpApi:
           path: /compras/cxp

@@ -1,5 +1,6 @@
 // Package sucursales atiende la lectura de sucursales del taller (port de
-// list_sucursales_handler en src/handlers/sucursales/sucursales_manager.py).
+// list_sucursales_handler y get_sucursal_handler en
+// src/handlers/sucursales/sucursales_manager.py).
 // El alta, edición y borrado siguen en Python.
 package sucursales
 
@@ -46,4 +47,29 @@ func List(ctx context.Context, req platform.Request) (platform.Response, error) 
 		return platform.Response{}, err
 	}
 	return platform.JSON(req, 200, "Sucursales obtenidas", todas), nil
+}
+
+// Get atiende GET /sucursales/{id}.
+func Get(ctx context.Context, req platform.Request) (platform.Response, error) {
+	tenantID := platform.ClaimString(platform.Claims(req), "custom:tenant_id")
+	if tenantID == "" {
+		return platform.JSON(req, 403, "No se encontró un tenantId asociado.", nil), nil
+	}
+	oid, err := platform.ParseObjectID(req.PathParameters["id"], "id")
+	if err != nil {
+		return platform.Response{}, err
+	}
+	db, err := platform.TenantDB(tenantID)
+	if err != nil {
+		return platform.Response{}, err
+	}
+	var doc bson.M
+	err = db.Collection("sucursales").FindOne(ctx, bson.D{{Key: "_id", Value: oid}}).Decode(&doc)
+	if err == mongo.ErrNoDocuments {
+		return platform.JSON(req, 404, "Sucursal no encontrada", nil), nil
+	}
+	if err != nil {
+		return platform.Response{}, err
+	}
+	return platform.JSON(req, 200, "Sucursal obtenida", platform.Doc(doc)), nil
 }

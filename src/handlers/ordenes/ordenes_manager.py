@@ -1194,6 +1194,12 @@ def list_ordenes_handler(event, context):
         filter_query = {}
         and_conditions = []
         
+        # PENDIENTE (2026-09-27): este listado NO aplica resolve_sucursal_scope. Solo
+        # filtra por la sucursal que manda el front, así que un usuario no-admin que
+        # omita sucursal_id o pase una ajena ve OS de otras sucursales (list, tablero
+        # y el resto de handlers de este archivo tampoco lo validan). items_list y
+        # cotizaciones_list sí lo aplican. Confirmar si es intencional antes de
+        # cerrarlo: cerrarlo cambia lo que ven cajeros/asesores multi-sucursal.
         sucursal_id = query_params.get('sucursal_id')
         if sucursal_id:
             and_conditions.append({'sucursal_id': sucursal_id})

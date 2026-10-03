@@ -86,6 +86,8 @@ def list_users_handler(event, context):
     try:
         claims =get_claims(event)
         tenant_id = claims.get('custom:tenant_id')
+        if not tenant_id:
+            return create_response(403, "No se encontró un tenantId asociado.")
         
         tenant_db = get_tenant_db(tenant_id)
         sucursales_map = get_sucursales_map(tenant_db)

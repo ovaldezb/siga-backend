@@ -1,6 +1,6 @@
-// Package usuarios atiende el perfil del usuario logueado (port de
-// get_me_handler en src/handlers/users/user_manager.py). El resto del CRUD de
-// usuarios sigue en Python porque administra Cognito.
+// Package usuarios atiende el perfil del usuario logueado y el listado (port de
+// get_me_handler y list_users_handler en src/handlers/users/user_manager.py).
+// El resto del CRUD de usuarios sigue en Python porque administra Cognito.
 package usuarios
 
 import (
@@ -13,30 +13,13 @@ import (
 	"siga-backend/go/internal/sucursales"
 )
 
-// sucursalRef saca el id de un elemento de usuarios.sucursales. El front guarda
-// {"sucursal": id}; se aceptan también las formas legacy que lee
-// get_user_allowed_sucursales. En Python un id suelto daba 500 (str.get).
-func sucursalRef(item any) string {
-	switch x := item.(type) {
-	case string:
-		return x
-	case map[string]any:
-		for _, k := range []string{"sucursal", "id", "sucursal_id"} {
-			if s, ok := x[k].(string); ok && s != "" {
-				return s
-			}
-		}
-	}
-	return ""
-}
-
 // poblar sustituye las referencias por la sucursal completa y descarta las que
 // apuntan a sucursales que ya no existen, como populate_user_sucursales.
 func poblar(user map[string]any, porID map[string]map[string]any) {
 	crudas, _ := user["sucursales"].([]any)
 	pobladas := make([]map[string]any, 0, len(crudas))
 	for _, item := range crudas {
-		if s, ok := porID[sucursalRef(item)]; ok {
+		if s, ok := porID[platform.SucursalRef(item)]; ok {
 			pobladas = append(pobladas, s)
 		}
 	}
@@ -71,9 +54,58 @@ func Me(ctx context.Context, req platform.Request) (platform.Response, error) {
 		return platform.Response{}, err
 	}
 
-	todas, err := sucursales.Todas(ctx, db)
+	porID, err := sucursalesPorID(ctx, db)
 	if err != nil {
 		return platform.Response{}, err
+	}
+
+	user := platform.Doc(doc)
+	poblar(user, porID)
+	return platform.JSON(req, 200, "Perfil obtenido", user), nil
+}
+
+// List atiende GET /usuarios[?grupo=…]: los usuarios del taller con sus
+// sucursales pobladas, como list_users_handler.
+func List(ctx context.Context, req platform.Request) (platform.Response, error) {
+	tenantID := platform.ClaimString(platform.Claims(req), "custom:tenant_id")
+	if tenantID == "" {
+		// Python no lo validaba y get_tenant_db respondía 400.
+		return platform.JSON(req, 403, "No se encontró un tenantId asociado.", nil), nil
+	}
+	db, err := platform.TenantDB(tenantID)
+	if err != nil {
+		return platform.Response{}, err
+	}
+	porID, err := sucursalesPorID(ctx, db)
+	if err != nil {
+		return platform.Response{}, err
+	}
+
+	filtro := bson.D{}
+	if grupo := req.QueryStringParameters["grupo"]; grupo != "" {
+		filtro = bson.D{{Key: "grupo", Value: grupo}}
+	}
+	cur, err := db.Collection("usuarios").Find(ctx, filtro)
+	if err != nil {
+		return platform.Response{}, err
+	}
+	var docs []bson.M
+	if err := cur.All(ctx, &docs); err != nil {
+		return platform.Response{}, err
+	}
+	users := make([]map[string]any, 0, len(docs))
+	for _, d := range docs {
+		u := platform.Doc(d)
+		poblar(u, porID)
+		users = append(users, u)
+	}
+	return platform.JSON(req, 200, "Usuarios obtenidos", users), nil
+}
+
+func sucursalesPorID(ctx context.Context, db *mongo.Database) (map[string]map[string]any, error) {
+	todas, err := sucursales.Todas(ctx, db)
+	if err != nil {
+		return nil, err
 	}
 	porID := make(map[string]map[string]any, len(todas))
 	for _, s := range todas {
@@ -81,8 +113,5 @@ func Me(ctx context.Context, req platform.Request) (platform.Response, error) {
 			porID[id] = s
 		}
 	}
-
-	user := platform.Doc(doc)
-	poblar(user, porID)
-	return platform.JSON(req, 200, "Perfil obtenido", user), nil
+	return porID, nil
 }

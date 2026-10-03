@@ -1,12 +1,14 @@
 import base64
 import tempfile
 import unicodedata
+from datetime import datetime
 from fpdf import FPDF
 import xml.etree.ElementTree as ET
 import io
 import os
 from num2words import num2words
 from PIL import Image
+
 
 # fpdf 1.7.2 con fuentes core (Arial) solo sabe codificar latin-1: cualquier
 # caracter fuera de ese rango lanza UnicodeEncodeError y tumbaba la generacion
@@ -224,10 +226,15 @@ class CFDIPDF_FPDF_Generator():
         w_cfdi_val = 56
         
         fecha_clean = self.fecha_hora_venta or self.data.get('fecha', '')
-        if 'T' in fecha_clean and len(fecha_clean) > 19:
-            fecha_clean = fecha_clean[:19].replace('T', ' ')
-        elif 'T' in fecha_clean:
-            fecha_clean = fecha_clean.replace('T', ' ')
+        if isinstance(fecha_clean, datetime):
+            fecha_clean = fecha_clean.strftime("%Y-%m-%d %H:%M:%S")
+        elif 'T' in str(fecha_clean) and len(str(fecha_clean)) > 19:
+            fecha_clean = str(fecha_clean)[:19].replace('T', ' ')
+        elif 'T' in str(fecha_clean):
+            fecha_clean = str(fecha_clean).replace('T', ' ')
+        else:
+            fecha_clean = str(fecha_clean)
+
             
         tipo_comp = self.data.get('tipo_comprobante', 'I')
         tipo_map = {'I': 'I - Ingreso', 'E': 'E - Egreso', 'T': 'T - Traslado', 'P': 'P - Pago', 'N': 'N - Nómina'}
@@ -383,34 +390,63 @@ class CFDIPDF_FPDF_Generator():
             pdf.cell(190, 2, '', border='LR', ln=True)
         else:
             # 4. Tabla de conceptos
+            w_clave = 20
+            w_cant = 12
+            w_c_uni = 16
+            w_uni = 12
+            w_desc = 72
+            w_pu = 18
+            w_imp = 20
+            w_tot = 20
+
             pdf.set_font("Arial", 'B', 7.5)
-            pdf.cell(24, 5.5, "Clave Prod/Serv", border=1, align='C')
-            pdf.cell(14, 5.5, "Cantidad", border=1, align='C')
-            pdf.cell(20, 5.5, "Clave Unidad", border=1, align='C')
-            pdf.cell(12, 5.5, "Unidad", border=1, align='C')
-            pdf.cell(60, 5.5, "Descripción", border=1, align='C')
-            pdf.cell(20, 5.5, "Prec Unitario", border=1, align='C')
-            pdf.cell(20, 5.5, "Impuesto", border=1, align='C')
-            pdf.cell(20, 5.5, "Importe", border=1, align='C', ln=True)
+            pdf.cell(w_clave, 5.5, "Clave Prod/Serv", border=1, align='C')
+            pdf.cell(w_cant, 5.5, "Cantidad", border=1, align='C')
+            pdf.cell(w_c_uni, 5.5, "Clave Unidad", border=1, align='C')
+            pdf.cell(w_uni, 5.5, "Unidad", border=1, align='C')
+            pdf.cell(w_desc, 5.5, "Descripción", border=1, align='C')
+            pdf.cell(w_pu, 5.5, "Prec Unitario", border=1, align='C')
+            pdf.cell(w_imp, 5.5, "Impuesto", border=1, align='C')
+            pdf.cell(w_tot, 5.5, "Importe", border=1, align='C', ln=True)
             pdf.set_font("Arial", '', 7)
             impuesto_total = 0.0
 
             for concepto in self.data['conceptos']:
                 desc = concepto.get('Descripcion', '')
-                if len(desc) > 38:
-                    desc = desc[:35] + '...'
                 cant_float = safe_float(concepto.get('Cantidad', 0))
                 cant_str = f"{cant_float:.2f}"
-                pdf.cell(24, 5, concepto.get('ClaveProdServ', ''), align='C', border='L')
-                pdf.cell(14, 5, cant_str, align='C', border=0)
-                pdf.cell(20, 5, concepto.get('ClaveUnidad', ''), align='C', border=0)
-                pdf.cell(12, 5, concepto.get('Unidad', ''), align='C', border=0)
-                pdf.cell(60, 5, desc, align='L', border=0)
-                pdf.cell(20, 5, '$' + f"{safe_float(concepto.get('ValorUnitario', 0.0)):,.2f}", align='C', border=0)
+                valor_unitario_str = '$' + f"{safe_float(concepto.get('ValorUnitario', 0.0)):,.2f}"
                 importe_impuesto = safe_float(concepto['impuestos'].get('Importe', 0.0) or 0.0)
-                pdf.cell(20, 5, '$' + f"{importe_impuesto:,.2f}", align='C', border=0)
+                impuesto_str = '$' + f"{importe_impuesto:,.2f}"
                 impuesto_total += importe_impuesto
-                pdf.cell(20, 5, '$' + f"{safe_float(concepto.get('Importe', 0.0)):,.2f}", align='C', border='R', ln=True)
+                importe_str = '$' + f"{safe_float(concepto.get('Importe', 0.0)):,.2f}"
+
+                x_start = pdf.get_x()
+                y_start = pdf.get_y()
+                desc_x = x_start + w_clave + w_cant + w_c_uni + w_uni
+
+                # Renderizar descripción con multi_cell para soportar 1 o más líneas completas sin truncar
+                pdf.set_xy(desc_x, y_start)
+                pdf.multi_cell(w_desc, 3.8, desc, border=0, align='L')
+                y_after_desc = pdf.get_y()
+                row_h = max(5.0, y_after_desc - y_start)
+
+                # Columnas anteriores
+                pdf.set_xy(x_start, y_start)
+                pdf.cell(w_clave, row_h, concepto.get('ClaveProdServ', ''), align='C', border='L')
+                pdf.cell(w_cant, row_h, cant_str, align='C', border=0)
+                pdf.cell(w_c_uni, row_h, concepto.get('ClaveUnidad', ''), align='C', border=0)
+                pdf.cell(w_uni, row_h, concepto.get('Unidad', ''), align='C', border=0)
+
+                # Columnas posteriores
+                pdf.set_xy(desc_x + w_desc, y_start)
+                pdf.cell(w_pu, row_h, valor_unitario_str, align='C', border=0)
+                pdf.cell(w_imp, row_h, impuesto_str, align='C', border=0)
+                pdf.cell(w_tot, row_h, importe_str, align='C', border='R')
+
+                # Posicionar cursor al final de la fila
+                pdf.set_xy(x_start, y_start + row_h)
+
 
             if self.mostrar_observaciones:
                 pdf.set_font("Arial", 'B', 7)

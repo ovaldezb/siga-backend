@@ -47,21 +47,6 @@ func llamar(t *testing.T, h platform.Handler, r platform.Request, data any) int 
 	return resp.StatusCode
 }
 
-func TestSucursalRef(t *testing.T) {
-	casos := map[string]any{
-		"s1": map[string]any{"sucursal": "s1"},
-		"s2": map[string]any{"id": "s2"},
-		"s3": map[string]any{"sucursal_id": "s3"},
-		"s4": "s4",
-		"":   42,
-	}
-	for want, item := range casos {
-		if got := sucursalRef(item); got != want {
-			t.Fatalf("%v: got %q", item, got)
-		}
-	}
-}
-
 func TestValidacionesSinBaseDeDatos(t *testing.T) {
 	if s := llamar(t, Me, req(map[string]any{"email": "a@b.com"}), nil); s != 403 {
 		t.Fatalf("sin tenant: %d", s)
