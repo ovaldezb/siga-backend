@@ -486,6 +486,7 @@ def _sanitize_orden(orden: dict, db=None) -> dict:
         'puntosArreglar': puntos_pub,
         'falla_reportada': orden.get('falla_reportada'),
         'diagnostico': orden.get('diagnostico'),
+        'observaciones_nota': orden.get('observaciones_nota'),
         'fecha': iso_utc(orden.get('createdAt')) if isinstance(orden.get('createdAt'), datetime) else orden.get('createdAt'),
         'fechaEstimadaEntrega': orden.get('fechaEstimadaEntrega'),
     }
