@@ -91,7 +91,7 @@ def _sin_importes(orden: dict) -> dict:
 # razones: sus items traen precios, y como al mecánico se los borramos al leer,
 # aceptar su versión del arreglo borraría los importes de la orden.
 _CAMPOS_MECANICO = [
-    'estado', 'falla_reportada', 'diagnostico',
+    'estado', 'falla_reportada', 'diagnostico', 'observaciones_nota',
     'kilometraje', 'nivel_tanque', 'testigos_encendidos',
     'proximo_cambio_bujias', 'proximo_cambio_aceite',
     'proximo_cambio_bujias_fecha', 'proximo_cambio_aceite_fecha',
@@ -852,6 +852,8 @@ def create_orden_handler(event, context):
             "puntosArreglar": body.get("puntosArreglar", []),
             "falla_reportada": body.get("falla_reportada", ""),
             "diagnostico": body.get("diagnostico", ""),
+            # Garantía / recomendaciones que se imprimen en la Nota de Servicio.
+            "observaciones_nota": body.get("observaciones_nota", ""),
             "mecanico_id": body.get("mecanico_id"),
             "mecanico_nombre": body.get("mecanico_nombre"),
             "kilometraje": body.get("kilometraje", 0),
@@ -1646,6 +1648,7 @@ def update_orden_handler(event, context):
         campos_permitidos = [
             'estado', 'motivo_cancelacion', 'puntosArreglar',
             'mecanico_id', 'mecanico_nombre', 'falla_reportada', 'diagnostico',
+            'observaciones_nota',
             'kilometraje', 'nivel_tanque', 'testigos_encendidos', 'inventario',
             'proximo_cambio_bujias', 'proximo_cambio_aceite',
             'proximo_cambio_bujias_fecha', 'proximo_cambio_aceite_fecha', 'anticipo',
@@ -1959,6 +1962,7 @@ def clonar_orden_handler(event, context):
             "puntosArreglar": _clonar_puntos_arreglar(original.get('puntosArreglar')),
             "falla_reportada": original.get('falla_reportada', ''),
             "diagnostico": original.get('diagnostico', ''),
+            "observaciones_nota": original.get('observaciones_nota', ''),
             "mecanico_id": original.get('mecanico_id'),
             "mecanico_nombre": original.get('mecanico_nombre'),
             "kilometraje": original.get('kilometraje', 0),
