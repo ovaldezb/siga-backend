@@ -781,9 +781,11 @@ functions:
             name: cognitoAuthorizer
 
   items_importaciones_list:
-    handler: src/handlers/inventario/importacion_manager.list_importaciones_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/items_importaciones_list.zip
     events:
       - httpApi:
           path: /items/importaciones

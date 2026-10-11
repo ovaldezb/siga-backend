@@ -539,7 +539,11 @@ def aplicar_importacion_handler(event, context):
 
 
 def list_importaciones_handler(event, context):
-    """GET /items/importaciones?sucursal_id= — últimas importaciones de la sucursal."""
+    """GET /items/importaciones?sucursal_id= — últimas importaciones de la sucursal.
+
+    En producción lo atiende la lambda Go `items_importaciones_list`
+    (go/internal/inventario/importaciones.go); éste queda para rollback.
+    """
     try:
         claims, _, db, sucursal_id, _, err = _contexto(event)
         if err:
