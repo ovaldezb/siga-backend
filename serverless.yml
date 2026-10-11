@@ -828,6 +828,19 @@ functions:
           authorizer:
             name: cognitoAuthorizer
 
+  # KPI "Mezcla de marcas y modelos" (módulo KPIs). En Python para reutilizar el
+  # cálculo de utilidad de Reportes y que el número sea el mismo en ambos.
+  kpis_marcas_modelos:
+    handler: src/handlers/admin/kpis_manager.get_marcas_modelos_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /kpis/marcas-modelos
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
   reportes_cliente_historial:
     handler: src/handlers/admin/reportes_manager.get_customer_history_handler
     layers:
