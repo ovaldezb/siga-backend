@@ -1110,6 +1110,21 @@ functions:
           authorizer:
             name: cognitoAuthorizer
 
+  # KPI "Tiempo de ciclo y entregas a tiempo" (módulo KPIs). Vive en el paquete
+  # `ordenes` de Go porque mide con la misma bitácora que el tablero.
+  kpis_tiempo_ciclo:
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/kpis_tiempo_ciclo.zip
+    events:
+      - httpApi:
+          path: /kpis/tiempo-ciclo
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
   ordenes_update:
     handler: src/handlers/ordenes/ordenes_manager.update_orden_handler
     layers:
