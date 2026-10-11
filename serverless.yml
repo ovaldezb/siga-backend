@@ -758,6 +758,50 @@ functions:
           authorizer:
             name: cognitoAuthorizer
 
+  items_importar_preview:
+    handler: src/handlers/inventario/importacion_manager.preview_importacion_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /items/importar/preview
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  items_importar:
+    handler: src/handlers/inventario/importacion_manager.aplicar_importacion_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /items/importar
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  items_importaciones_list:
+    handler: src/handlers/inventario/importacion_manager.list_importaciones_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /items/importaciones
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  items_importaciones_deshacer:
+    handler: src/handlers/inventario/importacion_manager.deshacer_importacion_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /items/importaciones/{id}/deshacer
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
   items_get:
     runtime: provided.al2023
     handler: bootstrap
