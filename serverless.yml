@@ -841,6 +841,18 @@ functions:
           authorizer:
             name: cognitoAuthorizer
 
+  # KPI "Mano de obra por mecánico" (módulo KPIs). Mismo cálculo de ingreso que Reportes.
+  kpis_mano_obra:
+    handler: src/handlers/admin/kpis_manager.get_mano_obra_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /kpis/mano-obra
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
   reportes_cliente_historial:
     handler: src/handlers/admin/reportes_manager.get_customer_history_handler
     layers:
