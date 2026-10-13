@@ -105,6 +105,7 @@ def test_facturar_pago_suscripcion_success(mock_db, monkeypatch):
     taller_id = db["talleres"].insert_one({
         "nombreComercial": "Auto Service Pro",
         "tenantId": tenant_id,
+        "requiereFactura": True,
         "datosFiscales": {
             "rfc": "MUMR870225TM1",
             "razonSocial": "ROBERTO CARLOS MUÑOZ MARQUEZ",
@@ -197,7 +198,8 @@ def test_facturar_pago_faltan_datos_fiscales(mock_db):
     tenant_id = "tenant-sin-datos"
     db["talleres"].insert_one({
         "nombreComercial": "Taller Incompleto",
-        "tenantId": tenant_id
+        "tenantId": tenant_id,
+        "requiereFactura": True
     })
     pago_id = db["suscripciones_pagos"].insert_one({
         "tallerTenantId": tenant_id,
