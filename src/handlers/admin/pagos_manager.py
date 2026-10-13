@@ -1,4 +1,4 @@
-from src.shared.utils.auth_utils import get_claims
+from src.shared.utils.auth_utils import get_claims, is_super_admin
 import os
 import json
 import base64
@@ -414,6 +414,168 @@ def procesar_pago_suscripcion_handler(event, context):
         logger.error(f"Error procesando pago: {str(e)}")
         return handle_exception(e)
 
+# Forma de pago del registro manual → (clave SAT c_FormaPago, etiqueta).
+# En TPV la clave depende de si la tarjeta fue de débito o de crédito.
+_FORMAS_PAGO_MANUAL = ("TPV", "TRANSFERENCIA", "EFECTIVO")
+_TIPOS_TARJETA = {"DEBITO": ("28", "Tarjeta de Débito"), "CREDITO": ("04", "Tarjeta de Crédito")}
+
+
+def _fecha_pago_manual(valor):
+    """Fecha del pago capturada en el formulario (AAAA-MM-DD o ISO). None si no es
+    válida o es futura. Una fecha sin hora se guarda al mediodía UTC para que no
+    cambie de día al mostrarse en hora de México."""
+    texto = str(valor or "").strip()
+    if not texto:
+        return None
+    try:
+        if len(texto) == 10:
+            fecha = datetime.strptime(texto, "%Y-%m-%d").replace(hour=12)
+        else:
+            fecha = datetime.fromisoformat(texto.replace("Z", "+00:00"))
+            if fecha.tzinfo is not None:
+                fecha = (fecha - fecha.utcoffset()).replace(tzinfo=None)
+    except ValueError:
+        return None
+    if fecha > datetime.utcnow() + timedelta(days=1):
+        return None
+    return fecha
+
+
+def registrar_pago_manual_handler(event, context):
+    """POST /admin/pagos/manual — el SUPER_ADMIN registra un pago de suscripción que no
+    pasó por Openpay (transferencia directa, terminal o efectivo).
+
+    Deja el mismo registro que el webhook de Openpay y, salvo que se pida lo contrario,
+    extiende la suscripción igual que él. No factura: eso se hace aparte con
+    POST /admin/facturacion/facturar-pago, que toma `forma_pago_sat` de este registro.
+
+    Body:
+      - tallerTenantId, formaPago (TPV | TRANSFERENCIA | EFECTIVO), monto, fechaPago
+      - referencia: folio del voucher (TPV) o clave de rastreo (TRANSFERENCIA); opcional en EFECTIVO
+      - tipoTarjeta (DEBITO | CREDITO), marca, ultimos4: solo TPV; tipoTarjeta es obligatorio
+      - banco (TRANSFERENCIA), concepto, notas: opcionales
+      - extenderSuscripcion: true por defecto
+    """
+    try:
+        claims = get_claims(event)
+        if not is_super_admin(claims):
+            return create_response(403, "Solo un SUPER_ADMIN puede registrar pagos manuales.")
+
+        body = json.loads(event.get("body") or "{}")
+        tenant_id = str(body.get("tallerTenantId") or "").strip()
+        forma_pago = str(body.get("formaPago") or "").strip().upper()
+        referencia = " ".join(str(body.get("referencia") or "").split())
+        notas = str(body.get("notas") or "").strip()
+
+        if not tenant_id:
+            return create_response(400, "El campo 'tallerTenantId' es requerido.")
+        if forma_pago not in _FORMAS_PAGO_MANUAL:
+            return create_response(400, "La forma de pago debe ser TPV, TRANSFERENCIA o EFECTIVO.")
+        try:
+            monto = round(float(body.get("monto")), 2)
+        except (TypeError, ValueError):
+            monto = 0.0
+        if monto <= 0:
+            return create_response(400, "El monto debe ser mayor a cero.")
+        fecha_pago = _fecha_pago_manual(body.get("fechaPago"))
+        if not fecha_pago:
+            return create_response(400, "La fecha de pago no es válida o es una fecha futura.")
+
+        if forma_pago == "TPV":
+            tipo_tarjeta = str(body.get("tipoTarjeta") or "").strip().upper()
+            if tipo_tarjeta not in _TIPOS_TARJETA:
+                return create_response(400, "En pagos con TPV indica si la tarjeta fue de DEBITO o de CREDITO.")
+            if not referencia:
+                return create_response(400, "En pagos con TPV captura el folio o número de autorización del voucher.")
+            forma_pago_sat, etiqueta = _TIPOS_TARJETA[tipo_tarjeta]
+            marca = str(body.get("marca") or "").strip().upper()
+            ultimos4 = "".join(c for c in str(body.get("ultimos4") or "") if c.isdigit())[-4:]
+            detalle_tarjeta = " ".join(p for p in (marca, f"•••• {ultimos4}" if ultimos4 else "") if p)
+            metodo = f"{etiqueta} (TPV{' - ' + detalle_tarjeta if detalle_tarjeta else ''})"
+        elif forma_pago == "TRANSFERENCIA":
+            if not referencia:
+                return create_response(400, "En transferencias captura la clave de rastreo o referencia.")
+            forma_pago_sat = "03"
+            banco = str(body.get("banco") or "").strip()
+            metodo = f"Transferencia directa{' (' + banco + ')' if banco else ''}"
+        else:
+            forma_pago_sat = "01"
+            metodo = "Efectivo"
+
+        db = get_platform_db()
+        taller = db["talleres"].find_one({"tenantId": tenant_id})
+        if not taller:
+            return create_response(404, "Taller no encontrado.")
+
+        # Mismo comprobante capturado dos veces, o un pago que Openpay sí registró.
+        if referencia and db["suscripciones_pagos"].find_one({
+            "tallerTenantId": tenant_id,
+            "$or": [{"referencia": referencia}, {"folioClip": referencia}],
+        }):
+            return create_response(409, f"Ya existe un pago de este taller con la referencia '{referencia}'.")
+
+        ahora = datetime.utcnow()
+        registrado_por = claims.get("email") or claims.get("name") or claims.get("sub") or ""
+        pago_doc = {
+            "tallerTenantId": tenant_id,
+            "usuarioEmail": taller.get("adminEmail", ""),
+            "monto": monto,
+            "concepto": str(body.get("concepto") or "").strip() or "Suscripción Mensual Mekanics Manager",
+            # El historial muestra `folioClip` como referencia del pago.
+            "folioClip": referencia or f"MANUAL-{int(ahora.timestamp())}",
+            "estado": "COMPLETADO",
+            "metodo": metodo,
+            "fechaPago": fecha_pago,
+            "origen": "MANUAL",
+            "formaPago": forma_pago,
+            "forma_pago_sat": forma_pago_sat,
+            "referencia": referencia,
+            "notas": notas,
+            "registradoPor": registrado_por,
+            "createdAt": ahora,
+        }
+        if forma_pago == "TPV":
+            pago_doc.update({"tipoTarjeta": tipo_tarjeta, "marcaTarjeta": marca, "ultimos4": ultimos4})
+        elif forma_pago == "TRANSFERENCIA":
+            pago_doc["banco"] = banco
+
+        pago_id = str(db["suscripciones_pagos"].insert_one(pago_doc).inserted_id)
+
+        respuesta = {
+            "id": pago_id,
+            "concepto": pago_doc["concepto"],
+            "monto": monto,
+            "fecha": iso_utc(fecha_pago),
+            "metodo": metodo,
+            "estado": "COMPLETADO",
+            "tokenClip": pago_doc["folioClip"],
+            "origen": "MANUAL",
+            "referencia": referencia,
+            "forma_pago_sat": forma_pago_sat,
+            "facturado": False,
+            "suscripcionExtendida": False,
+            "requiereFactura": bool(taller.get("requiereFactura", False)),
+        }
+
+        if body.get("extenderSuscripcion", True):
+            nueva_corte, nueva_pago = calcular_nuevas_fechas_suscripcion(taller, fecha_pago)
+            db["talleres"].update_one(
+                {"tenantId": tenant_id},
+                {"$set": {"proximaFechaCorte": nueva_corte, "proximaFechaPago": nueva_pago, "estado": "ACTIVO"}},
+            )
+            respuesta.update({
+                "suscripcionExtendida": True,
+                "proximaFechaCorte": iso_utc(nueva_corte),
+                "proximaFechaPago": iso_utc(nueva_pago),
+            })
+
+        logger.info(f"Pago manual {pago_id} registrado para el taller {tenant_id} ({forma_pago}, {monto}) por {registrado_por}")
+        return create_response(201, "Pago registrado exitosamente", respuesta)
+    except Exception as e:
+        logger.error(f"Error registrando pago manual: {str(e)}")
+        return handle_exception(e, event)
+
+
 def obtener_historial_pagos_handler(event, context):
     try:
         # 1. Obtener tenant_id desde el token Cognito
@@ -425,7 +587,9 @@ def obtener_historial_pagos_handler(event, context):
         
         # Permitir filtrar por tallerTenantId o tenantId específico si se pasa por query params (para administrador)
         taller_tenant_id = query_params.get('tallerTenantId') or query_params.get('tenantId')
-        if not taller_tenant_id:
+        # Solo el SUPER_ADMIN puede consultar otro taller: sin esto bastaba mandar el
+        # tenantId ajeno en la URL para leer sus pagos.
+        if not taller_tenant_id or not is_super_admin(claims):
             taller_tenant_id = tenant_id
 
         try:
@@ -457,6 +621,9 @@ def obtener_historial_pagos_handler(event, context):
                 "metodo": doc.get("metodo"),
                 "estado": doc.get("estado"),
                 "tokenClip": doc.get("folioClip"),
+                "origen": doc.get("origen") or "AUTOMATICO",
+                "referencia": doc.get("referencia"),
+                "notas": doc.get("notas"),
                 "facturado": bool(doc.get("facturado", False)),
                 "facturaId": str(doc["facturaId"]) if doc.get("facturaId") else None,
                 "uuid": doc.get("uuid")

@@ -340,6 +340,19 @@ functions:
           authorizer:
             name: cognitoAuthorizer
 
+  # Pago de suscripción que no pasó por Openpay (transferencia directa, terminal o
+  # efectivo): lo registra el SUPER_ADMIN desde la gestión de talleres.
+  admin_pagos_manual:
+    handler: src/handlers/admin/pagos_manager.registrar_pago_manual_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /admin/pagos/manual
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
   pagos_confirmar:
     handler: src/handlers/admin/pagos_manager.confirmar_pago_openpay_handler
     layers:
