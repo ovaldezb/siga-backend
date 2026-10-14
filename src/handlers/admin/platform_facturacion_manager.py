@@ -19,6 +19,8 @@ from src.shared.utils.auth_utils import get_claims, is_super_admin
 from src.shared.utils.date_utils import iso_utc
 from src.handlers.facturacion.certificates_manager import get_sw_token
 from src.handlers.facturacion.cfdi_pdf_fpdf_generator import CFDIPDF_FPDF_Generator
+from src.handlers.admin.facturacion_suscripcion_worker import _build_email_html
+from src.shared.utils.email_client import send_email
 from src.shared.constants.facturacion import (
     FACTURA_CLAVE_PROD_SERV,
     FACTURA_CLAVE_UNIDAD,
@@ -460,6 +462,14 @@ def facturar_pago_suscripcion_handler(event, context):
         if not taller:
             return create_response(404, "Taller asociado al pago no encontrado.")
 
+        # Mismo criterio que la facturación automática: solo se factura a los talleres
+        # marcados como "Requiere factura".
+        if not taller.get("requiereFactura", False):
+            return create_response(400, (
+                "Este taller no está marcado como 'Requiere factura'. "
+                "Edita el taller y activa esa opción si se le debe facturar."
+            ))
+
         # 3. Validar datos fiscales del taller (Receptor)
         datos_fiscales = taller.get("datosFiscales") or {}
         rfc_receptor = (datos_fiscales.get("rfc") or "").strip().upper()
@@ -520,8 +530,14 @@ def facturar_pago_suscripcion_handler(event, context):
         iva_val = round(total_pago - subtotal_val, 2)
 
         # Mapeo de forma de pago SAT
+        # Los pagos manuales guardan la clave SAT exacta; los automáticos viejos no,
+        # y se deduce del texto del método.
         metodo_pago_raw = str(pago.get("metodo", "")).upper()
-        if "DEBIT" in metodo_pago_raw or "DEBITO" in metodo_pago_raw:
+        if pago.get("forma_pago_sat"):
+            forma_pago_sat = str(pago["forma_pago_sat"])
+        elif "EFECTIVO" in metodo_pago_raw:
+            forma_pago_sat = "01"  # Efectivo
+        elif "DEBIT" in metodo_pago_raw or "DEBITO" in metodo_pago_raw or "DÉBITO" in metodo_pago_raw:
             forma_pago_sat = "28"  # Tarjeta de débito
         elif "CREDIT" in metodo_pago_raw or "CREDITO" in metodo_pago_raw:
             forma_pago_sat = "04"  # Tarjeta de crédito
@@ -669,6 +685,7 @@ def facturar_pago_suscripcion_handler(event, context):
             "total": total_pago,
             "estatus": "Vigente",
             "is_platform": True,
+            "origen": "manual_suscripcion",
             "createdAt": datetime.utcnow()
         }
 
@@ -687,14 +704,22 @@ def facturar_pago_suscripcion_handler(event, context):
         )
 
         # 13. Generar PDF
+        # CFDIPDF_FPDF_Generator espera la fecha como texto; Mongo la devuelve como datetime.
+        fecha_pago_raw = pago.get("fechaPago")
+        if isinstance(fecha_pago_raw, datetime):
+            fecha_hora_venta_str = fecha_pago_raw.strftime("%Y-%m-%dT%H:%M:%S")
+        else:
+            fecha_hora_venta_str = str(fecha_pago_raw or fecha_emision)
+
         pdf_b64 = None
+        pdf_bytes = None
         try:
             pdf_gen = CFDIPDF_FPDF_Generator(
                 xml_string=pretty_xml,
                 qrCode=factura_res["data"].get("qrCode") or "",
                 cadena_original_sat=factura_res["data"].get("cadenaOriginalSAT") or "",
                 noTicket=f"PAGO-{str(pago['_id'])[:8]}",
-                fecha_hora_venta=pago.get("fechaPago"),
+                fecha_hora_venta=fecha_hora_venta_str,
                 direccion=sucursal.get("direccion", ""),
                 empresa=emisor_nombre,
                 regimen_fiscal_emisor=emisor_regimen,
@@ -706,8 +731,37 @@ def facturar_pago_suscripcion_handler(event, context):
         except Exception as pdf_err:
             logger.warning(f"No se pudo generar PDF de la factura inmediatamente: {pdf_err}")
 
+        # 14. Enviar al taller el mismo correo que la facturación automática. La factura
+        # ya está timbrada: si el correo falla se avisa, no se revierte nada.
+        uuid_factura = factura_res["data"].get("uuid") or ""
+        correo_destino = (taller.get("adminEmail") or "").strip()
+        correo_enviado = False
+        if correo_destino and pdf_bytes:
+            try:
+                nombre_archivo = f"Factura-{uuid_factura[:8]}"
+                send_email(
+                    to=correo_destino,
+                    subject=f"Tu factura de suscripción — {taller.get('nombreComercial', '')} — {fecha_emision[:10]}",
+                    body_html=_build_email_html(
+                        nombre_taller=taller.get("nombreComercial", ""),
+                        uuid=uuid_factura,
+                        folio=f"{serie}{secuencia}",
+                        total=total_pago,
+                        fecha=fecha_emision[:10],
+                    ),
+                    attachments=[
+                        {"filename": f"{nombre_archivo}.pdf", "data": pdf_bytes, "mimetype": "application/pdf"},
+                        {"filename": f"{nombre_archivo}.xml", "data": pretty_xml.encode("utf-8"), "mimetype": "text/xml"},
+                    ],
+                )
+                correo_enviado = True
+            except Exception as mail_err:
+                logger.error(f"Factura {uuid_factura} emitida pero no se pudo enviar el correo a {correo_destino}: {mail_err}")
+
         factura_doc["_id"] = factura_id
         factura_doc["createdAt"] = iso_utc(factura_doc["createdAt"])
+        factura_doc["correo_enviado"] = correo_enviado
+        factura_doc["correo_destino"] = correo_destino
         if pdf_b64:
             factura_doc["pdf_cfdi_b64"] = pdf_b64
 
