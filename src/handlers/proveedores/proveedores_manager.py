@@ -9,6 +9,7 @@ from bson import ObjectId
 from bson.errors import InvalidId
 from pymongo import ReturnDocument
 from src.shared.utils.date_utils import iso_utc
+from src.shared.utils.propagacion import propagar_proveedor, campos_cambiaron, CAMPOS_PROVEEDOR
 
 logger = Logger()
 
@@ -166,6 +167,12 @@ def update_proveedor_handler(event, context):
 
         if not result:
             return create_response(404, "Proveedor no encontrado.")
+
+        if campos_cambiaron(update_doc, CAMPOS_PROVEEDOR):
+            try:
+                propagar_proveedor(db, result)
+            except Exception as prop_err:
+                logger.warning(f"No se pudo propagar el proveedor {proveedor_id}: {prop_err}")
 
         return create_response(200, "Proveedor actualizado", _serialize(result))
     except Exception as e:

@@ -172,7 +172,7 @@ def _scope_flotilla(db, flotilla_id: str) -> dict:
             {'cliente_id': {'$in': cliente_ids}},
             {
                 'placas': 1, 'marca': 1, 'modelo': 1, 'anio': 1, 'color': 1,
-                'vin': 1, 'kilometraje': 1, 'cliente_id': 1,
+                'vin': 1, 'kilometraje': 1, 'cliente_id': 1, 'numero_economico': 1,
                 'proximo_cambio_aceite': 1, 'proximo_cambio_bujias': 1,
                 'proximo_cambio_aceite_fecha': 1, 'proximo_cambio_bujias_fecha': 1,
             },
@@ -623,6 +623,7 @@ def public_resumen_handler(event, context):
             unidades.append({
                 'id': vid,
                 'placas': v.get('placas') or '',
+                'numero_economico': v.get('numero_economico') or '',
                 'marca': v.get('marca'),
                 'modelo': v.get('modelo'),
                 'anio': v.get('anio'),
@@ -784,6 +785,7 @@ def public_vehiculo_handler(event, context):
             'vehiculo': {
                 'id': vehiculo_id,
                 'placas': vehiculo.get('placas') or '',
+                'numero_economico': vehiculo.get('numero_economico') or '',
                 'marca': vehiculo.get('marca'),
                 'modelo': vehiculo.get('modelo'),
                 'anio': vehiculo.get('anio'),

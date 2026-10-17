@@ -9,6 +9,7 @@ from src.shared.utils.indexes import ensure_indexes
 from bson import ObjectId
 from pymongo import ReturnDocument
 from src.shared.utils.date_utils import iso_utc
+from src.shared.utils.propagacion import propagar_cliente, campos_cambiaron, CAMPOS_CLIENTE
 
 logger = Logger()
 
@@ -261,6 +262,14 @@ def update_cliente_handler(event, context):
 
         if not result:
             return create_response(404, "Cliente no encontrado.")
+
+        # Las OS, ventas, citas y cotizaciones guardan una copia del nombre: sin
+        # esto, renombrar al cliente dejaba el nombre viejo en todo su historial.
+        if campos_cambiaron(update_doc, CAMPOS_CLIENTE):
+            try:
+                propagar_cliente(db, result)
+            except Exception as prop_err:
+                logger.warning(f"No se pudo propagar el cliente {cliente_id}: {prop_err}")
 
         result['id'] = str(result.pop('_id'))
         if 'sucursal_id' in result:

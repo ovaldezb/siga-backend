@@ -10,6 +10,10 @@ from src.handlers.citas.citas_manager import sync_cita_estado_por_orden
 from bson import ObjectId
 from bson.errors import InvalidId
 from src.shared.utils.date_utils import iso_utc
+from src.shared.utils.bitacora import (
+    asegurar_indices as asegurar_indices_bitacora, construir_evento, detectar_precios_mano_obra,
+    TIPO_PRECIO_MANO_OBRA,
+)
 from src.shared.utils.formas_pago_sat import (
     resolver_forma_pago_sat, es_credito, forma_pago_de, CODIGO_CREDITO, CATALOGO_FORMA_PAGO,
 )
@@ -151,7 +155,7 @@ def create_venta_handler(event, context):
         if orden_id:
             try:
                 os_doc_inventario = db["ordenes_servicio"].find_one(
-                    {"_id": ObjectId(orden_id)}, {"puntosArreglar": 1})
+                    {"_id": ObjectId(orden_id)}, {"puntosArreglar": 1, "folio": 1})
             except (InvalidId, TypeError):
                 os_doc_inventario = None
         for punto in (os_doc_inventario or {}).get('puntosArreglar', []) or []:
@@ -255,6 +259,17 @@ def create_venta_handler(event, context):
                 # La mano de obra no lleva costo de compra: nunca se marca.
                 if producto.get('tipo') != 'SERVICIO' and item['costo_unitario_snapshot'] <= 0:
                     item['costo_pendiente'] = True
+
+        # 3.55 MANO DE OBRA A PRECIO CAPTURADO EN CAJA
+        #      Los servicios se dan de alta casi siempre en $0 y el precio se pone al
+        #      cobrar. Se permite sin autorización, pero cada línea cobrada distinto a
+        #      su referencia (OS o catálogo) se marca y queda en la bitácora con quién
+        #      la cobró; la referencia la resuelve el servidor, no el navegador.
+        precios_mano_obra = detectar_precios_mano_obra(db, items, os_doc_inventario)
+        if precios_mano_obra:
+            # Fuera de la transacción: crear índices (y la colección) dentro de una
+            # transacción no está permitido.
+            asegurar_indices_bitacora(db, tenant_id)
 
         # 3.6 VALIDAR CRÉDITO SI APLICA (acepta crédito como método único o dentro de pagos[])
         metodo_pago = body.get('metodo_pago', 'EFECTIVO').upper()
@@ -435,6 +450,23 @@ def create_venta_handler(event, context):
                     insert_result = db["ventas"].insert_one(nueva_venta, session=session)
                     result_id = insert_result.inserted_id
                     nueva_venta["id"] = str(result_id)
+
+                    # 4.1 Bitácora: dentro de la transacción para que no pueda existir
+                    #     una venta con precio manual sin su registro de auditoría.
+                    if precios_mano_obra:
+                        db["bitacora"].insert_many([
+                            construir_evento(
+                                TIPO_PRECIO_MANO_OBRA,
+                                tenant_id=tenant_id, sucursal_id=sucursal_id,
+                                actor={"id": usuario_id, "nombre": usuario_nombre},
+                                detalle=detalle,
+                                venta_id=nueva_venta["id"], venta_folio=folio,
+                                orden_id=orden_id, orden_folio=(os_doc_inventario or {}).get('folio'),
+                                cliente_id=nueva_venta.get("cliente_id"),
+                                cliente_nombre=nueva_venta.get("cliente_nombre"),
+                            )
+                            for detalle in precios_mano_obra
+                        ], session=session)
 
                     # 5. Descontar stock (atómico + scoped por sucursal). Si la condición
                     #    {"stock": {"$gte": cantidad}} no se cumple ⇒ otro flow se llevó el stock
