@@ -108,6 +108,53 @@ def get_config_handler(event, context):
     except Exception as e:
         return handle_exception(e)
 
+# Íconos de tablero que existen en el front (sae-app/public/assets/testigos).
+ICONOS_TESTIGO = {
+    'freno-de-mano.png', 'abs.png', 'aceite.png', 'bateria.png', 'eps.png', 'motor.png',
+    'temperatura.png', 'gasolina.png', 'bolsas-de-aire.png', 'cinturon.png',
+    'presion-baja.png', 'control-traccion.png',
+}
+_MAX_OPCIONES_RECEPCION = 60
+_MAX_NOMBRE_RECEPCION = 40
+
+
+def _normalizar_recepcion(recepcion):
+    """Hoja de recepción configurable: indicadores del tablero y accesorios.
+
+    Las OS guardan cada opción por nombre, así que aquí sólo se garantiza que los
+    nombres sean texto limpio y únicos (sin distinguir mayúsculas) y que el ícono
+    exista; un ícono desconocido cae al genérico (None). Devuelve (recepcion, error).
+    """
+    if not isinstance(recepcion, dict):
+        return None, "La configuración de recepción debe ser un objeto."
+    salida = {}
+    for clave, con_icono in (('testigos', True), ('accesorios', False)):
+        lista = recepcion.get(clave, [])
+        if not isinstance(lista, list):
+            return None, f"'{clave}' debe ser una lista."
+        if len(lista) > _MAX_OPCIONES_RECEPCION:
+            return None, f"Máximo {_MAX_OPCIONES_RECEPCION} opciones en '{clave}'."
+        vistos, limpia = set(), []
+        for op in lista:
+            if not isinstance(op, dict):
+                return None, f"Cada opción de '{clave}' debe ser un objeto."
+            nombre = ' '.join(str(op.get('nombre') or '').split())
+            if not nombre:
+                continue
+            if len(nombre) > _MAX_NOMBRE_RECEPCION:
+                return None, f"\"{nombre[:20]}…\" excede {_MAX_NOMBRE_RECEPCION} caracteres."
+            if nombre.lower() in vistos:
+                return None, f"\"{nombre}\" está repetido en '{clave}'."
+            vistos.add(nombre.lower())
+            item = {'nombre': nombre, 'activo': op.get('activo') is not False}
+            if con_icono:
+                icono = op.get('icono')
+                item['icono'] = icono if icono in ICONOS_TESTIGO else None
+            limpia.append(item)
+        salida[clave] = limpia
+    return salida, None
+
+
 def update_config_handler(event, context):
     try:
         claims =get_claims(event)
@@ -131,6 +178,12 @@ def update_config_handler(event, context):
                         400, f"El código SAT '{codigo}' del método '{m.get('nombre')}' no existe en el catálogo c_FormaPago.")
             metodos, _ = deduplicar_ids(body['metodos_pago'])
             body['metodos_pago'], _ = completar_codigos_config(metodos)
+
+        if 'recepcion' in body:
+            recepcion, err = _normalizar_recepcion(body['recepcion'])
+            if err:
+                return create_response(400, err)
+            body['recepcion'] = recepcion
 
         db["configuracion"].update_one(
             {"tenant_id": tenant_id},

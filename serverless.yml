@@ -1775,6 +1775,29 @@ functions:
           authorizer:
             name: cognitoAuthorizer
 
+  # Bitácora de auditoría (precios de mano de obra capturados en caja). Sólo ADMIN.
+  bitacora_list:
+    handler: src/handlers/admin/bitacora_manager.list_bitacora_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /bitacora
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  bitacora_revisar:
+    handler: src/handlers/admin/bitacora_manager.revisar_bitacora_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /bitacora/{id}/revisar
+          method: put
+          authorizer:
+            name: cognitoAuthorizer
+
   traspasos_create:
     handler: src/handlers/inventario/traspasos_manager.create_traspaso_handler
     layers:

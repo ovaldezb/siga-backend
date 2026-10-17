@@ -810,6 +810,7 @@ def create_orden_handler(event, context):
                     "anio": vehiculo_data.get("anio"),
                     "vin": vehiculo_data.get("vin", ""),
                     "color": vehiculo_data.get("color", ""),
+                    "numero_economico": (str(vehiculo_data.get("numero_economico") or "").strip().upper() or None),
                     "createdAt": datetime.utcnow(),
                 }
 

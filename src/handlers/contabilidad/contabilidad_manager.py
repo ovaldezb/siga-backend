@@ -82,6 +82,10 @@ def _resumen_items(items, limite=6):
             'es_externo': bool(it.get('es_externo') or producto.get('es_externo')),
             'cortesia': (str(it.get('tipo_precio') or '').lower() == 'cortesia'
                          or bool(it.get('no_cobrar'))),
+            # Mano de obra cobrada a un precio capturado en caja (ver bitácora).
+            'precio_manual': bool(it.get('precio_manual')),
+            'precio_referencia': it.get('precio_referencia'),
+            'precio_unitario': it.get('precio_unitario'),
         })
     return resumen
 
@@ -154,6 +158,8 @@ def _construir_contexto_ventas(db, ventas):
     cfg = db["configuracion"].find_one({"metodos_pago": {"$exists": True}}, {"metodos_pago": 1}) or {}
     metodos_cfg = cfg.get('metodos_pago') or []
 
+    facturas = _facturas_por_ticket(db, ventas)
+
     contexto = {}
     for v in ventas:
         venta_id = str(v.get('_id'))
@@ -191,6 +197,7 @@ def _construir_contexto_ventas(db, ventas):
                 'anio': veh.get('anio') or veh.get('año'),
                 'color': veh.get('color'),
                 'vin': veh.get('vin'),
+                'numero_economico': veh.get('numero_economico'),
                 'kilometraje': veh.get('kilometraje') or (orden or {}).get('kilometraje'),
             },
             'cliente_nombre': (v.get('cliente_nombre')
@@ -204,8 +211,40 @@ def _construir_contexto_ventas(db, ventas):
             'sucursal_nombre': sucursales_map.get(v.get('sucursal_id') or ''),
             'items_count': len(v.get('items') or []),
             'items_resumen': _resumen_items(v.get('items')),
+            'factura': facturas.get(v.get('folio') or '') or facturas.get(venta_id),
         }
     return contexto
+
+
+def _facturas_por_ticket(db, ventas):
+    """{ticket: {id, serie, folio, uuid}} del CFDI de ingreso vigente de cada venta.
+
+    La venta sólo guarda `venta_facturada`; el folio fiscal vive en facturasemitidas,
+    ligado por `ticket` (el folio de la venta; algunas facturas viejas guardaron el
+    id). Una sola query por página, y sólo para las ventas marcadas como facturadas.
+    """
+    tickets = []
+    for v in ventas:
+        if v.get('venta_facturada'):
+            if v.get('folio'):
+                tickets.append(v['folio'])
+            tickets.append(str(v.get('_id')))
+    if not tickets:
+        return {}
+    facturas = {}
+    for f in db["facturasemitidas"].find(
+        {"ticket": {"$in": tickets}, "tipo_de_comprobante": {"$ne": "P"},
+         "estatus": {"$ne": "Cancelada"}},
+        {'ticket': 1, 'serie': 1, 'folio': 1, 'uuid': 1, 'createdAt': 1},
+    ).sort("createdAt", 1):
+        # Si una venta se refacturó (cancelación con sustitución), gana la más reciente.
+        facturas[f['ticket']] = {
+            'id': str(f['_id']),
+            'serie': f.get('serie') or '',
+            'folio': f.get('folio'),
+            'uuid': f.get('uuid'),
+        }
+    return facturas
 
 
 def get_inventario_valuado_handler(event, context):
@@ -1094,6 +1133,7 @@ def get_resumen_mensual_handler(event, context):
                     'cita_id', 'cotizacion_id', 'cotizacion_folio', 'vehiculo',
                     'cliente_telefono', 'metodos_pago', 'saldo_pendiente', 'descuento',
                     'cobro_usuario', 'sucursal_nombre', 'items_count', 'items_resumen',
+                    'factura',
                 )},
             }
             ventas_detalle.append(row)

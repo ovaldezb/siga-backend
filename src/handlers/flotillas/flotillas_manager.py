@@ -139,7 +139,7 @@ def get_flotilla_handler(event, context):
             for v in db.vehiculos.find(
                 {"cliente_id": {"$in": cliente_ids}},
                 {"marca": 1, "modelo": 1, "anio": 1, "placas": 1, "color": 1,
-                 "kilometraje": 1, "cliente_id": 1},
+                 "kilometraje": 1, "cliente_id": 1, "numero_economico": 1},
             ).limit(MAX_VEHICULOS_DETALLE):
                 v["id"] = str(v.pop("_id"))
                 duenio = cmap.get(v.get("cliente_id"), {})

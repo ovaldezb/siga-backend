@@ -159,7 +159,7 @@ func enteroO(qp map[string]string, clave string, defecto int64) int64 {
 }
 
 // List atiende GET /vehiculos (port de list_vehiculos_handler). Filtros:
-// sucursalId, cliente_id, search (marca, modelo, placas) y mantenimiento
+// sucursalId, cliente_id, search (marca, modelo, placas, número económico) y mantenimiento
 // (pronto|vencido, con umbrales km_umbral, dias_pronto y dias_vencido). Cada
 // vehículo trae su dueño y el estado de su plan de mantenimiento.
 // No llama ensure_indexes: los siguen asegurando los handlers Python del tenant.
@@ -202,6 +202,7 @@ func List(ctx context.Context, req platform.Request) (platform.Response, error) 
 			bson.D{{Key: "marca", Value: re}},
 			bson.D{{Key: "modelo", Value: re}},
 			bson.D{{Key: "placas", Value: re}},
+			bson.D{{Key: "numero_economico", Value: re}},
 		}})
 	}
 

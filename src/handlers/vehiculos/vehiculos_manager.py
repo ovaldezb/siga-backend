@@ -8,6 +8,7 @@ from src.shared.infrastructure.database import get_tenant_db
 from src.shared.utils.auth_utils import try_parse_id, parse_object_id, get_claims
 from src.shared.utils.indexes import ensure_indexes
 from src.shared.utils.date_utils import iso_utc
+from src.shared.utils.propagacion import propagar_vehiculo
 
 logger = Logger()
 
@@ -73,7 +74,8 @@ def list_vehiculos_handler(event, context):
             search_filters = [
                 {"marca": regex},
                 {"modelo": regex},
-                {"placas": regex}
+                {"placas": regex},
+                {"numero_economico": regex},
             ]
             if filtro:
                 if "$or" in filtro: # Por si acaso
@@ -416,6 +418,12 @@ def create_vehiculo_handler(event, context):
 
         db = get_tenant_db(tenant_id)
 
+        if 'numero_economico' in body:
+            numero_eco, err_eco = _validar_numero_economico(db, body.get('numero_economico'), body['cliente_id'])
+            if err_eco:
+                return create_response(409, err_eco)
+            body['numero_economico'] = numero_eco
+
         # Crear objeto base con campos obligatorios
         nuevo_vehiculo = {
             "marca": body['marca'],
@@ -491,6 +499,46 @@ def delete_vehiculo_handler(event, context):
         return handle_exception(e)
 
 
+def _validar_numero_economico(db, valor, cliente_id, vehiculo_id=None):
+    """Normaliza el número económico y verifica que no se repita en la flotilla.
+
+    Es el identificador que la empresa le pinta a su unidad ("E37"), no algo que
+    genere el sistema: texto libre, en mayúsculas y sin espacios sobrantes. Vacío
+    equivale a quitarlo. Se exige único dentro de la flotilla del dueño (o entre los
+    vehículos del cliente si no tiene flotilla): dos unidades "E37" en la misma
+    empresa harían inútil el número para ubicar el coche.
+
+    Devuelve (valor_normalizado | None, mensaje_error | None).
+    """
+    numero = re.sub(r'\s+', ' ', str(valor or '')).strip().upper()
+    if not numero:
+        return None, None
+    if len(numero) > 20:
+        return None, "El número económico admite máximo 20 caracteres."
+
+    clientes_scope = [cliente_id] if cliente_id else []
+    cliente_oid, err = parse_object_id(cliente_id) if cliente_id else (None, 'sin cliente')
+    if not err:
+        cliente = db["clientes"].find_one({"_id": cliente_oid}, {"flotilla_id": 1})
+        flotilla_id = (cliente or {}).get("flotilla_id")
+        if flotilla_id:
+            clientes_scope = [str(c["_id"]) for c in db["clientes"].find({"flotilla_id": flotilla_id}, {"_id": 1})]
+    if not clientes_scope:
+        return numero, None
+
+    filtro = {
+        "cliente_id": {"$in": clientes_scope},
+        "numero_economico": {"$regex": f"^{re.escape(numero)}$", "$options": "i"},
+    }
+    if vehiculo_id:
+        filtro["_id"] = {"$ne": ObjectId(vehiculo_id)}
+    repetido = db["vehiculos"].find_one(filtro, {"placas": 1, "marca": 1, "modelo": 1})
+    if repetido:
+        desc = " ".join(filter(None, [repetido.get("marca"), repetido.get("modelo"), repetido.get("placas")]))
+        return None, f"El número económico {numero} ya lo tiene otra unidad de la flotilla ({desc})."
+    return numero, None
+
+
 def _sync_vehiculos_resumen_pull(db, cliente_id, vehiculo_id):
     """Quita la entry de vehiculos_resumen que coincida con vehiculo_id."""
     cliente_oid, err = parse_object_id(cliente_id)
@@ -514,6 +562,7 @@ def _sync_vehiculos_resumen_update(db, cliente_id, vehiculo_id, vehiculo_doc):
         "marca": vehiculo_doc.get("marca"),
         "modelo": vehiculo_doc.get("modelo"),
         "anio": vehiculo_doc.get("anio"),
+        "numero_economico": vehiculo_doc.get("numero_economico") or None,
     }
 
     # Si ya existe la entry, refrescarla; si no, hacer push (legacy con resumen vacío)
@@ -524,6 +573,7 @@ def _sync_vehiculos_resumen_update(db, cliente_id, vehiculo_id, vehiculo_doc):
             "vehiculos_resumen.$.marca": nueva_entry["marca"],
             "vehiculos_resumen.$.modelo": nueva_entry["modelo"],
             "vehiculos_resumen.$.anio": nueva_entry["anio"],
+            "vehiculos_resumen.$.numero_economico": nueva_entry["numero_economico"],
         }}
     )
     if res.matched_count == 0:
@@ -560,6 +610,16 @@ def update_vehiculo_handler(event, context):
         if 'sucursalId' in update_data:
             update_data['sucursal_id'] = update_data.pop('sucursalId')
             
+        if 'numero_economico' in update_data:
+            actual = db["vehiculos"].find_one({"_id": ObjectId(vehiculo_id)}, {"cliente_id": 1})
+            if not actual:
+                return create_response(404, "Vehículo no encontrado.")
+            numero_eco, err_eco = _validar_numero_economico(
+                db, update_data.get('numero_economico'), actual.get('cliente_id'), vehiculo_id)
+            if err_eco:
+                return create_response(409, err_eco)
+            update_data['numero_economico'] = numero_eco
+
         update_data['updatedAt'] = datetime.utcnow()
 
         result = db["vehiculos"].update_one(
@@ -575,7 +635,7 @@ def update_vehiculo_handler(event, context):
 
         # Sincronizar vehiculos_resumen del cliente si los campos visibles cambiaron
         if updated_vehiculo and updated_vehiculo.get("cliente_id"):
-            campos_visibles = {"placas", "marca", "modelo", "anio"}
+            campos_visibles = {"placas", "marca", "modelo", "anio", "numero_economico"}
             if any(c in update_data for c in campos_visibles):
                 try:
                     _sync_vehiculos_resumen_update(
@@ -583,6 +643,14 @@ def update_vehiculo_handler(event, context):
                     )
                 except Exception as sync_err:
                     logger.warning(f"No se pudo sincronizar vehiculos_resumen al actualizar {vehiculo_id}: {sync_err}")
+
+        # Las OS, cotizaciones, citas y ventas guardan una copia del vehículo: sin
+        # esto, corregir placas o modelo no se reflejaba en ningún documento previo.
+        if updated_vehiculo:
+            try:
+                propagar_vehiculo(db, updated_vehiculo)
+            except Exception as prop_err:
+                logger.warning(f"No se pudo propagar el vehículo {vehiculo_id}: {prop_err}")
 
         updated_vehiculo['id'] = str(updated_vehiculo.pop('_id'))
         if 'sucursal_id' in updated_vehiculo:

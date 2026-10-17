@@ -6,5 +6,8 @@
     "serverless": "^3.38.0",
     "serverless-plugin-split-stacks": "^1.14.0",
     "serverless-python-requirements": "^6.0.0"
+  },
+  "dependencies": {
+    "playwright": "^1.63.0"
   }
 }
