@@ -1798,6 +1798,85 @@ functions:
           authorizer:
             name: cognitoAuthorizer
 
+  # Novedades de la plataforma (SUPER_ADMIN publica, todos los talleres leen) y
+  # buzón de quejas/sugerencias de los talleres hacia la plataforma. Viven en _platform.
+  novedades_list:
+    handler: src/handlers/admin/novedades_manager.list_novedades_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /novedades
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  novedades_create:
+    handler: src/handlers/admin/novedades_manager.create_novedad_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /novedades
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  novedades_update:
+    handler: src/handlers/admin/novedades_manager.update_novedad_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /novedades/{id}
+          method: put
+          authorizer:
+            name: cognitoAuthorizer
+
+  novedades_leidas:
+    handler: src/handlers/admin/novedades_manager.marcar_novedades_leidas_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /novedades/leidas
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  buzon_list:
+    handler: src/handlers/admin/buzon_manager.list_buzon_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /buzon
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  buzon_create:
+    handler: src/handlers/admin/buzon_manager.create_buzon_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /buzon
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  buzon_update:
+    handler: src/handlers/admin/buzon_manager.update_buzon_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /buzon/{id}
+          method: put
+          authorizer:
+            name: cognitoAuthorizer
+
   traspasos_create:
     handler: src/handlers/inventario/traspasos_manager.create_traspaso_handler
     layers:
