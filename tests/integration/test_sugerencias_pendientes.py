@@ -126,3 +126,38 @@ def test_importada_en_la_orden_actual_no_se_resugiere(mock_db):
     )
 
     assert sugerencias == []
+
+
+def _item_pendiente(nombre):
+    """Item traído por una plantilla de revisión: ni aprobado ni rechazado todavía."""
+    return {**_item(nombre, rechazado=False), "aprobado": False}
+
+
+def test_aprobado_en_la_misma_orden_no_oculta_el_rechazo(mock_db):
+    """Reporte 2026-10-19 (OS-0417): "MANO DE OBRA" aprobada en la afinación ocultaba la
+    "MANO DE OBRA" de suspensión que el cliente rechazó en la misma OS."""
+    db = mock_db[f"t_{TENANT}"]
+    db["ordenes_servicio"].insert_one({
+        "tenant_id": TENANT, "folio": "OS-1", "estado": "ENTREGADO", "vehiculo_id": VEHICULO,
+        "createdAt": datetime(2026, 1, 1),
+        "puntosArreglar": [
+            {"nombre": "Afinación", "items": [_item("MANO DE OBRA", rechazado=False)]},
+            {"nombre": "Suspensión", "items": [_item("MANO DE OBRA", rechazado=True)]},
+        ],
+    })
+
+    sugerencias = _sugerencias(list_sugerencias_pendientes_handler(_event(), None))
+
+    assert [(s["punto_nombre"], s["nombre"]) for s in sugerencias] == [("Suspensión", "MANO DE OBRA")]
+
+
+def test_item_pendiente_en_orden_posterior_no_cuenta_como_aceptado(mock_db):
+    """La OS nueva trae de nuevo "Horquillas" sin autorizar: el rechazo anterior sigue vivo."""
+    db = mock_db[f"t_{TENANT}"]
+    _orden(db, "OS-1", 30, [_item("Horquillas", rechazado=True)])
+    _orden(db, "OS-2", 1, [_item_pendiente("Horquillas")], estado="RECEPCION")
+
+    sugerencias = _sugerencias(list_sugerencias_pendientes_handler(_event(), None))
+
+    assert len(sugerencias) == 1
+    assert sugerencias[0]["folio_origen"] == "OS-1"

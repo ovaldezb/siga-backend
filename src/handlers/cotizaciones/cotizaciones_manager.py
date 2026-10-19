@@ -45,7 +45,12 @@ from src.shared.utils.auth_utils import (
     resolve_sucursal_scope,
 )
 from src.shared.utils.date_utils import iso_utc
-from src.handlers.ordenes.ordenes_manager import _calcular_totales_orden
+from src.handlers.ordenes.ordenes_manager import (
+    _calcular_totales_orden,
+    _get_mantenimiento_previo,
+    _resolver_vehiculo_id,
+    _sync_mantenimiento_to_vehiculo,
+)
 
 logger = Logger()
 
@@ -460,12 +465,18 @@ def convertir_a_os_handler(event, context):
         totales = _calcular_totales_orden(puntos)
         now = datetime.utcnow()
 
+        # Sin `vehiculo_id` en la raíz la OS no aparece en el historial del vehículo:
+        # la siguiente visita no ve los rechazos ni el kilometraje (reporte 2026-10-19).
+        vehiculo_id = _resolver_vehiculo_id(
+            db, body.get("vehiculo_id"), cot.get("vehiculo_id"), vehiculo_snapshot.get("id"))
+
         os_doc = {
             "tenant_id": tenant_id,
             "sucursal_id": sucursal_id,
             "folio": folio_os,
             "estado": "RECEPCION",
             "cliente_snapshot": cliente_snapshot,
+            "vehiculo_id": vehiculo_id or None,
             "vehiculo_snapshot": vehiculo_snapshot,
             "puntosArreglar": puntos,
             "subtotal": totales["subtotal"],
@@ -494,7 +505,14 @@ def convertir_a_os_handler(event, context):
             "updatedAt": now,
             "pagada": False,
         }
+        # Mismo "antes / después" de mantenimiento que una OS creada desde recepción.
+        os_doc.update(_get_mantenimiento_previo(db, vehiculo_id))
         os_res = db["ordenes_servicio"].insert_one(os_doc)
+        _sync_mantenimiento_to_vehiculo(
+            db, vehiculo_id,
+            os_doc.get("proximo_cambio_aceite"), os_doc.get("proximo_cambio_bujias"),
+            os_doc.get("proximo_cambio_aceite_fecha"), os_doc.get("proximo_cambio_bujias_fecha"),
+        )
 
         # Solo las cotizaciones a CLIENTE se "consumen" al convertirse. Una plantilla
         # se reusa N veces — no la marcamos como CONVERTIDA.
