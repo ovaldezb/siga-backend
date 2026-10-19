@@ -159,6 +159,26 @@ def _sync_mantenimiento_to_vehiculo(
         logger.warning(f"No se pudo sincronizar mantenimiento al vehículo {vehiculo_id}: {sync_err}")
 
 
+def _resolver_vehiculo_id(db, *candidatos) -> str:
+    """Primer id de la lista que corresponde a un vehículo existente, o "".
+
+    Todo el historial del vehículo (rechazos a re-ofrecer, km y próximos cambios)
+    se busca por `vehiculo_id` en la raíz de la OS; una OS que solo trae
+    `vehiculo_snapshot` queda invisible para la siguiente visita (reporte
+    2026-10-19: OS-0417 convertida de cotización sin `vehiculo_id`).
+    """
+    for cand in candidatos:
+        cand = str(cand or "").strip()
+        if not cand:
+            continue
+        try:
+            if db["vehiculos"].find_one({"_id": ObjectId(cand)}, {"_id": 1}):
+                return cand
+        except Exception:
+            continue
+    return ""
+
+
 def _get_mantenimiento_previo(db, vehiculo_id: str) -> dict:
     """Lee los valores de mantenimiento actuales del vehículo ANTES de pisarlos.
 
@@ -1550,9 +1570,11 @@ def list_sugerencias_pendientes_handler(event, context):
 
         results = list(db["ordenes_servicio"].aggregate(pipeline))
 
-        # Última fecha en que cada item fue aceptado (aparece sin rechazar) en alguna OS del
-        # mismo vehículo/cliente. La OS actual NO se excluye: si ya se importó ahí, tampoco
-        # debe volver a sugerirse al reabrirla.
+        # Dónde y cuándo se aceptó (aprobado y sin rechazar) cada item en las OS del mismo
+        # vehículo/cliente. La OS actual NO se excluye: si ya se importó ahí, tampoco debe
+        # volver a sugerirse al reabrirla. Un item solo presente (pendiente de autorizar)
+        # no cuenta: las plantillas de revisión traen de nuevo los mismos nombres y
+        # ocultaban todos los rechazos de la visita anterior.
         atendidos_pipeline = [
             {"$match": base_match},
             {"$sort": {"createdAt": -1}},
@@ -1561,12 +1583,13 @@ def list_sugerencias_pendientes_handler(event, context):
             {"$unwind": {"path": "$puntosArreglar", "preserveNullAndEmptyArrays": False}},
             {"$unwind": {"path": "$puntosArreglar.items", "preserveNullAndEmptyArrays": False}},
             {"$match": {
+                "puntosArreglar.items.aprobado": True,
                 "puntosArreglar.items.rechazado": {"$ne": True},
                 "puntosArreglar.items.nombre": {"$exists": True, "$nin": [None, ""]},
             }},
             {"$group": {
                 "_id": "$puntosArreglar.items.nombre",
-                "ultima_fecha": {"$max": "$createdAt"},
+                "aceptaciones": {"$addToSet": {"orden_id": {"$toString": "$_id"}, "fecha": "$createdAt"}},
             }},
         ]
 
@@ -1578,18 +1601,23 @@ def list_sugerencias_pendientes_handler(event, context):
         atendidos: dict = {}
         for r in db["ordenes_servicio"].aggregate(atendidos_pipeline):
             clave = normalizar(r.get("_id"))
-            fecha = r.get("ultima_fecha")
-            if not clave or not isinstance(fecha, datetime):
+            if not clave:
                 continue
-            if clave not in atendidos or fecha > atendidos[clave]:
-                atendidos[clave] = fecha
+            atendidos.setdefault(clave, []).extend(
+                a for a in (r.get("aceptaciones") or []) if isinstance(a.get("fecha"), datetime))
 
-        def ya_atendido(nombre, fecha_origen) -> bool:
-            """El item se aceptó en una OS igual o posterior a la que lo rechazó."""
-            aceptado_en = atendidos.get(normalizar(nombre))
-            if not aceptado_en or not isinstance(fecha_origen, datetime):
+        def ya_atendido(nombre, fecha_origen, orden_origen) -> bool:
+            """El item se aceptó en OTRA OS igual o posterior a la que lo rechazó.
+
+            La misma OS no cuenta: "MANO DE OBRA" aprobada en la afinación no significa
+            que el cliente aceptó la "MANO DE OBRA" de suspensión que rechazó ahí mismo.
+            """
+            if not isinstance(fecha_origen, datetime):
                 return False
-            return aceptado_en >= fecha_origen
+            return any(
+                a["orden_id"] != orden_origen and a["fecha"] >= fecha_origen
+                for a in atendidos.get(normalizar(nombre), [])
+            )
 
         # Serializar fechas + aplanar item al nivel superior para que el front lo importe fácil.
         # Si el mismo item se rechazó en varias visitas, solo se sugiere la más reciente
@@ -1601,7 +1629,7 @@ def list_sugerencias_pendientes_handler(event, context):
             nombre = item.get('nombre')
             fecha = r.get('fecha_origen')
 
-            if ya_atendido(nombre, fecha):
+            if ya_atendido(nombre, fecha, r.get('orden_id')):
                 continue
 
             clave = normalizar(nombre)
@@ -1670,6 +1698,15 @@ def update_orden_handler(event, context):
         for campo in campos_permitidos:
             if campo in body:
                 update_data[campo] = body[campo]
+
+        # Autocuración: OS legacy sin `vehiculo_id` (p.ej. convertidas de cotización
+        # antes del fix) lo recuperan del snapshot al guardarse.
+        vehiculo_id_os = orden_actual.get("vehiculo_id") or ""
+        if not vehiculo_id_os:
+            vehiculo_id_os = _resolver_vehiculo_id(
+                db, (orden_actual.get("vehiculo_snapshot") or {}).get("id"))
+            if vehiculo_id_os:
+                update_data["vehiculo_id"] = vehiculo_id_os
 
         # Estampar trazabilidad manual en items que cambiaron decisión.
         # Esto deja constancia de quién (asesor) aceptó/rechazó cuando NO viene del
@@ -1803,7 +1840,7 @@ def update_orden_handler(event, context):
                 or 'proximo_cambio_bujias_fecha' in update_data):
             _sync_mantenimiento_to_vehiculo(
                 db,
-                orden_actual.get("vehiculo_id", ""),
+                vehiculo_id_os,
                 update_data.get("proximo_cambio_aceite", orden_actual.get("proximo_cambio_aceite")),
                 update_data.get("proximo_cambio_bujias", orden_actual.get("proximo_cambio_bujias")),
                 update_data.get("proximo_cambio_aceite_fecha", orden_actual.get("proximo_cambio_aceite_fecha")),
