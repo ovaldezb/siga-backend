@@ -149,6 +149,19 @@ custom:
   appUrls:
     dev: 'https://mekanicsmanager.co.uk/'
     prod: 'https://www.mekanicsmanager.com.mx'
+  # Dominio propio de la API. La URL de execute-api está atada a la región y al stack:
+  # con un dominio propio se puede mover el tráfico (otra región, otro stack) sin
+  # recompilar el front ni cambiar el webhook de Openpay. `enabled` en 'false' no crea
+  # nada; prod se activa a propósito cuando dev ya esté probado.
+  apiDomains:
+    dev:
+      enabled: 'true'
+      name: api-dev.mekanicsmanager.co.uk
+      hostedZoneId: Z0942912E53FKHNTQ30W
+    prod:
+      enabled: 'false'
+      name: api.mekanicsmanager.com.mx
+      hostedZoneId: Z09937901BCLHY3O9YTS7
   pythonRequirements:
     # Dockerizar SIEMPRE: necesario para producir wheels nativas (pymongo, pydantic-core,
     # Pillow) con la arquitectura correcta (aarch64) y el ABI de python3.13. El plugin
@@ -2331,7 +2344,59 @@ functions:
             name: cognitoAuthorizer
 
 resources:
+  Conditions:
+    TieneDominioApi: !Equals ['${self:custom.apiDomains.${self:provider.stage}.enabled}', 'true']
+
+  Outputs:
+    ApiCustomUrl:
+      Condition: TieneDominioApi
+      Value: https://${self:custom.apiDomains.${self:provider.stage}.name}
+
   Resources:
+    # ── Dominio propio de la API (ver custom.apiDomains) ───────────────────
+    # El certificado va en la región del stack (las APIs regionales no usan el de
+    # us-east-1 de CloudFront). CloudFormation crea el registro de validación en
+    # Route 53 y espera a que ACM lo emita.
+    ApiCertificate:
+      Type: AWS::CertificateManager::Certificate
+      Condition: TieneDominioApi
+      Properties:
+        DomainName: ${self:custom.apiDomains.${self:provider.stage}.name}
+        ValidationMethod: DNS
+        DomainValidationOptions:
+          - DomainName: ${self:custom.apiDomains.${self:provider.stage}.name}
+            HostedZoneId: ${self:custom.apiDomains.${self:provider.stage}.hostedZoneId}
+
+    ApiCustomDomain:
+      Type: AWS::ApiGatewayV2::DomainName
+      Condition: TieneDominioApi
+      Properties:
+        DomainName: ${self:custom.apiDomains.${self:provider.stage}.name}
+        DomainNameConfigurations:
+          - CertificateArn: !Ref ApiCertificate
+            EndpointType: REGIONAL
+            SecurityPolicy: TLS_1_2
+
+    ApiCustomDomainMapping:
+      Type: AWS::ApiGatewayV2::ApiMapping
+      Condition: TieneDominioApi
+      DependsOn: HttpApiStage
+      Properties:
+        ApiId: !Ref HttpApi
+        DomainName: !Ref ApiCustomDomain
+        Stage: $default
+
+    ApiCustomDomainRecord:
+      Type: AWS::Route53::RecordSet
+      Condition: TieneDominioApi
+      Properties:
+        HostedZoneId: ${self:custom.apiDomains.${self:provider.stage}.hostedZoneId}
+        Name: ${self:custom.apiDomains.${self:provider.stage}.name}
+        Type: A
+        AliasTarget:
+          DNSName: !GetAtt ApiCustomDomain.RegionalDomainName
+          HostedZoneId: !GetAtt ApiCustomDomain.RegionalHostedZoneId
+
     # ── SQS — Facturación automática de suscripciones ──────────────────────
     # DLQ: retiene mensajes que fallaron 3 veces consecutivas (maxReceiveCount).
     FacturacionSuscripcionDLQ:
