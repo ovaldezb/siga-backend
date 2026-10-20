@@ -152,14 +152,14 @@ custom:
   # Dominio propio de la API. La URL de execute-api está atada a la región y al stack:
   # con un dominio propio se puede mover el tráfico (otra región, otro stack) sin
   # recompilar el front ni cambiar el webhook de Openpay. `enabled` en 'false' no crea
-  # nada; prod se activa a propósito cuando dev ya esté probado.
+  # nada.
   apiDomains:
     dev:
       enabled: 'true'
       name: api-dev.mekanicsmanager.co.uk
       hostedZoneId: Z0942912E53FKHNTQ30W
     prod:
-      enabled: 'false'
+      enabled: 'true'
       name: api.mekanicsmanager.com.mx
       hostedZoneId: Z09937901BCLHY3O9YTS7
   pythonRequirements:
