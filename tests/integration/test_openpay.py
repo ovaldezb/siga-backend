@@ -356,3 +356,131 @@ def test_openpay_card_webhook_success(mock_db):
     assert taller["proximaFechaCorte"] > datetime(2026, 1, 1)
     # Debe conservar su openpaySpeiChargeId sin generar uno nuevo
     assert taller["openpaySpeiChargeId"] == "tr_spei_existing"
+
+
+# ── Idempotencia del webhook: un aviso repetido no se procesa dos veces ──────
+
+def _evento_webhook(trans_id, customer_id, method=None, card=None):
+    transaction = {
+        "id": trans_id,
+        "customer_id": customer_id,
+        "amount": 599.00,
+        "status": "completed",
+        "description": "Suscripcion Mensual Mekanics Manager",
+    }
+    if method:
+        transaction["method"] = method
+    if card:
+        transaction["card"] = card
+    return {"body": json.dumps({"type": "charge.succeeded", "transaction": transaction})}
+
+
+def _taller_spei(db_platform, tenant_id, spei_id, customer_id):
+    db_platform.talleres.insert_one({
+        "tenantId": tenant_id,
+        "adminEmail": f"{tenant_id}@test.com",
+        "openpayCustomerId": customer_id,
+        "openpaySpeiChargeId": spei_id,
+        "precioSuscripcion": 599.00,
+        "proximaFechaCorte": datetime(2026, 1, 1),
+        "proximaFechaPago": datetime(2026, 1, 11),
+    })
+
+
+_NUEVO_SPEI = {"id": "tr_spei_siguiente", "payment_method": {"clabe": "012", "bank": "BBVA Bancomer", "agreement": "1", "name": "ref"}}
+
+
+def test_webhook_spei_repetido_se_procesa_una_vez(mock_db):
+    db_platform = mock_db["_platform"]
+    _taller_spei(db_platform, "taller_rep", "tr_spei_rep", "cus_rep")
+    event = _evento_webhook("tr_spei_rep", "cus_rep")
+
+    with patch('src.shared.utils.openpay_client.create_spei_charge', return_value=_NUEVO_SPEI) as mock_spei, \
+         patch('src.handlers.admin.pagos_manager._encolar_facturacion') as mock_factura:
+        r1 = openpay_webhook_handler(event, None)
+        corte_1 = db_platform.talleres.find_one({"tenantId": "taller_rep"})["proximaFechaCorte"]
+        r2 = openpay_webhook_handler(event, None)
+
+    assert r1["statusCode"] == 200 and r2["statusCode"] == 200
+    assert db_platform.suscripciones_pagos.count_documents({"folioClip": "tr_spei_rep"}) == 1
+    assert db_platform.talleres.find_one({"tenantId": "taller_rep"})["proximaFechaCorte"] == corte_1
+    assert mock_spei.call_count == 1
+    assert mock_factura.call_count == 1
+    evento = db_platform.openpay_webhook_eventos.find_one({"_id": "tr_spei_rep"})
+    assert evento["estado"] == "PROCESADO" and evento["tenantId"] == "taller_rep"
+
+
+def test_webhook_tarjeta_repetido_se_procesa_una_vez(mock_db):
+    db_platform = mock_db["_platform"]
+    db_platform.talleres.insert_one({
+        "tenantId": "taller_card_rep", "adminEmail": "c@test.com", "openpayCustomerId": "cus_card_rep",
+        "proximaFechaCorte": datetime(2026, 1, 1), "proximaFechaPago": datetime(2026, 1, 11),
+    })
+    event = _evento_webhook("tr_card_rep", "cus_card_rep", method="card",
+                            card={"brand": "visa", "card_number": "411111XXXXXX1111", "type": "debit"})
+
+    with patch('src.handlers.admin.pagos_manager._encolar_facturacion') as mock_factura:
+        openpay_webhook_handler(event, None)
+        corte_1 = db_platform.talleres.find_one({"tenantId": "taller_card_rep"})["proximaFechaCorte"]
+        r2 = openpay_webhook_handler(event, None)
+
+    assert r2["statusCode"] == 200
+    assert db_platform.suscripciones_pagos.count_documents({"folioClip": "tr_card_rep"}) == 1
+    assert db_platform.talleres.find_one({"tenantId": "taller_card_rep"})["proximaFechaCorte"] == corte_1
+    assert mock_factura.call_count == 1
+
+
+def test_webhook_spei_con_pago_previo_sin_reclamo_no_duplica(mock_db):
+    """Pagos registrados antes de existir el reclamo: un reintento no los repite."""
+    db_platform = mock_db["_platform"]
+    _taller_spei(db_platform, "taller_hist", "tr_spei_hist", "cus_hist")
+    db_platform.suscripciones_pagos.insert_one({
+        "tallerTenantId": "taller_hist", "folioClip": "tr_spei_hist", "estado": "COMPLETADO",
+    })
+
+    with patch('src.shared.utils.openpay_client.create_spei_charge', return_value=_NUEVO_SPEI) as mock_spei, \
+         patch('src.handlers.admin.pagos_manager._encolar_facturacion') as mock_factura:
+        r = openpay_webhook_handler(_evento_webhook("tr_spei_hist", "cus_hist"), None)
+
+    assert r["statusCode"] == 200
+    assert db_platform.suscripciones_pagos.count_documents({"folioClip": "tr_spei_hist"}) == 1
+    assert db_platform.talleres.find_one({"tenantId": "taller_hist"})["proximaFechaCorte"] == datetime(2026, 1, 1)
+    mock_spei.assert_not_called()
+    mock_factura.assert_not_called()
+
+
+def test_webhook_falla_libera_el_reclamo_y_el_reintento_procesa(mock_db):
+    db_platform = mock_db["_platform"]
+    _taller_spei(db_platform, "taller_falla", "tr_spei_falla", "cus_falla")
+    event = _evento_webhook("tr_spei_falla", "cus_falla")
+
+    with patch('src.handlers.admin.pagos_manager.calcular_nuevas_fechas_suscripcion', side_effect=RuntimeError("falla")), \
+         patch('src.shared.utils.openpay_client.create_spei_charge', return_value=_NUEVO_SPEI):
+        r1 = openpay_webhook_handler(event, None)
+    assert r1["statusCode"] >= 500
+    assert db_platform.openpay_webhook_eventos.find_one({"_id": "tr_spei_falla"}) is None
+    # El pago insertado antes de la falla se deshace: si no, el reintento lo vería y
+    # respondería "ya recibido" sin extender la suscripción.
+    assert db_platform.suscripciones_pagos.count_documents({"folioClip": "tr_spei_falla"}) == 0
+
+    with patch('src.shared.utils.openpay_client.create_spei_charge', return_value=_NUEVO_SPEI), \
+         patch('src.handlers.admin.pagos_manager._encolar_facturacion') as mock_factura:
+        r2 = openpay_webhook_handler(event, None)
+    assert r2["statusCode"] == 200
+    assert db_platform.suscripciones_pagos.count_documents({"folioClip": "tr_spei_falla"}) == 1
+    assert db_platform.talleres.find_one({"tenantId": "taller_falla"})["proximaFechaCorte"] > datetime(2026, 1, 1)
+    assert mock_factura.call_count == 1
+
+
+def test_webhook_sin_taller_no_se_reprocesa(mock_db):
+    db_platform = mock_db["_platform"]
+    event = _evento_webhook("tr_spei_huerfano", "cus_inexistente")
+
+    with patch('src.shared.utils.openpay_client.create_spei_charge', return_value=_NUEVO_SPEI) as mock_spei:
+        r1 = openpay_webhook_handler(event, None)
+        r2 = openpay_webhook_handler(event, None)
+
+    assert r1["statusCode"] == 200 and r2["statusCode"] == 200
+    assert db_platform.openpay_webhook_eventos.find_one({"_id": "tr_spei_huerfano"})["estado"] == "SIN_TALLER"
+    assert db_platform.suscripciones_pagos.count_documents({}) == 0
+    mock_spei.assert_not_called()
