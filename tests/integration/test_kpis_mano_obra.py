@@ -10,6 +10,8 @@ Lo que se fija aquí:
 import json
 from datetime import datetime
 
+from bson import ObjectId
+
 from src.handlers.admin.kpis_manager import get_mano_obra_handler
 
 TENANT = "tenant-kpis-mo"
@@ -136,11 +138,14 @@ def test_sucursal_mes_vacio_y_validaciones(mock_db):
 
 def test_mecanico_sin_nombre_en_la_os(mock_db):
     db = _db(mock_db)
-    db.usuarios.insert_one({"id": "m7", "nombre": "Rosa", "apellido": "Lara"})
-    _venta(db, datetime(2026, 9, 3), [_servicio("MANO DE OBRA", 300)], _orden(db, mecanico_id="m7", nombre=None))
-    _venta(db, datetime(2026, 9, 4), [_servicio("MANO DE OBRA", 200)], _orden(db, mecanico_id="m8", nombre=""))
+    # `mecanico_id` en la OS es el `_id` del usuario en hex. El `id` guardado (como
+    # traía el ADMIN inicial) no cuenta.
+    rosa = str(db.usuarios.insert_one({"id": "rosa@taller.com", "nombre": "Rosa", "apellido": "Lara"}).inserted_id)
+    borrado = str(ObjectId())
+    _venta(db, datetime(2026, 9, 3), [_servicio("MANO DE OBRA", 300)], _orden(db, mecanico_id=rosa, nombre=None))
+    _venta(db, datetime(2026, 9, 4), [_servicio("MANO DE OBRA", 200)], _orden(db, mecanico_id=borrado, nombre=""))
     # El texto "null" guardado como id no es un mecánico.
     _venta(db, datetime(2026, 9, 5), [_servicio("MANO DE OBRA", 100)], _orden(db, mecanico_id="null", nombre=""))
     assert [(m["mecanico_id"], m["nombre"]) for m in _kpi()["mecanicos"]] == [
-        ("m7", "Rosa Lara"), ("m8", "Mecánico sin nombre"), (None, "Sin asignar")]
+        (rosa, "Rosa Lara"), (borrado, "Mecánico sin nombre"), (None, "Sin asignar")]
 
