@@ -24,11 +24,21 @@ func IsoUTC(t time.Time) string {
 // `id`, los ObjectID a hex y las fechas a IsoUTC (como MongoJSONEncoder). Los
 // subdocumentos bson.D se vuelven mapas; sin esto se serializarían como arreglos
 // de {Key, Value}.
+//
+// Si el documento además guarda un campo `id` (el ADMIN inicial de cada taller
+// lo traía con su email), `_id` manda: el orden de un mapa en Go es aleatorio y
+// el `id` guardado a veces pisaba al real, así que el front recibía el email y
+// PUT /usuarios/{id} fallaba con "ID inválido.". Python también daba prioridad
+// a `_id`.
 func Doc(m bson.M) map[string]any {
 	out := make(map[string]any, len(m))
+	_, tieneID := m["_id"]
 	for k, v := range m {
 		if k == "_id" {
 			out["id"] = plano(v)
+			continue
+		}
+		if k == "id" && tieneID {
 			continue
 		}
 		out[k] = plano(v)

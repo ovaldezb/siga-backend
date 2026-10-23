@@ -38,6 +38,22 @@ func TestDocAplana(t *testing.T) {
 	}
 }
 
+func TestDocIDGuardadoNoPisaAlReal(t *testing.T) {
+	oid := bson.NewObjectID()
+	// El orden de un mapa varía en cada recorrido: se repite para que un
+	// recorrido con el `id` guardado al final haga fallar la prueba.
+	for i := 0; i < 50; i++ {
+		got := Doc(bson.M{"_id": oid, "id": "admin@taller.com", "email": "admin@taller.com"})
+		if got["id"] != oid.Hex() {
+			t.Fatalf("id = %v, se esperaba el _id %s", got["id"], oid.Hex())
+		}
+	}
+	// Sin `_id` (subdocumentos armados a mano) se respeta el `id` que traiga.
+	if got := Doc(bson.M{"id": "abc"}); got["id"] != "abc" {
+		t.Fatalf("sin _id: %v", got["id"])
+	}
+}
+
 func TestGroupsEIsAdmin(t *testing.T) {
 	casos := []struct {
 		claim any
