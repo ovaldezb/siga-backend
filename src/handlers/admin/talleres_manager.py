@@ -222,8 +222,9 @@ def create_taller_handler(event, context):
         })
         
         # 4. Insert initial Admin into Tenant DB
+        # Sin campo `id`: el id del usuario es su `_id`. Un `id` guardado (antes se
+        # ponía el email) se colaba en GET /usuarios y rompía la edición.
         tenant_db["usuarios"].insert_one({
-            "id": admin_email, # Will be replaced by Cognito Username if needed, but email is fine for now as it's the username
             "email": admin_email,
             "nombre": body["adminNombre"],
             "apellido": body["adminApellido"],

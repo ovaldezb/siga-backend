@@ -43,8 +43,10 @@ def _mecanicos_de_ventas(db, ventas):
     sin_nombre = {mid for mid, nombre in out.values() if mid != SIN_ASIGNAR and not nombre}
     if sin_nombre:
         nombres = {}
-        for u in db.usuarios.find({'id': {'$in': list(sin_nombre)}}, {'id': 1, 'nombre': 1, 'apellido': 1}):
-            nombres[u['id']] = ' '.join(f"{u.get('nombre') or ''} {u.get('apellido') or ''}".split())
+        # `mecanico_id` es el `_id` del usuario en hex.
+        oids = [oid for oid in (_oid(mid) for mid in sin_nombre) if oid]
+        for u in db.usuarios.find({'_id': {'$in': oids}}, {'nombre': 1, 'apellido': 1}):
+            nombres[str(u['_id'])] = ' '.join(f"{u.get('nombre') or ''} {u.get('apellido') or ''}".split())
         out = {oid: (mid, nombre or nombres.get(mid) or 'Mecánico sin nombre') for oid, (mid, nombre) in out.items()}
     return out
 
