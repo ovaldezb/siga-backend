@@ -11,6 +11,7 @@ from src.shared.utils.date_utils import iso_utc
 from src.shared.infrastructure.database import get_platform_db
 import boto3
 from botocore.config import Config
+from pymongo.errors import DuplicateKeyError
 
 logger = Logger()
 
@@ -59,6 +60,54 @@ def _encolar_facturacion(
         logger.info(f"Trabajo de facturación encolado para trans_id={trans_id}, tenant={tenant_id}, forma_pago_sat={forma_pago_sat}")
     except Exception as sqs_err:
         logger.error(f"Error al encolar trabajo de facturación (trans_id={trans_id}): {sqs_err}")
+
+
+# ── Idempotencia del webhook de Openpay ──────────────────────────────────────
+# Cada transacción se "reclama" con un insert contra `_id = trans_id` antes de
+# procesarla. El insert es atómico: de dos avisos del mismo cargo (reintento de
+# Openpay, dos webhooks dados de alta, o dos llegando a la vez) solo uno gana.
+_EVENTOS_OPENPAY = "openpay_webhook_eventos"
+
+
+def _reclamar_evento_openpay(db, trans_id: str, method: str) -> bool:
+    """True si este aviso es el primero de la transacción y debe procesarse."""
+    if not trans_id:
+        return True  # sin id no hay qué reclamar; se procesa como antes
+    try:
+        db[_EVENTOS_OPENPAY].insert_one({
+            "_id": trans_id,
+            "metodo": method or "bank_account",
+            "estado": "PROCESANDO",
+            "recibidoAt": datetime.utcnow(),
+        })
+        return True
+    except DuplicateKeyError:
+        return False
+
+
+def _cerrar_evento_openpay(db, trans_id: str, estado: str, tenant_id: str = None, pago_id: str = None) -> None:
+    """Deja constancia del resultado. Best-effort: si falla, el cargo ya quedó
+    procesado y el reclamo (PROCESANDO) sigue bloqueando los reintentos."""
+    if not trans_id:
+        return
+    try:
+        db[_EVENTOS_OPENPAY].update_one(
+            {"_id": trans_id},
+            {"$set": {"estado": estado, "tenantId": tenant_id, "pagoId": pago_id, "cerradoAt": datetime.utcnow()}},
+        )
+    except Exception as err:
+        logger.error(f"No se pudo cerrar el evento Openpay {trans_id}: {err}")
+
+
+def _liberar_evento_openpay(db, trans_id: str) -> None:
+    """Borra el reclamo cuando el procesamiento falló, para que el reintento de
+    Openpay sí vuelva a procesar el cargo."""
+    if not trans_id:
+        return
+    try:
+        db[_EVENTOS_OPENPAY].delete_one({"_id": trans_id, "estado": "PROCESANDO"})
+    except Exception as err:
+        logger.error(f"No se pudo liberar el evento Openpay {trans_id}: {err}")
 
 
 def _determinar_metodo_tarjeta(card_info: dict) -> tuple:
@@ -795,164 +844,207 @@ def openpay_webhook_handler(event, context):
             
             db = get_platform_db()
 
-            # Caso 1: Cobro con Tarjeta (3D Secure completado asíncronamente)
-            if method == "card":
-                pago = db["suscripciones_pagos"].find_one({"folioClip": trans_id})
-                taller = None
-                if pago:
-                    taller = db["talleres"].find_one({"tenantId": pago.get("tallerTenantId")})
+            # Reclamar la transacción antes de tocar pagos o talleres: el insert contra
+            # `_id` es atómico, así que un aviso repetido (reintento de Openpay o dos
+            # webhooks dados de alta) o dos avisos simultáneos no se procesan dos veces.
+            if not _reclamar_evento_openpay(db, trans_id, method):
+                logger.info(f"Transacción Openpay {trans_id} ya recibida; se ignora el aviso repetido.")
+                return create_response(200, "Webhook procesado: la transacción ya se había recibido.")
+
+            # Lo que este intento escribió en suscripciones_pagos, para deshacerlo si
+            # falla a medias: si no, el reintento vería el pago y no extendería nada.
+            pago_insertado_id = None
+            pago_marcado = None  # (_id, estado previo) del pago de tarjeta pendiente
+            try:
+                # Caso 1: Cobro con Tarjeta (3D Secure completado asíncronamente)
+                if method == "card":
+                    pago = db["suscripciones_pagos"].find_one({"folioClip": trans_id})
+                    taller = None
+                    if pago:
+                        taller = db["talleres"].find_one({"tenantId": pago.get("tallerTenantId")})
+                    if not taller and customer_id:
+                        taller = db["talleres"].find_one({"openpayCustomerId": customer_id})
+
+                    if not taller:
+                        logger.error(f"Taller no encontrado para cargo con tarjeta Openpay {trans_id}")
+                        _cerrar_evento_openpay(db, trans_id, "SIN_TALLER")
+                        return create_response(200, "Webhook recibido pero taller no fue localizado.")
+
+                    tenant_id = taller.get("tenantId")
+                    admin_email = taller.get("adminEmail", "pago@cliente.com")
+
+                    if pago and pago.get("estado") == "COMPLETADO":
+                        logger.info(f"Cargo con tarjeta {trans_id} ya estaba marcado como COMPLETADO previamente.")
+                        _cerrar_evento_openpay(db, trans_id, "PROCESADO", tenant_id=tenant_id, pago_id=str(pago["_id"]))
+                        return create_response(200, "Webhook procesado: cargo ya completado.")
+
+                    card_info = transaction.get("card", {})
+                    metodo_str, forma_pago_sat_card = _determinar_metodo_tarjeta(card_info)
+
+                    fecha_actual = datetime.utcnow()
+                    if pago:
+                        pago_marcado = (pago["_id"], pago.get("estado"))
+                        db["suscripciones_pagos"].update_one(
+                            {"_id": pago["_id"]},
+                            {"$set": {
+                                "estado": "COMPLETADO",
+                                "metodo": metodo_str,
+                                "fechaPago": fecha_actual
+                            }}
+                        )
+                        pago_id_str = str(pago["_id"])
+                    else:
+                        pago_doc = {
+                            "tallerTenantId": tenant_id,
+                            "usuarioEmail": admin_email,
+                            "monto": float(amount),
+                            "concepto": transaction.get("description", "Suscripción Mensual Mekanics Manager"),
+                            "folioClip": trans_id,
+                            "estado": "COMPLETADO",
+                            "metodo": metodo_str,
+                            "fechaPago": fecha_actual
+                        }
+                        res_insert = db["suscripciones_pagos"].insert_one(pago_doc)
+                        pago_insertado_id = res_insert.inserted_id
+                        pago_id_str = str(res_insert.inserted_id)
+
+                    nueva_corte, nueva_pago = calcular_nuevas_fechas_suscripcion(taller, fecha_actual)
+                    db["talleres"].update_one(
+                        {"tenantId": tenant_id},
+                        {"$set": {
+                            "proximaFechaCorte": nueva_corte,
+                            "proximaFechaPago": nueva_pago,
+                            "estado": "ACTIVO"
+                        }}
+                    )
+                    logger.info(f"Suscripcion extendida exitosamente para el taller {tenant_id} via Tarjeta 3DS Webhook.")
+
+                    # Encolar timbrado de factura + envío de correo (asíncrono, best-effort)
+                    _encolar_facturacion(
+                        tenant_id=tenant_id,
+                        taller=taller,
+                        pago_id=pago_id_str,
+                        monto=float(amount),
+                        trans_id=trans_id,
+                        metodo=metodo_str,
+                        forma_pago_sat=forma_pago_sat_card,
+                    )
+
+                    _cerrar_evento_openpay(db, trans_id, "PROCESADO", tenant_id=tenant_id, pago_id=pago_id_str)
+                    return create_response(200, "Webhook de tarjeta procesado correctamente")
+
+
+                # Caso 2: Cobro SPEI (method == "bank_account")
+                taller = db["talleres"].find_one({"openpaySpeiChargeId": trans_id})
                 if not taller and customer_id:
                     taller = db["talleres"].find_one({"openpayCustomerId": customer_id})
-
+                
                 if not taller:
-                    logger.error(f"Taller no encontrado para cargo con tarjeta Openpay {trans_id}")
+                    logger.error(f"Taller no encontrado para la transaccion de Openpay {trans_id} o cliente {customer_id}")
+                    _cerrar_evento_openpay(db, trans_id, "SIN_TALLER")
                     return create_response(200, "Webhook recibido pero taller no fue localizado.")
 
                 tenant_id = taller.get("tenantId")
                 admin_email = taller.get("adminEmail", "pago@cliente.com")
 
-                if pago and pago.get("estado") == "COMPLETADO":
-                    logger.info(f"Cargo con tarjeta {trans_id} ya estaba marcado como COMPLETADO previamente.")
-                    return create_response(200, "Webhook procesado: cargo ya completado.")
+                # Transacciones de antes de existir el reclamo: si el pago ya está
+                # registrado, un reintento no debe volver a extender ni facturar.
+                pago_previo = db["suscripciones_pagos"].find_one({"folioClip": trans_id}, {"_id": 1})
+                if pago_previo:
+                    logger.info(f"Pago SPEI {trans_id} ya estaba registrado; se ignora el aviso repetido.")
+                    _cerrar_evento_openpay(db, trans_id, "PROCESADO", tenant_id=tenant_id, pago_id=str(pago_previo["_id"]))
+                    return create_response(200, "Webhook procesado: la transacción ya se había recibido.")
 
-                card_info = transaction.get("card", {})
-                metodo_str, forma_pago_sat_card = _determinar_metodo_tarjeta(card_info)
-
+                pago_doc = {
+                    "tallerTenantId": tenant_id,
+                    "usuarioEmail": admin_email,
+                    "monto": float(amount),
+                    "concepto": transaction.get("description", "Suscripción Mensual Mekanics Manager"),
+                    "folioClip": trans_id,
+                    "estado": "COMPLETADO",
+                    "metodo": "Transferencia SPEI (Openpay)",
+                    "fechaPago": datetime.utcnow()
+                }
+                res_spei_pago = db["suscripciones_pagos"].insert_one(pago_doc)
+                pago_insertado_id = res_spei_pago.inserted_id
+                pago_id_spei = str(res_spei_pago.inserted_id)
+            
                 fecha_actual = datetime.utcnow()
-                if pago:
-                    db["suscripciones_pagos"].update_one(
-                        {"_id": pago["_id"]},
-                        {"$set": {
-                            "estado": "COMPLETADO",
-                            "metodo": metodo_str,
-                            "fechaPago": fecha_actual
-                        }}
-                    )
-                    pago_id_str = str(pago["_id"])
-                else:
-                    pago_doc = {
-                        "tallerTenantId": tenant_id,
-                        "usuarioEmail": admin_email,
-                        "monto": float(amount),
-                        "concepto": transaction.get("description", "Suscripción Mensual Mekanics Manager"),
-                        "folioClip": trans_id,
-                        "estado": "COMPLETADO",
-                        "metodo": metodo_str,
-                        "fechaPago": fecha_actual
-                    }
-                    res_insert = db["suscripciones_pagos"].insert_one(pago_doc)
-                    pago_id_str = str(res_insert.inserted_id)
-
                 nueva_corte, nueva_pago = calcular_nuevas_fechas_suscripcion(taller, fecha_actual)
+                
+                # Generar un NUEVO cargo SPEI para el siguiente mes
+                openpay_spei_charge_id = ""
+                openpay_clabe = taller.get("openpayClabe", "")
+                openpay_bank = taller.get("openpayBank", "BBVA Bancomer")
+                openpay_agreement = taller.get("openpayAgreement", "1422286")
+                openpay_reference = taller.get("openpayReference", "")
+            
+                try:
+                    from src.shared.utils import openpay_client
+                    monto_spei = float(taller.get("precioSuscripcion") or 599.00)
+                    if monto_spei <= 0:
+                        monto_spei = 599.00
+                    
+                    desc_spei = f"Suscripcion Mensual Mekanics Manager - {taller.get('nombreComercial', 'Taller')}"
+                    order_id_spei = f"SUB-{tenant_id[:16]}-{int(datetime.utcnow().timestamp())}"
+                
+                    spei_res = openpay_client.create_spei_charge(
+                        customer_id=customer_id,
+                        amount=monto_spei,
+                        description=desc_spei,
+                        order_id=order_id_spei
+                    )
+                
+                    openpay_spei_charge_id = spei_res.get("id", "")
+                    payment_method = spei_res.get("payment_method", {})
+                    openpay_clabe = payment_method.get("clabe", "")
+                    openpay_bank = payment_method.get("bank", "BBVA Bancomer")
+                    openpay_agreement = payment_method.get("agreement", "1422286")
+                    openpay_reference = payment_method.get("name") or payment_method.get("reference") or spei_res.get("reference") or ""
+                except Exception as new_spei_err:
+                    logger.error(f"Error al generar siguiente cargo SPEI para el taller {tenant_id}: {str(new_spei_err)}")
+                
                 db["talleres"].update_one(
                     {"tenantId": tenant_id},
                     {"$set": {
                         "proximaFechaCorte": nueva_corte,
                         "proximaFechaPago": nueva_pago,
-                        "estado": "ACTIVO"
+                        "estado": "ACTIVO",
+                        "openpaySpeiChargeId": openpay_spei_charge_id,
+                        "openpayClabe": openpay_clabe,
+                        "openpayBank": openpay_bank,
+                        "openpayAgreement": openpay_agreement,
+                        "openpayReference": openpay_reference
                     }}
                 )
-                logger.info(f"Suscripcion extendida exitosamente para el taller {tenant_id} via Tarjeta 3DS Webhook.")
+                logger.info(f"Suscripcion extendida exitosamente para el taller {tenant_id} via SPEI Webhook.")
 
                 # Encolar timbrado de factura + envío de correo (asíncrono, best-effort)
                 _encolar_facturacion(
                     tenant_id=tenant_id,
                     taller=taller,
-                    pago_id=pago_id_str,
+                    pago_id=pago_id_spei,
                     monto=float(amount),
                     trans_id=trans_id,
-                    metodo=metodo_str,
-                    forma_pago_sat=forma_pago_sat_card,
+                    metodo="Transferencia SPEI (Openpay)",
+                    forma_pago_sat="03",
                 )
+            except Exception:
+                # Deshacer el pago de este intento y soltar el reclamo: así el
+                # reintento de Openpay procesa el cargo completo desde cero.
+                try:
+                    if pago_insertado_id is not None:
+                        db["suscripciones_pagos"].delete_one({"_id": pago_insertado_id})
+                    elif pago_marcado is not None:
+                        db["suscripciones_pagos"].update_one(
+                            {"_id": pago_marcado[0]}, {"$set": {"estado": pago_marcado[1]}}
+                        )
+                except Exception as undo_err:
+                    logger.error(f"No se pudo deshacer el pago del cargo Openpay {trans_id}: {undo_err}")
+                _liberar_evento_openpay(db, trans_id)
+                raise
 
-                return create_response(200, "Webhook de tarjeta procesado correctamente")
-
-
-            # Caso 2: Cobro SPEI (method == "bank_account")
-            taller = db["talleres"].find_one({"openpaySpeiChargeId": trans_id})
-            if not taller and customer_id:
-                taller = db["talleres"].find_one({"openpayCustomerId": customer_id})
-                
-            if not taller:
-                logger.error(f"Taller no encontrado para la transaccion de Openpay {trans_id} o cliente {customer_id}")
-                return create_response(200, "Webhook recibido pero taller no fue localizado.")
-                
-            tenant_id = taller.get("tenantId")
-            admin_email = taller.get("adminEmail", "pago@cliente.com")
-            
-            pago_doc = {
-                "tallerTenantId": tenant_id,
-                "usuarioEmail": admin_email,
-                "monto": float(amount),
-                "concepto": transaction.get("description", "Suscripción Mensual Mekanics Manager"),
-                "folioClip": trans_id,
-                "estado": "COMPLETADO",
-                "metodo": "Transferencia SPEI (Openpay)",
-                "fechaPago": datetime.utcnow()
-            }
-            res_spei_pago = db["suscripciones_pagos"].insert_one(pago_doc)
-            pago_id_spei = str(res_spei_pago.inserted_id)
-            
-            fecha_actual = datetime.utcnow()
-            nueva_corte, nueva_pago = calcular_nuevas_fechas_suscripcion(taller, fecha_actual)
-                
-            # Generar un NUEVO cargo SPEI para el siguiente mes
-            openpay_spei_charge_id = ""
-            openpay_clabe = taller.get("openpayClabe", "")
-            openpay_bank = taller.get("openpayBank", "BBVA Bancomer")
-            openpay_agreement = taller.get("openpayAgreement", "1422286")
-            openpay_reference = taller.get("openpayReference", "")
-            
-            try:
-                from src.shared.utils import openpay_client
-                monto_spei = float(taller.get("precioSuscripcion") or 599.00)
-                if monto_spei <= 0:
-                    monto_spei = 599.00
-                    
-                desc_spei = f"Suscripcion Mensual Mekanics Manager - {taller.get('nombreComercial', 'Taller')}"
-                order_id_spei = f"SUB-{tenant_id[:16]}-{int(datetime.utcnow().timestamp())}"
-                
-                spei_res = openpay_client.create_spei_charge(
-                    customer_id=customer_id,
-                    amount=monto_spei,
-                    description=desc_spei,
-                    order_id=order_id_spei
-                )
-                
-                openpay_spei_charge_id = spei_res.get("id", "")
-                payment_method = spei_res.get("payment_method", {})
-                openpay_clabe = payment_method.get("clabe", "")
-                openpay_bank = payment_method.get("bank", "BBVA Bancomer")
-                openpay_agreement = payment_method.get("agreement", "1422286")
-                openpay_reference = payment_method.get("name") or payment_method.get("reference") or spei_res.get("reference") or ""
-            except Exception as new_spei_err:
-                logger.error(f"Error al generar siguiente cargo SPEI para el taller {tenant_id}: {str(new_spei_err)}")
-                
-            db["talleres"].update_one(
-                {"tenantId": tenant_id},
-                {"$set": {
-                    "proximaFechaCorte": nueva_corte,
-                    "proximaFechaPago": nueva_pago,
-                    "estado": "ACTIVO",
-                    "openpaySpeiChargeId": openpay_spei_charge_id,
-                    "openpayClabe": openpay_clabe,
-                    "openpayBank": openpay_bank,
-                    "openpayAgreement": openpay_agreement,
-                    "openpayReference": openpay_reference
-                }}
-            )
-            logger.info(f"Suscripcion extendida exitosamente para el taller {tenant_id} via SPEI Webhook.")
-
-            # Encolar timbrado de factura + envío de correo (asíncrono, best-effort)
-            _encolar_facturacion(
-                tenant_id=tenant_id,
-                taller=taller,
-                pago_id=pago_id_spei,
-                monto=float(amount),
-                trans_id=trans_id,
-                metodo="Transferencia SPEI (Openpay)",
-                forma_pago_sat="03",
-            )
+            _cerrar_evento_openpay(db, trans_id, "PROCESADO", tenant_id=tenant_id, pago_id=pago_id_spei)
 
 
 
