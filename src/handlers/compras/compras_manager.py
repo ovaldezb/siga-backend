@@ -37,17 +37,17 @@ def _calc_line_fiscal(precio, cantidad, incluye_iva, iva_exento):
     return line_amount, iva, line_amount + iva
 
 
-def _recalc_costo_promedio(stock_actual, costo_actual, cantidad_recibida, costo_unitario_neto):
+def _recalc_costo_promedio(stock_actual, costo_actual, cantidad_recibida, costo_unitario):
     """Promedio ponderado. Si no había stock o costo, el nuevo costo es el de esta compra."""
     stock_actual = max(0, int(stock_actual or 0))
     costo_actual = float(costo_actual or 0)
     cantidad_recibida = int(cantidad_recibida or 0)
-    costo_unitario_neto = float(costo_unitario_neto or 0)
+    costo_unitario = float(costo_unitario or 0)
     if cantidad_recibida <= 0:
         return costo_actual
     if stock_actual <= 0 or costo_actual <= 0:
-        return round(costo_unitario_neto, 4)
-    total = stock_actual * costo_actual + cantidad_recibida * costo_unitario_neto
+        return round(costo_unitario, 4)
+    total = stock_actual * costo_actual + cantidad_recibida * costo_unitario
     return round(total / (stock_actual + cantidad_recibida), 4)
 
 
@@ -229,9 +229,12 @@ def create_compra_handler(event, context):
 
             stock_actual = int(item.get('stock', 0) or 0)
             costo_actual = float(item.get('costo_promedio', item.get('precio_compra', 0)) or 0)
+            # La operación va sin IVA (el ingreso es el total cobrado), así que el
+            # costo también es lo que realmente se le paga al proveedor, IVA incluido.
+            costo_unitario_bruto = linea['total_linea'] / linea['cantidad']
             nuevo_costo = _recalc_costo_promedio(
                 stock_actual, costo_actual,
-                linea['cantidad'], linea['costo_unitario_neto']
+                linea['cantidad'], costo_unitario_bruto
             )
 
             db.items.update_one(
@@ -259,7 +262,7 @@ def create_compra_handler(event, context):
                     "concepto": "COMPRA",
                     "referencia_id": str(result.inserted_id),
                     "referencia_folio": folio,
-                    "costo_unitario": linea['costo_unitario_neto'],
+                    "costo_unitario": round(costo_unitario_bruto, 4),
                     "costo_promedio_resultante": nuevo_costo,
                     "usuario_id": usuario_id,
                     "usuario_nombre": usuario_nombre,
