@@ -1,7 +1,8 @@
 """Novedades de la plataforma: avisos de nuevas funciones y correcciones.
 
 El operador (SUPER_ADMIN) las publica una vez y les llegan a todos los usuarios de
-todos los talleres en Notificaciones. Viven en `_platform` porque no son de ningún
+todos los talleres en Notificaciones, o sólo a los talleres de `tenant_ids` cuando
+el aviso es para alguien en particular. Viven en `_platform` porque no son de ningún
 taller. Lo leído se guarda por usuario (`sub` de Cognito) en
 `_platform.novedades_lecturas`, así cada persona descarta las suyas.
 """
@@ -59,6 +60,17 @@ def _validar(body, parcial=False) -> tuple[dict, str | None]:
     if "version" in body:
         version = str(body.get("version") or "").strip()[:20]
         campos["version"] = version or None
+    if "tenant_ids" in body:
+        # Vacío o ausente = para todos los talleres.
+        tenant_ids = body.get("tenant_ids") or []
+        if not isinstance(tenant_ids, list) or len(tenant_ids) > 50:
+            return {}, "tenant_ids debe ser una lista de hasta 50 talleres."
+        tenant_ids = sorted({str(t).strip() for t in tenant_ids if str(t).strip()})
+        if tenant_ids:
+            existentes = get_platform_db()["talleres"].count_documents({"tenantId": {"$in": tenant_ids}})
+            if existentes != len(tenant_ids):
+                return {}, "Alguno de los talleres indicados no existe."
+        campos["tenant_ids"] = tenant_ids
     if parcial and "activa" in body:
         campos["activa"] = bool(body.get("activa"))
     return campos, None
@@ -79,7 +91,12 @@ def list_novedades_handler(event, context):
         if qp.get("todas") == "1" and is_super_admin(claims):
             filtro = {}
         else:
-            filtro = {"activa": True, "createdAt": {"$gte": datetime.utcnow() - timedelta(days=VENTANA_DIAS)}}
+            # Para todos (sin tenant_ids) o dirigida a este taller.
+            para_quien = [{"tenant_ids": {"$exists": False}}, {"tenant_ids": None}, {"tenant_ids": {"$size": 0}}]
+            if claims.get("custom:tenant_id"):
+                para_quien.append({"tenant_ids": claims["custom:tenant_id"]})
+            filtro = {"activa": True, "createdAt": {"$gte": datetime.utcnow() - timedelta(days=VENTANA_DIAS)},
+                      "$or": para_quien}
 
         lectura = db["novedades_lecturas"].find_one({"sub": sub}, {"leidas": 1}) or {}
         leidas = set(lectura.get("leidas") or [])
@@ -94,7 +111,8 @@ def list_novedades_handler(event, context):
 
 @logger.inject_lambda_context
 def create_novedad_handler(event, context):
-    """POST /novedades — SUPER_ADMIN publica un aviso para todos los talleres."""
+    """POST /novedades — SUPER_ADMIN publica un aviso para todos los talleres o, con
+    `tenant_ids`, sólo para esos."""
     try:
         claims = get_claims(event)
         if not is_super_admin(claims):

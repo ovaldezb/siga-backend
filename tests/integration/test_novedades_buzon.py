@@ -50,6 +50,18 @@ def test_cada_usuario_marca_las_suyas_y_ocultar_la_retira(mock_db):
     assert len(_data(list_novedades_handler(_ev("s1", "SUPER_ADMIN", qs={"todas": "1"}), None))["items"]) == 1
 
 
+def test_aviso_dirigido_solo_lo_ve_su_taller(mock_db):
+    mock_db["_platform"]["talleres"].insert_one({"tenantId": "tallerA", "nombreComercial": "Bajito's"})
+    # Un taller que no existe se rechaza para no publicar un aviso que nadie verá.
+    assert create_novedad_handler(_ev("s1", "SUPER_ADMIN", {**NOVEDAD, "tenant_ids": ["fantasma"]}), None)["statusCode"] == 400
+
+    resp = create_novedad_handler(_ev("s1", "SUPER_ADMIN", {**NOVEDAD, "tenant_ids": ["tallerA"]}), None)
+    assert resp["statusCode"] == 201 and _data(resp)["tenant_ids"] == ["tallerA"]
+
+    assert len(_data(list_novedades_handler(_ev("a1", "ADMIN"), None))["items"]) == 1
+    assert _data(list_novedades_handler(_ev("c1", "CAJERO", tenant="tallerB"), None))["items"] == []
+
+
 def test_buzon_flujo_completo(mock_db):
     mock_db["_platform"]["talleres"].insert_one({"tenantId": "tallerA", "nombreComercial": "Express"})
     resp = create_buzon_handler(_ev("a1", "ASESOR", {
