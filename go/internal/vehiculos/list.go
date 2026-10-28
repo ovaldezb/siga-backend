@@ -145,6 +145,12 @@ func mantenimiento(diasVencido, kmUmbral, diasPronto int64) ([]bson.D, error) {
 	return p.Etapas, nil
 }
 
+// EtapasMantenimiento expone el mismo pipeline a otros paquetes (recordatorios
+// de servicio), para que "vencido"/"pronto" signifique lo mismo en todas partes.
+func EtapasMantenimiento(diasVencido, kmUmbral, diasPronto int64) ([]bson.D, error) {
+	return mantenimiento(diasVencido, kmUmbral, diasPronto)
+}
+
 // enteroO replica int(valor) con respaldo: ausente o no numérico da el default.
 func enteroO(qp map[string]string, clave string, defecto int64) int64 {
 	raw, ok := qp[clave]

@@ -1222,6 +1222,31 @@ functions:
           authorizer:
             name: cognitoAuthorizer
 
+  # Órdenes en FINALIZADO (créditos por liquidar y sin venta) para cerrarlas en bloque.
+  ordenes_por_cerrar:
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/ordenes_por_cerrar.zip
+    events:
+      - httpApi:
+          path: /ordenes/por-cerrar
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  ordenes_cerrar_lote:
+    handler: src/handlers/ordenes/cierre_lote_manager.cerrar_ordenes_lote_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /ordenes/cerrar-lote
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
   ordenes_update:
     handler: src/handlers/ordenes/ordenes_manager.update_orden_handler
     layers:
@@ -1440,6 +1465,45 @@ functions:
     events:
       - httpApi:
           path: /vehiculos/{id}
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  # Recordatorios de servicio: la lista sale de Go y el seguimiento se escribe en Python.
+  recordatorios_list:
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/recordatorios_list.zip
+    events:
+      - httpApi:
+          path: /recordatorios-servicio
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  recordatorios_seguimiento:
+    handler: src/handlers/vehiculos/recordatorios_manager.registrar_seguimiento_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /recordatorios-servicio/{id}
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
+  # Pendientes del taller para la campana: cobranza, piezas por costear, órdenes por cerrar y recordatorios.
+  alertas_resumen:
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/alertas_resumen.zip
+    events:
+      - httpApi:
+          path: /alertas
           method: get
           authorizer:
             name: cognitoAuthorizer
@@ -1814,9 +1878,11 @@ functions:
   # Novedades de la plataforma (SUPER_ADMIN publica, todos los talleres leen) y
   # buzón de quejas/sugerencias de los talleres hacia la plataforma. Viven en _platform.
   novedades_list:
-    handler: src/handlers/admin/novedades_manager.list_novedades_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/novedades_list.zip
     events:
       - httpApi:
           path: /novedades
