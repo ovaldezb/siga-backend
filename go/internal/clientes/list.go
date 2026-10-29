@@ -16,7 +16,8 @@ import (
 // List atiende GET /clientes[?q=…&sucursalId=…&page=…&limit=…] (port de
 // list_clientes_handler). La cartera es del taller, no de la sucursal: solo se
 // filtra por sucursal si se pide una, y ésa se valida contra las del usuario.
-// Cada cliente trae sus vehículos, cotizaciones pendientes y saldo de crédito.
+// Cada cliente trae sus vehículos, cotizaciones pendientes, saldo de crédito y
+// el nombre de su sucursal de origen (`sucursalNombre`).
 // No llama ensure_indexes: los siguen asegurando los handlers Python del tenant.
 func List(ctx context.Context, req platform.Request) (platform.Response, error) {
 	claims := platform.Claims(req)
@@ -114,6 +115,12 @@ func List(ctx context.Context, req platform.Request) (platform.Response, error) 
 			return platform.Response{}, err
 		}
 	}
+	// "Alta en: …": la sucursal donde se dio de alta es sólo dato de origen.
+	sucursales, err := nombresSucursales(ctx, db)
+	if err != nil {
+		return platform.Response{}, err
+	}
+	conNombreSucursal(clientes, sucursales)
 	for i, c := range clientes {
 		c["num_vehiculos"] = int64(vehiculos[ids[i]])
 		c["cotizaciones_pendientes"] = int64(cotizaciones[ids[i]])
