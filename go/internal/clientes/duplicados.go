@@ -108,6 +108,45 @@ type cartera struct {
 	clientes []map[string]any
 	// placas normalizadas de los vehículos de cada cliente
 	placas map[string][]string
+	// claves "motivo|clave" de teléfonos/emails de relleno (ver marcarRelleno)
+	relleno map[string]bool
+}
+
+// minPersonasRelleno: un teléfono o email que comparten tantas personas
+// distintas no identifica a nadie. Pasa con el teléfono del propio taller,
+// capturado a falta del del cliente (en prod unía a 9 clientes distintos en
+// un solo grupo), o con el de una empresa y sus choferes.
+const minPersonasRelleno = 3
+
+// marcarRelleno detecta esos teléfonos/emails: los compartidos por al menos
+// minPersonasRelleno personas con nombre distinto. Dos capturas de la misma
+// persona (mismo nombre normalizado) cuentan como una.
+func (c *cartera) marcarRelleno() {
+	personas := map[string]map[string]bool{}
+	for _, cl := range c.clientes {
+		persona := nombreClave(cl)
+		if persona == "" {
+			persona = "id:" + texto(cl["id"])
+		}
+		for motivo, clave := range map[string]string{
+			PorTelefono: telefonoClave(texto(cl["telefono"])),
+			PorEmail:    emailClave(texto(cl["email"])),
+		} {
+			if clave == "" {
+				continue
+			}
+			llave := motivo + "|" + clave
+			if personas[llave] == nil {
+				personas[llave] = map[string]bool{}
+			}
+			personas[llave][persona] = true
+		}
+	}
+	for llave, ps := range personas {
+		if len(ps) >= minPersonasRelleno {
+			c.relleno[llave] = true
+		}
+	}
 }
 
 func cargarCartera(ctx context.Context, db *mongo.Database) (*cartera, error) {
@@ -126,7 +165,7 @@ func cargarCartera(ctx context.Context, db *mongo.Database) (*cartera, error) {
 	if err := cur.All(ctx, &docs); err != nil {
 		return nil, err
 	}
-	c := &cartera{placas: map[string][]string{}}
+	c := &cartera{placas: map[string][]string{}, relleno: map[string]bool{}}
 	for _, d := range docs {
 		cl := platform.Doc(d)
 		if v, ok := cl["sucursal_id"]; ok {
@@ -135,6 +174,7 @@ func cargarCartera(ctx context.Context, db *mongo.Database) (*cartera, error) {
 		}
 		c.clientes = append(c.clientes, cl)
 	}
+	c.marcarRelleno()
 
 	vcur, err := db.Collection("vehiculos").Find(ctx,
 		bson.D{{Key: "cliente_id", Value: bson.D{{Key: "$type", Value: "string"}}}},
@@ -157,7 +197,7 @@ func cargarCartera(ctx context.Context, db *mongo.Database) (*cartera, error) {
 func (c *cartera) clavesDe(cl map[string]any) map[string][]string {
 	out := map[string][]string{}
 	agregar := func(motivo, clave string) {
-		if clave != "" {
+		if clave != "" && !c.relleno[motivo+"|"+clave] {
 			out[motivo] = append(out[motivo], clave)
 		}
 	}

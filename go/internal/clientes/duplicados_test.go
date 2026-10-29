@@ -71,6 +71,10 @@ func TestDuplicadosContraMongo(t *testing.T) {
 		// Pedro y Luis no comparten datos personales, pero sí el vehículo.
 		bson.D{{Key: "_id", Value: pedro}, {Key: "nombre", Value: "Pedro"}, {Key: "apellido_paterno", Value: "Ruiz"}, {Key: "rfc", Value: "XAXX010101000"}},
 		bson.D{{Key: "_id", Value: luis}, {Key: "nombre", Value: "Luis"}, {Key: "apellido_paterno", Value: "Gómez"}},
+		// Teléfono del taller capturado en tres clientes distintos: es de relleno.
+		bson.D{{Key: "nombre", Value: "Omnibus"}, {Key: "apellido_paterno", Value: "SA"}, {Key: "telefono", Value: "4491382401"}},
+		bson.D{{Key: "nombre", Value: "Rugo"}, {Key: "apellido_paterno", Value: "Transportes"}, {Key: "telefono", Value: "4491382401"}},
+		bson.D{{Key: "nombre", Value: "Prueba"}, {Key: "apellido_paterno", Value: "Prueba"}, {Key: "telefono", Value: "449 138 2401"}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -117,6 +121,12 @@ func TestDuplicadosContraMongo(t *testing.T) {
 	_, data = llamarDuplicados(t, asesor, map[string]string{"rfc": "XAXX010101000"})
 	if items, _ := data["items"].([]any); len(items) != 0 {
 		t.Errorf("rfc genérico: %v", data)
+	}
+
+	// Un teléfono de relleno no trae a todos los que lo comparten.
+	_, data = llamarDuplicados(t, asesor, map[string]string{"telefono": "4491382401"})
+	if items, _ := data["items"].([]any); len(items) != 0 {
+		t.Errorf("teléfono de relleno: %v", data)
 	}
 
 	// Los grupos son sólo para ADMIN.
