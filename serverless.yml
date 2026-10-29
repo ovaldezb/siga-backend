@@ -528,6 +528,32 @@ functions:
           authorizer:
             name: cognitoAuthorizer
 
+  # Coincidencias al dar de alta (cualquier sucursal) y, sin datos, grupos de
+  # duplicados para el ADMIN. Ruta literal: API GW la prefiere sobre /clientes/{id}.
+  clientes_duplicados:
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/clientes_duplicados.zip
+    events:
+      - httpApi:
+          path: /clientes/duplicados
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+
+  clientes_fusionar:
+    handler: src/handlers/clientes/fusion_manager.fusionar_cliente_handler
+    layers:
+      - !Ref PythonRequirementsLambdaLayer
+    events:
+      - httpApi:
+          path: /clientes/{id}/fusionar
+          method: post
+          authorizer:
+            name: cognitoAuthorizer
+
   clientes_create:
     handler: src/handlers/clientes/clientes_manager.create_cliente_handler
     layers:
@@ -925,10 +951,14 @@ functions:
           authorizer:
             name: cognitoAuthorizer
 
+  # Go (internal/clientes/historial.go). get_customer_history_handler queda en
+  # Python para rollback.
   reportes_cliente_historial:
-    handler: src/handlers/admin/reportes_manager.get_customer_history_handler
-    layers:
-      - !Ref PythonRequirementsLambdaLayer
+    runtime: provided.al2023
+    handler: bootstrap
+    memorySize: 256
+    package:
+      artifact: .bin/reportes_cliente_historial.zip
     events:
       - httpApi:
           path: /reportes/cliente/{id}
